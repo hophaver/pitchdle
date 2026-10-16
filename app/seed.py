@@ -8,7 +8,7 @@ import argparse
 import random
 from datetime import date, timedelta
 
-from . import engine, scoring, service
+from . import engine, service
 from .db import connect, dumps, init_db, j, now
 from .engine import AXES
 from .seed_data import COMPANIES, DEMO_BIAS, DIVES
@@ -25,9 +25,9 @@ def seed(db) -> None:
     ids = {}
     for c in COMPANIES:
         cur = db.execute(
-            "INSERT INTO companies (name, sector, one_liner, claim_ask, facts, evidence, evidence_note, is_real, "
-            "active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?)",
-            (c["name"], c["sector"], c["one_liner"], c["claim_ask"], dumps(c["facts"]), dumps(c["evidence"]),
+            "INSERT INTO companies (name, emoji, sector, one_liner, claim_ask, facts, evidence, evidence_note, is_real, "
+            "active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)",
+            (c["name"], c["emoji"], c["sector"], c["one_liner"], c["claim_ask"], dumps(c["facts"]), dumps(c["evidence"]),
              c["evidence_note"], now()))
         ids[c["name"]] = cur.lastrowid
         score_company(db, cur.lastrowid)
@@ -68,10 +68,9 @@ def _clamp(v: float) -> int:
 
 
 def demo_votes(db, dive_id: int, players: int = 30, rng_seed: int = 7) -> int:
-    """Fill a dive with a believable fake room (flagged is_seed) so the wall looks alive.
+    """Fill a set with a believable fake room (flagged is_seed) so the wall and results look alive.
 
-    The room follows each company's demo_bias, so the designed cases light up their flags; one seed
-    player ("ACE") reads every card like the engine, so Against the Current has a clear leader.
+    The room follows each company's demo_bias, so the designed cases light up their flags.
     Returns the number of votes inserted.
     """
     rng = random.Random(rng_seed)
@@ -79,32 +78,21 @@ def demo_votes(db, dive_id: int, players: int = 30, rng_seed: int = 7) -> int:
     comps = service.dive_companies(db, dive)
     pids = []
     for i in range(players):
-        initials = "ACE" if i == 0 else None
-        cur = db.execute("INSERT INTO players (device_token, initials, handle, is_seed, created_at) "
-                         "VALUES (?, ?, ?, 1, ?)",
-                         (f"seed-{dive_id}-{rng_seed}-{i}-{rng.random()}", initials, service.new_handle(rng), now()))
+        cur = db.execute("INSERT INTO players (device_token, handle, is_seed, created_at) VALUES (?, ?, 1, ?)",
+                         (f"seed-{dive_id}-{rng_seed}-{i}-{rng.random()}", service.new_handle(rng), now()))
         pids.append(cur.lastrowid)
     inserted = 0
     for comp in comps:
         eng = j(comp["engine_axes"])
         bias = DEMO_BIAS.get(comp["name"], 0.0)
-        for i, pid in enumerate(pids):
-            if i == 0:
-                r1 = {a: _clamp(eng[a]) for a in AXES}
-            else:
-                skill = rng.uniform(0.5, 1.3)
-                r1 = {a: _clamp(eng[a] + bias + rng.gauss(0, skill)) for a in AXES}
-            # Second look: most of the room drifts toward the fundamentals, the rest stick.
-            stuck = i == 0 or rng.random() < 0.3
-            r2 = r1 if stuck else {a: _clamp(r1[a] + (eng[a] - r1[a]) * rng.uniform(0.3, 0.7)) for a in AXES}
-            for rnd, s, st in ((1, r1, 0), (2, r2, int(stuck))):
-                db.execute(
-                    "INSERT INTO votes (player_id, dive_id, company_id, round, novel, useful, plausible, investable, "
-                    "stuck, points, is_seed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
-                    (pid, dive_id, comp["id"], rnd, s["novel"], s["useful"], s["plausible"], s["investable"],
-                     st, scoring.vote_points(s, eng), now()))
-                inserted += 1
-        service.ensure_bonus(db, dive_id, comp["id"], eng)
+        for pid in pids:
+            skill = rng.uniform(0.5, 1.3)
+            s = {a: _clamp(eng[a] + bias + rng.gauss(0, skill)) for a in AXES}
+            db.execute(
+                "INSERT INTO votes (player_id, dive_id, company_id, round, novel, useful, plausible, investable, "
+                "is_seed, created_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, 1, ?)",
+                (pid, dive_id, comp["id"], s["novel"], s["useful"], s["plausible"], s["investable"], now()))
+            inserted += 1
     db.commit()
     return inserted
 

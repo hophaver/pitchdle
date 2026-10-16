@@ -3,21 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0f6f8f">
+  <meta name="theme-color" content="#e9e6de">
   <title>Pitchdle</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤿</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='28' fill='%23ef6a45'/><text x='50' y='70' font-size='60' text-anchor='middle' fill='white' font-family='Helvetica' font-weight='800'>P</text></svg>">
+  <!-- Handwritten accent font; the page falls back to a system hand font when offline. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@700&display=swap">
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
-  <div class="gauge" id="gauge" aria-hidden="true"><div class="track"></div><div class="diver" id="diver">🤿</div></div>
-  <div class="depth-toast" id="depth-toast"></div>
-  <header class="topbar">
-    <a class="brand" href="/play">Pitch<span>dle</span></a>
-    <span class="label" id="dive-label"></span>
-    <span class="spacer"></span>
-    <button class="chip" id="me-btn" title="Set your leaderboard initials"></button>
-  </header>
-  <main class="app" id="app"><p class="muted center">Loading…</p></main>
+  <main class="shell" id="app"></main>
   <script src="/static/js/common.js"></script>
   <script src="/static/js/play.js"></script>
 </body>

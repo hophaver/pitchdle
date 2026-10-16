@@ -4,18 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pitchdle Wall</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌊</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='28' fill='%23ef6a45'/><text x='50' y='70' font-size='60' text-anchor='middle' fill='white' font-family='Helvetica' font-weight='800'>P</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@700&display=swap">
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body class="wall">
   <div class="wall-shell">
     <div class="wall-top">
-      <span class="brand">Pitch<span>dle</span></span>
-      <span class="label" id="label"></span>
+      <span class="brand">Pitch<span class="muted">dle</span></span>
       <span class="spacer"></span>
-      <span class="label" id="counts"></span>
+      <span id="counts"></span>
     </div>
-    <div class="wall-body single" id="body"><p class="muted">Loading…</p></div>
+    <div class="wall-stage" id="stage"></div>
   </div>
   <script src="/static/js/common.js"></script>
   <script src="/static/js/wall.js"></script>

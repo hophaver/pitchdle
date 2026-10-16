@@ -1,11 +1,11 @@
 """Live room: a host-paced state machine stored in a single row.
 
-idle → lobby → open(card n) → locked → revealed → open(card n+1) … → final
+idle → lobby → open(card n) → locked → revealed (wall only) → open(card n+1) … → final
+Phones never see per-card results; they get everything at "final".
 """
 import time
 
 from . import config, service
-from .db import j
 
 
 def get_state(db) -> dict:
@@ -47,12 +47,12 @@ def act(db, action: str, dive_id: int | None = None) -> dict:
     st = get_state(db)
     if action == "start":
         if not dive_id or not service.get_dive(db, dive_id):
-            raise LiveError("Pick a dive to start.")
+            raise LiveError("Pick a set to start.")
         _set(db, dive_id=dive_id, card_index=-1, phase="lobby")
     elif action == "stop":
         _set(db, dive_id=None, card_index=-1, phase="idle")
     elif st["dive_id"] is None:
-        raise LiveError("No live dive running. Start one first.")
+        raise LiveError("No live game running. Start one first.")
     elif action == "open":
         _set(db, card_index=max(0, st["card_index"]), phase="open")
     elif action == "lock":
@@ -62,9 +62,6 @@ def act(db, action: str, dive_id: int | None = None) -> dict:
     elif action == "reveal":
         if st["phase"] not in ("open", "locked"):
             raise LiveError("Open a card before revealing it.")
-        comp = current_company(db, st)
-        if comp:
-            service.ensure_bonus(db, st["dive_id"], comp["id"], j(comp["engine_axes"]))
         _set(db, phase="revealed")
     elif action == "next":
         total = len(service.dive_companies(db, service.get_dive(db, st["dive_id"])))

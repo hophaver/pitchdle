@@ -21,7 +21,6 @@ _load_dotenv()
 DB_PATH = os.environ.get("DB_PATH") or str(ROOT / "data" / "pitchdle.db")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or "admin"
 BASE_URL = (os.environ.get("BASE_URL") or "").rstrip("/")
-DECAY_K = float(os.environ.get("DECAY_K") or 1.5)
 LIVE_SECONDS = int(os.environ.get("LIVE_SECONDS") or 25)
 MIN_VOTES = int(os.environ.get("MIN_VOTES") or 5)
 WEIGHTS_PATH = ROOT / "weights.json"

@@ -8,35 +8,37 @@ def today(c):
     return c.get("/api/dive/today").json()
 
 
-def test_full_solo_dive_without_network(client):
+def answer(c, dive_id, cid, scores=GUESS):
+    return c.post("/api/vote", json={"dive_id": dive_id, "company_id": cid, "scores": scores})
+
+
+def test_cards_show_only_the_pitch(client):
+    card = today(client)["cards"][0]
+    assert set(card) == {"id", "name", "emoji", "sector", "one_liner", "claim_ask", "is_real"}
+
+
+def test_results_only_after_every_card(client):
     data = today(client)
-    assert len(data["cards"]) == 5
-    assert "engine_axes" not in data["cards"][0] and "facts" not in data["cards"][0]
     dive_id = data["dive"]["id"]
-    for card in data["cards"]:
-        r = client.post("/api/vote", json={"dive_id": dive_id, "company_id": card["id"], "round": 1, "scores": GUESS})
-        assert r.status_code == 200, r.text
-        rev = client.get(f"/api/dive/{dive_id}/reveal/{card['id']}").json()
-        assert len(rev["you"]["tiles"]) == 4 and rev["company"]["facts"]
-        r = client.post("/api/vote", json={"dive_id": dive_id, "company_id": card["id"], "round": 2,
-                                           "scores": GUESS, "stuck": True})
-        assert r.status_code == 200
-    s = client.get(f"/api/dive/{dive_id}/summary").json()
-    assert len(s["cards"]) == 5 and s["depth"] > 0 and s["rank"] == 1
+    assert len(data["cards"]) == 5
+    for i, card in enumerate(data["cards"]):
+        assert client.get(f"/api/dive/{dive_id}/results").status_code == 403, f"results leaked after {i} cards"
+        assert answer(client, dive_id, card["id"]).status_code == 200
+    r = client.get(f"/api/dive/{dive_id}/results").json()
+    assert len(r["cards"]) == 5
+    first = r["cards"][0]
+    assert first["crowd"]["n"] == 1 and first["lean"] == "with"
+    assert all(sum(a["share"]) == 100 for a in first["axes"])
+    assert "engine" not in first  # players compare with the crowd only
+    assert r["summary"]["axes_total"] == 20
 
 
-def test_answer_key_hidden_until_you_vote(client):
+def test_answers_are_final(client):
     data = today(client)
     dive_id, cid = data["dive"]["id"], data["cards"][0]["id"]
-    assert client.get(f"/api/dive/{dive_id}/reveal/{cid}").status_code == 403
-    assert client.get(f"/api/company/{cid}").status_code == 404  # no answer-leaking company endpoint
-
-
-def test_no_double_votes(client):
-    data = today(client)
-    body = {"dive_id": data["dive"]["id"], "company_id": data["cards"][0]["id"], "round": 1, "scores": GUESS}
-    assert client.post("/api/vote", json=body).status_code == 200
-    assert client.post("/api/vote", json=body).status_code == 409
+    assert answer(client, dive_id, cid).status_code == 200
+    assert answer(client, dive_id, cid, {**GUESS, "novel": 5}).status_code == 409
+    assert today(client)["answered"] == [cid]
 
 
 def test_host_and_admin_need_password(client, admin):
@@ -57,57 +59,44 @@ def test_admin_adds_company_it_scores_immediately(client, admin):
     assert client.get(f"/api/dive/{d['id']}").json()["cards"][0]["name"] == "Test Kelp Co"
 
 
-def test_room_sheet_and_demo_scenario(client, admin):
-    dives = client.get("/api/host/dives", auth=admin).json()
-    live_dive = next(d for d in dives if d["mode"] == "live")
+def test_demo_votes_light_up_the_designed_cases(client, admin):
+    live_dive = next(d for d in client.get("/api/host/dives", auth=admin).json() if d["mode"] == "live")
     client.post("/api/admin/demo-votes", json={"dive_id": live_dive["id"], "players": 30}, auth=admin)
-    board = client.get(f"/api/dive/{live_dive['id']}/leaderboard").json()
-    assert board["current"][0]["name"] == "ACE"
-
-    overview = client.get("/api/host/overview", auth=admin).json()["companies"]
-    by_name = {c["name"]: c for c in overview}
+    by_name = {c["name"]: c for c in client.get("/api/host/overview", auth=admin).json()["companies"]}
     assert any(f["key"] == "story" for f in by_name["TideLedger"]["flags"])
     assert any(f["key"] == "substance" for f in by_name["Rakko Feed"]["flags"])
     assert by_name["TideLedger"]["actions"][0]["kind"] in ("partner", "customer")
-
-    # A real player in a daily dive full of demo votes sees a room sheet that adds up.
-    data = today(client)
-    client.post("/api/admin/demo-votes", json={"dive_id": data["dive"]["id"], "players": 10}, auth=admin)
-    cid = data["cards"][0]["id"]
-    client.post("/api/vote", json={"dive_id": data["dive"]["id"], "company_id": cid, "round": 1, "scores": GUESS})
-    rev = client.get(f"/api/dive/{data['dive']['id']}/reveal/{cid}").json()
-    assert rev["sheet"] is not None
-    for row in rev["sheet"]["axes"]:
-        assert sum(row["share"]) == 100
-        assert abs(row["mean"] - rev["room"]["means"][row["axis"]]) < 1e-9
+    real_only = client.get("/api/host/overview?real_only=true", auth=admin).json()["companies"]
+    assert all(c["crowd"]["n"] == 0 for c in real_only)
 
 
-def test_live_round_stays_in_sync(client, admin):
+def test_live_round(client, admin):
     live_dive = next(d for d in client.get("/api/host/dives", auth=admin).json() if d["mode"] == "live")
+    dive_id = live_dive["id"]
     phones = [new_player(client) for _ in range(3)]
-    post = lambda action: client.post("/api/host/live", json={"action": action, "dive_id": live_dive["id"]}, auth=admin)
+    post = lambda action: client.post("/api/host/live", json={"action": action, "dive_id": dive_id}, auth=admin)
 
     assert post("start").json()["phase"] == "lobby"
     assert post("open").json()["phase"] == "open"
     states = [p.get("/api/live/state").json() for p in phones]
     assert len({s["card"]["id"] for s in states}) == 1
     cid = states[0]["card"]["id"]
-    vote = {"dive_id": live_dive["id"], "company_id": cid, "round": 1, "scores": GUESS}
     for p in phones:
-        assert p.post("/api/vote", json=vote).status_code == 200
-    # Nobody sees the answer before the host reveals.
-    assert phones[0].get(f"/api/dive/{live_dive['id']}/reveal/{cid}").status_code == 403
+        assert answer(p, dive_id, cid).status_code == 200
+    assert phones[0].get("/api/live/state").json()["voted"] is True
     post("lock")
-    assert new_player(client).post("/api/vote", json=vote).status_code == 409  # too late
+    assert answer(new_player(client), dive_id, cid).status_code == 409  # too late
     post("reveal")
-    assert all(p.get(f"/api/dive/{live_dive['id']}/reveal/{cid}").status_code == 200 for p in phones)
     wall = client.get("/api/live/wall").json()
     assert wall["phase"] == "revealed" and wall["reveal"]["room"]["n"] == 3
+    # Phones only get results when the whole set is over.
+    assert phones[0].get(f"/api/dive/{dive_id}/results").status_code == 403
     for _ in range(5):
         st = post("next").json()
     assert st["phase"] == "final"
-    assert client.get("/api/live/wall").json()["divers"]
-    assert phones[0].get(f"/api/dive/{live_dive['id']}/summary").status_code == 200
+    assert len(client.get("/api/live/wall").json()["cards"]) == 5
+    r = phones[0].get(f"/api/dive/{dive_id}/results").json()
+    assert len(r["cards"]) == 1 and r["total"] == 5
 
 
 def test_live_timer_locks_voting(client, admin, monkeypatch):

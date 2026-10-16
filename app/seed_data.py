@@ -10,9 +10,10 @@ COMPANIES = [
     {
         # Designed demo case: polished pitch, weak fundamentals.
         "name": "TideLedger",
+        "emoji": "🧴",
         "sector": "ocean plastics",
-        "one_liner": "AI and blockchain marketplace that turns recovered ocean plastic into tradeable credits.",
-        "claim_ask": "Raising €3M seed to launch in 40 countries next year.",
+        "one_liner": "Pick up a bottle on the beach, scan it, earn a token.",
+        "claim_ask": "€3M to launch in 40 countries next year",
         "facts": [
             {"label": "Team", "value": "2 founders, no engineers yet"},
             {"label": "Traction", "value": "Waitlist of 1,200, no paying customers, no plastic collected"},
@@ -38,9 +39,10 @@ COMPANIES = [
     {
         # Designed demo case: diamond in the rough.
         "name": "Rakko Feed",
+        "emoji": "🐄",
         "sector": "aquaculture & feed",
-        "one_liner": "Dries Baltic seaweed into a feed supplement for dairy cows.",
-        "claim_ask": "Raising €800k to double drying capacity at its coastal plant.",
+        "one_liner": "Dried Baltic seaweed in cow feed. The cows burp less methane.",
+        "claim_ask": "€800k to double its drying plant",
         "facts": [
             {"label": "Revenue", "value": "€420k last year; 3 dairy co-ops buying repeatedly"},
             {"label": "Evidence", "value": "Two university feeding trials: 12–18% less methane per cow"},
@@ -65,9 +67,10 @@ COMPANIES = [
     },
     {
         "name": "BrineWorks",
+        "emoji": "🚰",
         "sector": "desalination",
-        "one_liner": "Floating solar-powered desalination units for island communities.",
-        "claim_ask": "Raising €500k to scale its floating desalination pilot.",
+        "one_liner": "A solar raft that turns seawater into drinking water for island villages.",
+        "claim_ask": "€500k to build ten more rafts",
         "facts": [
             {"label": "Pilot", "value": "1 unit running 9 months in the archipelago"},
             {"label": "Team", "value": "6 people, including 2 water engineers"},
@@ -92,9 +95,10 @@ COMPANIES = [
     },
     {
         "name": "Simpukka Farms",
+        "emoji": "🦪",
         "sector": "aquaculture",
-        "one_liner": "Farms mussels in the Archipelago Sea to pull nitrogen out of the water and sells nutrient credits.",
-        "claim_ask": "Seeking €1.2M blended finance for three new farm lines.",
+        "one_liner": "Mussel farms that soak up fertiliser runoff from the sea.",
+        "claim_ask": "€1.2M for three more farm lines",
         "facts": [
             {"label": "Pilot", "value": "2 farm lines, 40 t harvested"},
             {"label": "Revenue", "value": "€60k from mussel-meal sales; credits not yet sold"},
@@ -117,9 +121,10 @@ COMPANIES = [
     },
     {
         "name": "Barnacle Buster",
+        "emoji": "🤖",
         "sector": "maritime robotics",
-        "one_liner": "Hull-cleaning robot that scrubs ships in port without a dry dock.",
-        "claim_ask": "Raising €2M Series A after five port pilots.",
+        "one_liner": "A robot that scrubs ship hulls while they sit in port.",
+        "claim_ask": "€2M after five port pilots",
         "facts": [
             {"label": "Customers", "value": "2 ferry operators on paid trials"},
             {"label": "Permits", "value": "In-water cleaning permit in 2 ports"},
@@ -142,9 +147,10 @@ COMPANIES = [
     },
     {
         "name": "WaveWhisper",
+        "emoji": "🛟",
         "sector": "wave energy",
-        "one_liner": "Tiny wave-energy buoys that power ocean sensors forever.",
-        "claim_ask": "Raising €1M pre-seed to reach a sea-trial prototype.",
+        "one_liner": "A buoy the size of a football that charges ocean sensors with waves.",
+        "claim_ask": "€1M to put the first one in the sea",
         "facts": [
             {"label": "Stage", "value": "Tank-tested at 1:20 scale"},
             {"label": "Team", "value": "3 PhDs, no commercial hire"},
@@ -167,9 +173,10 @@ COMPANIES = [
     },
     {
         "name": "Fishfluencer",
+        "emoji": "🤳",
         "sector": "media (allegedly)",
-        "one_liner": "A social media agency that runs Instagram accounts for individual fish.",
-        "claim_ask": "Raising €2M to sign 10,000 fish to exclusive content deals.",
+        "one_liner": "Instagram accounts, run on behalf of individual fish.",
+        "claim_ask": "€2M to sign 10,000 fish",
         "facts": [
             {"label": "Traction", "value": "3 accounts, 41 followers in total"},
             {"label": "Revenue", "value": "€0"},
@@ -190,9 +197,10 @@ COMPANIES = [
     },
     {
         "name": "Krakenomics",
+        "emoji": "🦑",
         "sector": "fintech (fisheries)",
-        "one_liner": "Tokenised squid futures so anyone can bet on next year's catch.",
-        "claim_ask": "Raising €5M through its own token sale.",
+        "one_liner": "Bet on next year's squid catch with a crypto token.",
+        "claim_ask": "€5M through its own token sale",
         "facts": [
             {"label": "Regulation", "value": "No licence applied for"},
             {"label": "Team", "value": "Anonymous"},
@@ -213,9 +221,10 @@ COMPANIES = [
     },
     {
         "name": "SeaSpa Pods",
+        "emoji": "🫧",
         "sector": "marine tourism",
-        "one_liner": "Underwater co-working pods anchored in the Baltic, Wi-Fi included.",
-        "claim_ask": "Raising €4M to build the first 12-desk pod off the coast.",
+        "one_liner": "Rent a desk in a glass pod on the Baltic seabed.",
+        "claim_ask": "€4M to sink the first 12-desk pod",
         "facts": [
             {"label": "Prototype", "value": "Renders only"},
             {"label": "Permits", "value": "None applied for"},
@@ -236,9 +245,10 @@ COMPANIES = [
     },
     {
         "name": "FrostWatch",
+        "emoji": "🧊",
         "sector": "maritime sensors",
-        "one_liner": "Ice-load sensors that tell archipelago ferries where it's safe to break ice.",
-        "claim_ask": "Raising €600k to expand from 4 to 20 ferries.",
+        "one_liner": "Sensors on ferry hulls that map where the ice is safe to break.",
+        "claim_ask": "€600k to go from 4 ferries to 20",
         "facts": [
             {"label": "Deployed", "value": "4 ferries, 2 winters of data"},
             {"label": "Revenue", "value": "€150k annual recurring"},
@@ -261,9 +271,10 @@ COMPANIES = [
     },
     {
         "name": "GreenGlug",
+        "emoji": "🛢️",
         "sector": "marine fuels",
-        "one_liner": "Algae biofuel that will replace marine diesel by 2030.",
-        "claim_ask": "Raising €10M to build a demonstration bio-refinery.",
+        "one_liner": "Ship fuel brewed from algae, replacing marine diesel by 2030.",
+        "claim_ask": "€10M for a demonstration refinery",
         "facts": [
             {"label": "Cost", "value": "Lab batches at 50× the cost of marine diesel"},
             {"label": "Funding", "value": "€300k in grants to date"},
@@ -286,9 +297,10 @@ COMPANIES = [
     },
     {
         "name": "ShipShape Routing",
+        "emoji": "🧭",
         "sector": "shipping software",
-        "one_liner": "Route-planning software that cuts fuel use for short-sea shipping.",
-        "claim_ask": "Raising €1.5M seed to open a sales office in Hamburg.",
+        "one_liner": "Software that plans a ship's route so it burns less fuel.",
+        "claim_ask": "€1.5M to open a Hamburg sales office",
         "facts": [
             {"label": "Customers", "value": "7 paying operators"},
             {"label": "Results", "value": "6–9% fuel saving, audited by a classification society"},

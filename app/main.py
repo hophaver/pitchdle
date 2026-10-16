@@ -2,7 +2,6 @@
 import csv
 import io
 import logging
-import re
 import secrets
 import time
 import uuid
@@ -123,52 +122,33 @@ def qr(request: Request, path: str = "/live"):
 
 # --- player API ------------------------------------------------------------------------------------
 
-INITIALS_BLOCKLIST = {"ASS", "FUK", "FUC", "FCK", "SEX", "CUM", "TIT", "DIK", "COK", "KKK", "NIG", "FAG", "WTF", "HOR", "VIT", "KYS"}
-
-
-class MeIn(BaseModel):
-    initials: str | None = None
-
-
 @app.get("/api/me")
 def me(player=Depends(get_player)):
-    return {"handle": player["handle"], "initials": player["initials"]}
+    """Called first by every player page so the device cookie exists before anything else."""
+    return {"ok": True}
 
 
-@app.post("/api/me")
-def set_me(body: MeIn, player=Depends(get_player), db=Depends(get_db)):
-    initials = (body.initials or "").strip().upper() or None
-    if initials is not None:
-        if not re.fullmatch(r"[A-Z]{3}", initials):
-            raise HTTPException(422, "Initials are exactly 3 letters, A–Z.")
-        if initials in INITIALS_BLOCKLIST:
-            raise HTTPException(422, "Try different initials.")
-    db.execute("UPDATE players SET initials = ? WHERE id = ?", (initials, player["id"]))
-    db.commit()
-    return {"handle": player["handle"], "initials": initials}
-
-
-def dive_response(db, dive, player) -> dict:
+def set_response(db, dive, player) -> dict:
     comps = service.dive_companies(db, dive)
+    done = service.answered(db, player["id"], dive["id"])
     return {
         "dive": service.dive_payload(dive),
         "cards": [service.public_card(c) for c in comps],
-        "progress": service.progress(db, player["id"], dive["id"]),
-        "depth": service.dive_scores(db, dive["id"]).get(player["id"], {}).get("depth", 0),
+        "answered": [c["id"] for c in comps if c["id"] in done],
     }
 
 
 @app.get("/api/dive/today")
 def dive_today(player=Depends(get_player), db=Depends(get_db)):
-    return dive_response(db, service.todays_dive(db), player)
+    return set_response(db, service.todays_dive(db), player)
 
 
 @app.get("/api/dive/{dive_id}")
 def dive_by_id(dive_id: int, player=Depends(get_player), db=Depends(get_db)):
     dive = service.get_dive(db, dive_id)
     if not dive:
-        raise HTTPException(404, "No such dive.")
-    return dive_response(db, dive, player)
+        raise HTTPException(404, "No such set.")
+    return set_response(db, dive, player)
 
 
 class Scores(BaseModel):
@@ -181,16 +161,15 @@ class Scores(BaseModel):
 class VoteIn(BaseModel):
     dive_id: int
     company_id: int
-    round: int = Field(ge=1, le=2)
     scores: Scores
-    stuck: bool = False
 
 
 @app.post("/api/vote")
 def vote(body: VoteIn, player=Depends(get_player), db=Depends(get_db)):
+    """One answer per card, final: there's no way to revise it."""
     dive = service.get_dive(db, body.dive_id)
     if not dive or body.company_id not in j(dive["company_ids"], []):
-        raise HTTPException(404, "That card isn't in this dive.")
+        raise HTTPException(404, "That card isn't in this set.")
     comp = service.get_company(db, body.company_id)
     if not comp:
         raise HTTPException(404, "No such company.")
@@ -199,66 +178,34 @@ def vote(body: VoteIn, player=Depends(get_player), db=Depends(get_db)):
         cur = live.current_company(db, st)
         if st["dive_id"] != dive["id"] or not cur or cur["id"] != comp["id"]:
             raise HTTPException(409, "That's not the live card right now.")
-        if body.round == 1 and st["phase"] != "open":
+        if st["phase"] != "open":
             raise HTTPException(409, "Voting is closed for this card.")
-        if body.round == 2 and st["phase"] != "revealed":
-            raise HTTPException(409, "Second look opens after the reveal.")
-    existing = service.player_votes(db, player["id"], dive["id"], comp["id"])
-    if body.round in existing:
-        raise HTTPException(409, "You've already answered this round.")
-    if body.round == 2 and 1 not in existing:
-        raise HTTPException(409, "Answer the first round before the second look.")
-    scores = body.scores.model_dump()
-    if body.round == 2 and body.stuck:
-        scores = service.scores_of(existing[1])
-    points = scoring.vote_points(scores, j(comp["engine_axes"]))
+    if comp["id"] in service.answered(db, player["id"], dive["id"]):
+        raise HTTPException(409, "You've already answered this card.")
+    s = body.scores
     db.execute(
-        "INSERT INTO votes (player_id, dive_id, company_id, round, novel, useful, plausible, investable, stuck, "
-        "points, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (player["id"], dive["id"], comp["id"], body.round, scores["novel"], scores["useful"], scores["plausible"],
-         scores["investable"], int(body.stuck), points, now()))
+        "INSERT INTO votes (player_id, dive_id, company_id, round, novel, useful, plausible, investable, created_at) "
+        "VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)",
+        (player["id"], dive["id"], comp["id"], s.novel, s.useful, s.plausible, s.investable, now()))
     db.commit()
     return {"ok": True}
 
 
-def guard_live_reveal(db, dive, comp) -> None:
-    if dive["mode"] != "live":
-        return
-    st = live.get_state(db)
-    cur = live.current_company(db, st)
-    if st["dive_id"] == dive["id"] and cur and cur["id"] == comp["id"] and st["phase"] in ("lobby", "open", "locked"):
-        raise HTTPException(403, "Wait for the host to reveal this card.")
-
-
-@app.get("/api/dive/{dive_id}/reveal/{company_id}")
-def reveal(dive_id: int, company_id: int, player=Depends(get_player), db=Depends(get_db)):
-    dive = service.get_dive(db, dive_id)
-    comp = service.get_company(db, company_id)
-    if not dive or not comp or company_id not in j(dive["company_ids"], []):
-        raise HTTPException(404, "That card isn't in this dive.")
-    if 1 not in service.player_votes(db, player["id"], dive_id, company_id):
-        raise HTTPException(403, "Make your guess first.")
-    guard_live_reveal(db, dive, comp)
-    return service.reveal(db, dive, comp, player["id"])
-
-
-@app.get("/api/dive/{dive_id}/summary")
-def summary(dive_id: int, player=Depends(get_player), db=Depends(get_db)):
+@app.get("/api/dive/{dive_id}/results")
+def results(dive_id: int, player=Depends(get_player), db=Depends(get_db)):
+    """You vs the crowd, only once every card is answered (or the live set has finished)."""
     dive = service.get_dive(db, dive_id)
     if not dive:
-        raise HTTPException(404, "No such dive.")
+        raise HTTPException(404, "No such set.")
     if dive["mode"] == "live":
         st = live.get_state(db)
         if st["dive_id"] == dive_id and st["phase"] != "final":
-            raise HTTPException(403, "The live dive isn't over yet.")
-    return service.summary(db, dive, player["id"])
-
-
-@app.get("/api/dive/{dive_id}/leaderboard")
-def leaderboard(dive_id: int, db=Depends(get_db)):
-    if not service.get_dive(db, dive_id):
-        raise HTTPException(404, "No such dive.")
-    return service.leaderboard(db, dive_id)
+            raise HTTPException(403, "Results appear when the live set is over.")
+    else:
+        total = len(service.dive_companies(db, dive))
+        if len(service.answered(db, player["id"], dive_id)) < total:
+            raise HTTPException(403, "Answer every card first.")
+    return service.results(db, dive, player["id"])
 
 
 # --- live room -------------------------------------------------------------------------------------
@@ -280,7 +227,7 @@ def live_base(db, st: dict) -> dict:
         "remaining": live.remaining(st),
         "seconds": config.LIVE_SECONDS,
         "joined": joined_count(db),
-        "votes": len(service.round_votes(db, dive["id"], comp["id"], 1)) if dive and comp else 0,
+        "votes": len(service.card_votes(db, dive["id"], comp["id"])) if dive and comp else 0,
         "key": f"{st['phase']}:{st['dive_id']}:{st['card_index']}",
     }
 
@@ -292,10 +239,20 @@ def live_state(player=Depends(get_player), db=Depends(get_db)):
     st = live.get_state(db)
     out = live_base(db, st)
     comp = live.current_company(db, st)
-    done = service.player_votes(db, player["id"], st["dive_id"], comp["id"]) if comp else {}
-    out["voted_r1"] = 1 in done
-    out["voted_r2"] = 2 in done
+    out["voted"] = bool(comp) and comp["id"] in service.answered(db, player["id"], st["dive_id"])
     return out
+
+
+def wall_card(db, dive_id: int, comp) -> dict:
+    room = scoring.crowd(service.card_votes(db, dive_id, comp["id"]))
+    return {
+        "card": service.public_card(comp),
+        "engine": {"axes": j(comp["engine_axes"]), "composite": comp["engine_composite"]},
+        "room": {"n": room["n"], "means": room["means"], "composite": room["composite"],
+                 "share": room["share"], "mode": room["mode"]},
+        "callout": service.callout(room, comp["engine_composite"]),
+        "facts": j(comp["facts"], []),
+    }
 
 
 @app.get("/api/live/wall")
@@ -305,23 +262,10 @@ def live_wall(request: Request, db=Depends(get_db)):
     out["join_url"] = base_url(request) + "/live"
     comp = live.current_company(db, st)
     if st["phase"] == "revealed" and comp:
-        engine = j(comp["engine_axes"])
-        room = scoring.crowd(service.round_votes(db, st["dive_id"], comp["id"], 1))
-        votes = service.round_votes(db, st["dive_id"], comp["id"], 1)
-        out["reveal"] = {
-            "engine": {"axes": engine, "composite": comp["engine_composite"]},
-            "room": {"n": room["n"], "means": room["means"], "composite": room["composite"],
-                     "share": room["share"], "mode": room["mode"]},
-            "callout": service.callout(room, comp["engine_composite"]),
-            "against": sum(1 for v in votes if (v["bonus"] or 0) > 0),
-            "facts": j(comp["facts"], []),
-        }
-    if st["dive_id"] and st["phase"] in ("revealed", "final"):
-        scores = service.dive_scores(db, st["dive_id"])
-        players = {p["id"]: p for p in db.execute("SELECT * FROM players")}
-        ranked = sorted(scores.items(), key=lambda kv: kv[1]["depth"], reverse=True)
-        out["divers"] = [{"name": service.display_name(players[p]), "depth": s["depth"], "against": s["against"]}
-                         for p, s in ranked if p in players]
+        out["reveal"] = wall_card(db, st["dive_id"], comp)
+    if st["phase"] == "final" and st["dive_id"]:
+        dive = service.get_dive(db, st["dive_id"])
+        out["cards"] = [wall_card(db, dive["id"], c) for c in service.dive_companies(db, dive)]
     return out
 
 
@@ -369,6 +313,7 @@ class Fact(BaseModel):
 
 class CompanyIn(BaseModel):
     name: str = Field(min_length=1)
+    emoji: str = Field("", max_length=16)
     sector: str = ""
     one_liner: str = ""
     claim_ask: str = ""
@@ -402,15 +347,15 @@ def admin_factors():
 
 
 def save_company(db, body: CompanyIn, cid: int | None) -> int:
-    values = (body.name.strip(), body.sector, body.one_liner, body.claim_ask, body.website,
+    values = (body.name.strip(), body.emoji.strip(), body.sector, body.one_liner, body.claim_ask, body.website,
               dumps([f.model_dump() for f in body.facts]), dumps(body.evidence), body.evidence_note,
               int(body.is_real), int(body.active))
     if cid is None:
         cid = db.execute(
-            "INSERT INTO companies (name, sector, one_liner, claim_ask, website, facts, evidence, evidence_note, "
-            "is_real, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values + (now(),)).lastrowid
+            "INSERT INTO companies (name, emoji, sector, one_liner, claim_ask, website, facts, evidence, evidence_note, "
+            "is_real, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values + (now(),)).lastrowid
     else:
-        db.execute("UPDATE companies SET name = ?, sector = ?, one_liner = ?, claim_ask = ?, website = ?, facts = ?, "
+        db.execute("UPDATE companies SET name = ?, emoji = ?, sector = ?, one_liner = ?, claim_ask = ?, website = ?, facts = ?, "
                    "evidence = ?, evidence_note = ?, is_real = ?, active = ? WHERE id = ?", values + (cid,))
     seed.score_company(db, cid)
     db.commit()
@@ -545,14 +490,13 @@ def export_csv(db=Depends(get_db)):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["company", "sector", "votes", *[f"crowd_{a}" for a in AXES], "crowd_composite",
-                *[f"engine_{a}" for a in AXES], "engine_composite", "gap", "sensitivity", "coverage", "flags",
+                *[f"engine_{a}" for a in AXES], "engine_composite", "gap", "coverage", "flags",
                 "top_action"])
     for c in data["companies"]:
         cm = c["crowd"]["means"] or {}
         w.writerow([c["name"], c["sector"], c["crowd"]["n"], *[cm.get(a, "") for a in AXES], c["crowd"]["composite"] or "",
                     *[c["engine"]["axes"].get(a, "") for a in AXES], c["engine"]["composite"],
                     "" if c["gap"] is None else c["gap"],
-                    "" if not c["sensitivity"] else c["sensitivity"]["composite"],
                     f"{c['coverage'].get('assessed', '')}/{c['coverage'].get('total', '')}",
                     "; ".join(f["label"] for f in c["flags"]),
                     c["actions"][0]["name"] if c["actions"] else ""])

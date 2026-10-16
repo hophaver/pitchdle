@@ -1,4 +1,4 @@
-// Host control for the live room: start a dive, open / lock / reveal each card, finish.
+// Host control for the live room: start a set, open / lock / reveal each card, finish.
 const { h, api, post } = PD;
 const $app = document.getElementById("app");
 let dives = [];
@@ -15,12 +15,12 @@ async function act(action) {
 }
 
 const PHASE_TEXT = {
-  idle: "No live dive running.",
+  idle: "No live game running.",
   lobby: "Lobby: players are joining from the QR on the wall.",
   open: "Card open: players are voting.",
   locked: "Voting closed. Reveal when ready.",
-  revealed: "Revealed: players can take their second look.",
-  final: "Finished: the wall shows final depths.",
+  revealed: "Revealed: the wall shows crowd vs engine for this card.",
+  final: "Finished: phones show each player their results.",
 };
 
 async function refresh() {
@@ -43,12 +43,12 @@ async function refresh() {
     h("h1", {}, "Live control"),
     h("section", { class: "panel" },
       h("div", { class: "row" },
-        h("label", { class: "field", style: { flex: 1 } }, "Dive",
+        h("label", { class: "field", style: { flex: 1 } }, "Set",
           h("select", { onchange: (e) => { selected = Number(e.target.value); }, disabled: p !== "idle" && p !== "final" },
             dives.map((d) => h("option", { value: d.id, selected: d.id === selected }, `${d.label} (${d.mode})`)))),
         btn("start", p === "idle" ? "Start lobby" : "Restart lobby", p === "idle", true),
         btn("stop", "Stop", false, p !== "idle")),
-      h("p", { class: "muted small" }, "Live dives only accept votes for the card that's open. Use a dive with mode “live” for the event; you can make one in Admin.")),
+      h("p", { class: "muted small" }, "Live sets only accept answers for the card that’s open. Use a set with mode “live” for the event; you can make one in Admin.")),
     h("section", { class: "panel" },
       h("h2", {}, PHASE_TEXT[p] || p),
       st.dive ? h("p", {}, `${st.dive.label} · card ${Math.max(0, st.card_index + 1)} of ${st.dive.total}`,
@@ -61,7 +61,7 @@ async function refresh() {
         btn("open", "Open first card", p === "lobby", p === "lobby"),
         btn("lock", "Lock voting", false, p === "open"),
         btn("reveal", "Reveal", p === "open" || p === "locked", p === "open" || p === "locked"),
-        btn("next", last ? "Finish → final depths" : "Next card", p === "revealed", p === "revealed"),
+        btn("next", last ? "Finish → results" : "Next card", p === "revealed", p === "revealed"),
         btn("final", "Jump to final", false, p !== "idle" && p !== "final"))),
     h("p", { class: "muted small" }, "Open ", h("a", { href: "/wall", target: "_blank" }, "/wall"),
       " on the projector. Players join at /live (QR on the wall)."));

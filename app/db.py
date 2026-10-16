@@ -10,6 +10,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS companies (
   id               INTEGER PRIMARY KEY,
   name             TEXT NOT NULL,
+  emoji            TEXT DEFAULT '',
   sector           TEXT DEFAULT '',
   one_liner        TEXT DEFAULT '',
   claim_ask        TEXT DEFAULT '',
@@ -46,7 +47,6 @@ CREATE TABLE IF NOT EXISTS dives (
 CREATE TABLE IF NOT EXISTS players (
   id           INTEGER PRIMARY KEY,
   device_token TEXT UNIQUE,
-  initials     TEXT,
   handle       TEXT,
   is_seed      INTEGER DEFAULT 0,
   last_seen    REAL,
@@ -57,15 +57,11 @@ CREATE TABLE IF NOT EXISTS votes (
   player_id   INTEGER REFERENCES players(id) ON DELETE CASCADE,
   dive_id     INTEGER REFERENCES dives(id) ON DELETE CASCADE,
   company_id  INTEGER REFERENCES companies(id) ON DELETE CASCADE,
-  round       INTEGER,
+  round       INTEGER DEFAULT 1,  -- always 1 now; kept so older databases still load
   novel       INTEGER,
   useful      INTEGER,
   plausible   INTEGER,
   investable  INTEGER,
-  stuck       INTEGER DEFAULT 0,
-  points      INTEGER,
-  bonus       INTEGER,
-  bonus_axes  TEXT,
   is_seed     INTEGER DEFAULT 0,
   created_at  TEXT,
   UNIQUE (player_id, dive_id, company_id, round)
@@ -101,8 +97,15 @@ def get_db():
         conn.close()
 
 
+# Columns added after the first release: (table, column, definition).
+MIGRATIONS = [("companies", "emoji", "TEXT DEFAULT ''")]
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    for table, column, definition in MIGRATIONS:
+        if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.commit()
 
 

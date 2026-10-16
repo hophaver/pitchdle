@@ -35,7 +35,7 @@ function companyTable() {
       h("button", { class: "btn small", onclick: () => hideReal(false) }, "Show real companies"),
       h("button", { class: "btn small primary", onclick: () => { editing = {}; render(); } }, "+ Add company")),
     h("div", { class: "table-wrap" }, h("table", { class: "data" },
-      h("thead", {}, h("tr", {}, ["Name", "Sector", "Active", "Real", ...AXES.map((a) => AXIS[a].name), "Composite", "Coverage", "Reads", ""].map((t) => h("th", {}, t)))),
+      h("thead", {}, h("tr", {}, ["Name", "Sector", "Active", "Real", ...AXES.map((a) => AXIS[a]), "Composite", "Coverage", "Answers", ""].map((t) => h("th", {}, t)))),
       h("tbody", {}, companies.map((c) => h("tr", {},
         h("td", {}, h("b", {}, c.name)),
         h("td", {}, c.sector),
@@ -52,7 +52,7 @@ function companyTable() {
 
 function companyBody(c, overrides = {}) {
   return {
-    name: c.name, sector: c.sector || "", one_liner: c.one_liner || "", claim_ask: c.claim_ask || "",
+    name: c.name, emoji: c.emoji || "", sector: c.sector || "", one_liner: c.one_liner || "", claim_ask: c.claim_ask || "",
     website: c.website || "", facts: c.facts || [], evidence: c.evidence || {}, evidence_note: c.evidence_note || "",
     is_real: !!c.is_real, active: c.active === undefined ? true : !!c.active, ...overrides,
   };
@@ -121,7 +121,7 @@ function editor() {
 
   async function save() {
     const body = {
-      name: f.name.value.trim(), sector: f.sector.value, one_liner: f.one_liner.value, claim_ask: f.claim_ask.value,
+      name: f.name.value.trim(), emoji: f.emoji.value.trim(), sector: f.sector.value, one_liner: f.one_liner.value, claim_ask: f.claim_ask.value,
       website: f.website.value.trim(), facts: textToFacts(f.facts.value), evidence: collectEvidence(),
       evidence_note: f.note.value, is_real: isReal.checked, active: active.checked,
     };
@@ -145,19 +145,20 @@ function editor() {
 
   return h("section", { class: "panel" },
     h("div", { class: "row" }, h("h2", { style: { margin: 0 } }, c.id ? `Edit ${c.name}` : "Add company"), h("span", { class: "spacer" }),
-      c.id ? h("span", { class: "chip" }, `Engine ${fmt1(c.engine_composite)} · ${AXES.map((a) => `${AXIS[a].name[0]} ${fmt1(c.engine_axes[a])}`).join(" ")}`) : null,
+      c.id ? h("span", { class: "chip" }, `Engine ${fmt1(c.engine_composite)} · ${AXES.map((a) => `${AXIS[a][0]} ${fmt1(c.engine_axes[a])}`).join(" ")}`) : null,
       h("button", { class: "btn small", onclick: () => { editing = null; render(); } }, "Close")),
     h("div", { class: "form-grid", style: { marginTop: "1rem" } },
       input("name", "Name", c.name),
+      input("emoji", "Picture (one emoji)", c.emoji),
       input("sector", "Sector", c.sector),
       input("website", "Website (optional, for recrawl)", c.website),
       h("label", { class: "row" }, isReal, "Real startup"),
       h("label", { class: "row" }, active, "Active (in rotation)")),
     h("div", { class: "form-grid", style: { marginTop: ".8rem" } },
-      input("one_liner", "What the company does (one line)", c.one_liner),
-      input("claim_ask", "Claim / ask (one line)", c.claim_ask)),
+      input("one_liner", "The pitch: one concrete line (show, don't tell)", c.one_liner),
+      input("claim_ask", "The ask, e.g. “€500k to build ten more rafts”", c.claim_ask)),
     h("div", { class: "form-grid", style: { marginTop: ".8rem" } },
-      input("facts", "Second-look facts, one per line as “Label: value” (1–2)", factsToText(c.facts), { textarea: true }),
+      input("facts", "Facts for the wall reveal, one per line as “Label: value” (1–2)", factsToText(c.facts), { textarea: true }),
       input("note", "Evidence note (sources)", c.evidence_note, { textarea: true })),
     h("h3", { style: { marginTop: "1.2rem" } }, "Evidence (0–5, blank = unknown)"),
     h("p", { class: "muted small" }, "The engine scores only what's known and reports coverage. TRL comes from evidence, never a self-claim."),
@@ -193,7 +194,7 @@ function diveSection() {
     if (!label.value.trim() || !ids.length) return PD.toast("Give it a label and at least one company");
     try {
       await post("/api/admin/dives", { label: label.value.trim(), company_ids: ids, mode: mode.value, date: date.value.trim() || null });
-      PD.toast("Dive created");
+      PD.toast("Set created");
       await refresh();
     } catch (e) { PD.toast(e.message); }
   }
@@ -203,12 +204,12 @@ function diveSection() {
     await refresh();
   }
   async function del(d) {
-    if (!confirm(`Delete dive ${d.label} and its votes?`)) return;
+    if (!confirm(`Delete set ${d.label} and its votes?`)) return;
     await post(`/api/admin/dives/${d.id}`, undefined, "DELETE");
     await refresh();
   }
   return h("section", { class: "panel" },
-    h("h2", {}, "Dives"),
+    h("h2", {}, "Sets"),
     h("div", { class: "table-wrap" }, h("table", { class: "data" },
       h("thead", {}, h("tr", {}, ["Label", "Mode", "Date", "Cards", "Players", ""].map((t) => h("th", {}, t)))),
       h("tbody", {}, dives.map((d) => h("tr", {},
@@ -217,12 +218,12 @@ function diveSection() {
         h("td", { class: "num" }, d.players),
         h("td", {}, h("div", { class: "row" },
           d.mode === "daily" ? h("a", { class: "btn small", href: `/play?dive=${d.id}`, target: "_blank" }, "Play") : null,
-          h("button", { class: "btn small", onclick: () => demo(d), title: "30 fake players, flagged as seed votes" }, "Load demo votes"),
+          h("button", { class: "btn small", onclick: () => demo(d), title: "30 fake players, flagged as demo votes" }, "Load demo votes"),
           h("button", { class: "btn small danger", onclick: () => del(d) }, "Delete")))))))),
-    h("h3", { style: { marginTop: "1rem" } }, "New dive"),
+    h("h3", { style: { marginTop: "1rem" } }, "New set"),
     h("div", { class: "form-grid" }, h("label", {}, "Label", label), h("label", {}, "Mode", mode), h("label", {}, "Date", date)),
     h("div", { class: "form-grid", style: { marginTop: ".6rem" } }, picks.map((p, i) => h("label", {}, `Card ${i + 1}`, p))),
-    h("div", { class: "btns" }, h("button", { class: "btn primary", onclick: create }, "Create dive")));
+    h("div", { class: "btns" }, h("button", { class: "btn primary", onclick: create }, "Create set")));
 }
 
 function sessionSection() {
@@ -237,7 +238,7 @@ function sessionSection() {
     h("h2", {}, "Session"),
     h("div", { class: "ctl-buttons" },
       reset("seed", "Clear demo votes? Removes all seed players and their votes."),
-      reset("real", "Clear real votes? Removes every real player's answers and leaderboard entries."),
+      reset("real", "Clear real votes? Removes every real player's answers."),
       reset("all", "Clear all votes? Wipes every answer, real and demo."),
       reset("everything", "Reset everything? Deletes all data and reloads the seed companies and dives.")),
     h("h3", { style: { marginTop: "1rem" } }, "Export host insights (real votes only)"),
