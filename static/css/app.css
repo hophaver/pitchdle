@@ -325,6 +325,10 @@ body.tool {
 .btn.danger { color: var(--bad); }
 .btn.danger:hover { border-color: var(--bad); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
+.seg { display: inline-flex; }
+.seg .btn { border-radius: 0; }
+.seg .btn:first-child { border-radius: var(--t-radius-sm) 0 0 var(--t-radius-sm); }
+.seg .btn:last-child { border-radius: 0 var(--t-radius-sm) var(--t-radius-sm) 0; margin-left: -1px; }
 .btn.busy { cursor: progress; opacity: .7; }
 .btns { display: flex; gap: .5rem; margin-top: 1rem; flex-wrap: wrap; }
 .chip { display: inline-flex; align-items: center; gap: .3rem; padding: .15rem .6rem; border-radius: 6px; background: var(--paper); border: 1px solid var(--line); font-size: .8rem; font-weight: 600; }
@@ -422,6 +426,8 @@ table.data td.wide { min-width: 280px; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
 .grid-full { grid-column: 1 / -1; }
 .factor-trail { display: flex; flex-wrap: wrap; gap: .35rem; }
+.thesis-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .75rem; }
+.thesis-card h4 .co-meta { display: block; font-weight: 400; }
 .fit-hi { color: var(--good); font-weight: 700; }
 .fit-lo { color: var(--bad); font-weight: 700; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .8rem; }

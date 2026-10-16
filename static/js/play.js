@@ -548,7 +548,9 @@ async function startSolo() {
   S.set = data.dive;
   S.cards = data.cards;
   S.answered = new Set(data.answered);
-  if (!S.cards.length) return show(waitCard(colorFor(0), -1, 0, "–", "No cards today", "check back soon"));
+  if (!S.cards.length) {
+    return show(waitCard(colorFor(0), -1, 0, "–", "No cards today", data.notice || "check back soon"));
+  }
   if (S.answered.size === S.cards.length) return showResults();
   return showStart();
 }
@@ -579,6 +581,7 @@ function renderLive(st) {
     case "idle":
       return show(card(colorFor(0), cardTop(-1, 0, ""),
         h("div", { class: "hero" }, h("h1", {}, "No live"), h("span", { class: "hand" }, "game"), h("h1", {}, "right now")),
+        st.notice ? h("p", { class: "wait-sub" }, st.notice) : null,
         h("div", { class: "actions" }, h("a", { class: "pill", href: "/play" }, "Play today's →"))));
     case "lobby":
       return show(card(colorFor(0), cardTop(-1, 0, ""),

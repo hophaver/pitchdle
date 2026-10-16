@@ -21,9 +21,13 @@ class _Text(HTMLParser):
 
     def __init__(self):
         super().__init__()
-        self.parts, self.depth = [], 0
+        self.parts, self.depth, self.description = [], 0, ""
 
     def handle_starttag(self, tag, attrs):
+        if tag == "meta" and not self.description:
+            a = {k.lower(): (v or "") for k, v in attrs}
+            if a.get("name", "").lower() == "description" or a.get("property", "").lower() == "og:description":
+                self.description = re.sub(r"\s+", " ", a.get("content", "")).strip()
         if tag in self.SKIP:
             self.depth += 1
 
@@ -65,6 +69,7 @@ def fetch(url: str) -> dict:
     parser = _Text()
     parser.feed(raw.decode(charset, errors="replace"))
     text = re.sub(r"\s+", " ", " ".join(parser.parts))
-    result = {"url": url, "fetched_at": int(time.time()), "text": text, "cached": False}
+    result = {"url": url, "fetched_at": int(time.time()), "text": text, "description": parser.description[:300],
+              "cached": False}
     cache.write_text(json.dumps(result))
     return result

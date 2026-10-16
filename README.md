@@ -50,6 +50,23 @@ Copy `.env.example` to `.env` to override any of these:
 | `BASE_URL` | from the request | Used for the QR code |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | |
 | `LIVE_SECONDS` | `25` | Live-round timer |
+| `APP_MODE` | `demo` | Starting mode on a fresh database; the Admin toggle overrides it |
+| `DISCOVER_AUTO` | `1` | Search for real startups when Live mode is switched on |
+| `DISCOVER_FIELDS` | `ocean tech,blue economy,aquaculture` | Fields to search, one search each |
+| `DISCOVER_REGION` | empty | Added to every search, e.g. `Finland` |
+| `DISCOVER_DEPTH` | `3` | Startups added per field per run (1–10) |
+| `DISCOVER_MAX` | `10` | Most auto-found startups kept |
+| `DISCOVER_EXCLUDE` | empty | Comma list of words/names to skip |
+
+### Demo and live mode
+
+The toggle at the top of Admin switches the game and the host dashboard together: **Demo** uses the seeded
+sample companies, **Live** uses real ones. Each mode has its own daily set and its own sets list.
+
+In Live mode the app searches open feeds (Hacker News, Google News) for the `DISCOVER_*` fields in the background
+and adds what it finds to the dashboard, inactive. Players see a "check back soon" notice until you press
+**Add to game** on at least one. Name extraction from headlines is heuristic, so check each one first
+(funds and news aggregators slip through; add them to `DISCOVER_EXCLUDE`).
 
 Engine weights are in `weights.json`. After editing them, run `.venv/bin/python -m app.seed --rescore`.
 

@@ -116,10 +116,11 @@ def primed_evidence(text: str) -> dict:
 
 def expand_candidate(c: dict) -> dict:
     """Site signals plus an engine run on the little they prove. Any failure gives an empty hint."""
-    text, errors = "", []
+    text, description, errors = "", "", []
     if c.get("url"):
         try:
-            text = website.fetch(c["url"])["text"]
+            page = website.fetch(c["url"])
+            text, description = page["text"], page.get("description", "")
         except Exception as e:  # noqa: BLE001
             errors.append(f"website: {e}")
     found = signals(text) if text else {}
@@ -129,6 +130,7 @@ def expand_candidate(c: dict) -> dict:
         "signals": {k: v["count"] for k, v in found.items()},
         "flags": ["funding"] if "funding" in found else [],
         "evidence": primed,
+        "description": description,
         "composite": result["composite"],
         "axes": result["axes"],
         "coverage": {"assessed": result["coverage"]["assessed"], "total": result["coverage"]["total"]},

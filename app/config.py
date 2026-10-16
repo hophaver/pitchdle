@@ -18,6 +18,11 @@ def _load_dotenv(path: Path = ROOT / ".env") -> None:
 
 _load_dotenv()
 
+
+def _csv(value: str | None) -> list[str]:
+    return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
 DB_PATH = os.environ.get("DB_PATH") or str(ROOT / "data" / "pitchdle.db")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or "admin"
 BASE_URL = (os.environ.get("BASE_URL") or "").rstrip("/")
@@ -33,3 +38,15 @@ GUEST_MAX_SHARE = float(os.environ.get("GUEST_MAX_SHARE") or 0.4)
 WEIGHTS_PATH = ROOT / "weights.json"
 CRAWL_CACHE = ROOT / "data" / "crawl_cache"
 STATIC_DIR = ROOT / "static"
+
+# Demo shows the seeded sample companies; live shows real ones. This is only the starting mode for a
+# fresh database: after that the admin toggle decides (stored in the settings table).
+APP_MODE = "live" if (os.environ.get("APP_MODE") or "").strip().lower() == "live" else "demo"
+# Live-mode discovery: which real startups to look for, and how many. Found startups land on the host
+# dashboard and join the game only once the host activates them.
+DISCOVER_AUTO = (os.environ.get("DISCOVER_AUTO") or "1").strip().lower() not in ("0", "false", "no", "off")
+DISCOVER_FIELDS = _csv(os.environ.get("DISCOVER_FIELDS") or "ocean tech,blue economy,aquaculture")
+DISCOVER_REGION = (os.environ.get("DISCOVER_REGION") or "").strip()
+DISCOVER_DEPTH = max(1, min(10, int(os.environ.get("DISCOVER_DEPTH") or 3)))
+DISCOVER_MAX = max(1, int(os.environ.get("DISCOVER_MAX") or 10))
+DISCOVER_EXCLUDE = [w.lower() for w in _csv(os.environ.get("DISCOVER_EXCLUDE"))]

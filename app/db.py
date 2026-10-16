@@ -115,6 +115,11 @@ CREATE TABLE IF NOT EXISTS candidates (
   company_id    INTEGER REFERENCES companies(id) ON DELETE SET NULL,
   created_at    TEXT
 );
+-- Small key/value store for runtime switches: the demo/live mode and the autofill status.
+CREATE TABLE IF NOT EXISTS settings (
+  key    TEXT PRIMARY KEY,
+  value  TEXT
+);
 """
 
 
@@ -142,6 +147,8 @@ MIGRATIONS = [
     ("companies", "emoji", "TEXT DEFAULT ''"),
     ("players", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"),
     ("companies", "pulse", "TEXT"),
+    ("dives", "pool", "TEXT DEFAULT 'demo'"),
+    ("companies", "origin", "TEXT DEFAULT ''"),  # 'discovery-auto' for startups the live-mode autofill found  # which companies a set draws on: demo (sample) or live (real)
 ]
 
 

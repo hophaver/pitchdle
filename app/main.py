@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
-from . import accounts, config, live, scoring, seed, service
+from . import accounts, autofill, config, live, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, now
 from .engine import AXES
 
@@ -31,6 +31,7 @@ async def lifespan(_app: FastAPI):
     if seed.seed_if_empty(db):
         log.warning("Pitchdle: empty database, loaded seed data into %s", config.DB_PATH)
     accounts.ensure_test_account(db)
+    autofill.maybe_start(db)  # live mode tops itself up in the background; demo mode does nothing
     db.close()
     if config.ADMIN_PASSWORD == "admin":
         log.warning("Pitchdle: ADMIN_PASSWORD is the default 'admin'. Set it before exposing this beyond localhost.")
@@ -217,6 +218,7 @@ def set_response(db, dive, player) -> dict:
         "dive": service.dive_payload(dive),
         "cards": [service.public_card(c) for c in comps],
         "answered": [c["id"] for c in comps if c["id"] in done],
+        "notice": None if comps else service.pool_notice(db, dive["pool"]),
     }
 
 
@@ -366,6 +368,7 @@ def live_base(db, st: dict) -> dict:
     dive = service.get_dive(db, st["dive_id"]) if st["dive_id"] else None
     comp = live.current_company(db, st)
     total = len(service.dive_companies(db, dive)) if dive else 0
+    notice = service.pool_notice(db, service.get_mode(db)) if st["phase"] == "idle" else None
     return {
         "phase": st["phase"],
         "dive": service.dive_payload(dive) | {"total": total} if dive else None,
@@ -375,7 +378,9 @@ def live_base(db, st: dict) -> dict:
         "seconds": config.LIVE_SECONDS,
         "joined": joined_count(db),
         "votes": len(service.card_votes(db, dive["id"], comp["id"])) if dive and comp else 0,
-        "key": f"{st['phase']}:{st['dive_id']}:{st['card_index']}",
+        # The notice is part of the key so phones drop it once real startups are in the game.
+        "key": f"{st['phase']}:{st['dive_id']}:{st['card_index']}{':notice' if notice else ''}",
+        "notice": notice,
     }
 
 
@@ -445,7 +450,7 @@ def host_overview(real_only: bool = False, db=Depends(get_db)):
 
 @app.get("/api/host/dives", dependencies=[Depends(require_admin)])
 def host_dives(db=Depends(get_db)):
-    rows = db.execute("SELECT * FROM dives ORDER BY id DESC").fetchall()
+    rows = db.execute("SELECT * FROM dives WHERE pool = ? ORDER BY id DESC", (service.get_mode(db),)).fetchall()
     counts = {r["dive_id"]: r["n"] for r in db.execute(
         "SELECT dive_id, COUNT(DISTINCT player_id) AS n FROM votes GROUP BY dive_id")}
     return [service.dive_payload(d) | {"company_ids": j(d["company_ids"], []), "players": counts.get(d["id"], 0)}
@@ -657,30 +662,8 @@ class DiscoverIn(BaseModel):
 
 @app.post("/api/admin/discover/search", dependencies=[Depends(require_admin)])
 def admin_discover_search(body: DiscoverIn, db=Depends(get_db)):
-    from .crawler import discovery, pulse
-    sector, country = clean_text(body.sector), clean_text(body.country)
-    query = f"{sector} {country}".strip()
-    found = []
-    for c in discovery.search_candidates(query, body.limit):
-        key = discovery.name_key(c["name"])
-        row = db.execute("SELECT * FROM candidates WHERE name_key = ?", (key,)).fetchone()
-        if row is None:
-            cid = db.execute(
-                "INSERT INTO candidates (name, name_key, url, source, snippet, sector_query, country_tag, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (c["name"], key, c["url"], c["source"], c["snippet"], sector, country, now())).lastrowid
-        else:
-            cid = row["id"]
-            if not row["url"] and c["url"]:
-                db.execute("UPDATE candidates SET url = ? WHERE id = ?", (c["url"], cid))
-        row = db.execute("SELECT * FROM candidates WHERE id = ?", (cid,)).fetchone()
-        if row["status"] in ("new", "queued"):
-            hint = discovery.expand_candidate(dict(row))
-            db.execute("UPDATE candidates SET engine_hint = ?, pulse = ? WHERE id = ?",
-                       (dumps(hint), dumps(pulse.compute_pulse(row["name"])), cid))
-        db.commit()
-        found.append(candidate_out(db.execute("SELECT * FROM candidates WHERE id = ?", (cid,)).fetchone()))
-    return found
+    rows = autofill.store_candidates(db, clean_text(body.sector), clean_text(body.country), body.limit)
+    return [candidate_out(r) for r in rows]
 
 
 @app.get("/api/admin/discover", dependencies=[Depends(require_admin)])
@@ -722,14 +705,7 @@ def admin_discover_approve(cand_id: int, db=Depends(get_db)):
     row = get_candidate(db, cand_id)
     if row["status"] == "approved":
         raise HTTPException(409, "Already approved into companies.")
-    hint = j(row["engine_hint"], {}) or {}
-    body = CompanyIn(name=row["name"], sector=row["sector_query"], website=row["url"] or "",
-                     evidence=hint.get("evidence", {}), is_real=True, active=False,
-                     evidence_note=f"Auto-estimate from discovery ({row['source']}): {row['snippet']}")
-    cid = save_company(db, body, None)
-    db.execute("UPDATE companies SET pulse = ? WHERE id = ?", (row["pulse"], cid))
-    db.execute("UPDATE candidates SET status = 'approved', company_id = ? WHERE id = ?", (cid, cand_id))
-    db.commit()
+    cid = autofill.approve_candidate(db, row)
     return admin_company(db, service.get_company(db, cid))
 
 
@@ -752,6 +728,39 @@ def admin_hide_real(body: HideReal, db=Depends(get_db)):
     return {"ok": True}
 
 
+# --- demo / live mode -------------------------------------------------------------------------------
+
+def mode_payload(db) -> dict:
+    counts = db.execute(
+        "SELECT SUM(is_real = 0) AS demo, SUM(is_real = 1 AND active = 1) AS live_active, "
+        "SUM(is_real = 1 AND active = 0) AS live_pending FROM companies").fetchone()
+    return {"mode": service.get_mode(db), "autofill": autofill.status(db), "discover": autofill.settings_payload(),
+            "counts": {k: counts[k] or 0 for k in ("demo", "live_active", "live_pending")}}
+
+
+class ModeIn(BaseModel):
+    mode: str = Field(pattern="^(demo|live)$")
+
+
+@app.get("/api/admin/mode", dependencies=[Depends(require_admin)])
+def admin_mode(db=Depends(get_db)):
+    return mode_payload(db)
+
+
+@app.post("/api/admin/mode", dependencies=[Depends(require_admin)])
+def admin_set_mode(body: ModeIn, db=Depends(get_db)):
+    service.set_setting(db, "mode", body.mode)
+    out = mode_payload(db)
+    out["autofill_start"] = autofill.maybe_start(db) if body.mode == "live" else None
+    return out | {"autofill": autofill.status(db)}
+
+
+@app.post("/api/admin/autofill", dependencies=[Depends(require_admin)])
+def admin_autofill(db=Depends(get_db)):
+    started = autofill.maybe_start(db, force=True)
+    return mode_payload(db) | {"autofill_start": started}
+
+
 class DiveIn(BaseModel):
     label: str = Field(min_length=1)
     company_ids: list[int] = Field(min_length=1)
@@ -761,8 +770,8 @@ class DiveIn(BaseModel):
 
 @app.post("/api/admin/dives", dependencies=[Depends(require_admin)])
 def admin_create_dive(body: DiveIn, db=Depends(get_db)):
-    cid = db.execute("INSERT INTO dives (label, date, company_ids, mode, created_at) VALUES (?, ?, ?, ?, ?)",
-                     (body.label, body.date, dumps(body.company_ids), body.mode, now())).lastrowid
+    cid = db.execute("INSERT INTO dives (label, date, company_ids, mode, pool, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                     (body.label, body.date, dumps(body.company_ids), body.mode, service.get_mode(db), now())).lastrowid
     db.commit()
     return service.dive_payload(service.get_dive(db, cid))
 
@@ -822,15 +831,15 @@ def export_csv(db=Depends(get_db)):
                 "ocean_impact", "business_ready", "tech_trl", "investment_ready",
                 "thesis_apelago", "thesis_redstone",
                 "gap", "coverage", "flags", "top_action", "web_items", "web_lean", "verdict", "verdict_reason"])
+    blank = lambda v: "" if v is None else v
     for c in data["companies"]:
         cm = c["crowd"]["means"] or {}
         rd = c["readiness"]
         th = c["theses"]
         w.writerow([c["name"], c["sector"], c["crowd"]["n"], *[cm.get(a, "") for a in AXES], c["crowd"]["composite"] or "",
                     *[c["engine"]["axes"].get(a, "") for a in AXES], c["engine"]["composite"],
-                    rd["ocean_impact"]["score"] or "", rd["business"]["score"] or "", rd["tech"]["trl"] or "",
-                    rd["investment"]["score"] or "",
-                    th["apelago"]["score"] or "", th["redstone"]["score"] or "",
+                    *[blank(v) for v in (rd["ocean_impact"]["score"], rd["business"]["score"], rd["tech"]["trl"],
+                                         rd["investment"]["score"], th["apelago"]["score"], th["redstone"]["score"])],
                     "" if c["gap"] is None else c["gap"],
                     f"{c['coverage'].get('assessed', '')}/{c['coverage'].get('total', '')}",
                     "; ".join(f["label"] for f in c["flags"]),

@@ -11,6 +11,9 @@ def client(tmp_path, monkeypatch):
     # Tests don't depend on a local .env; the test-account test sets its own.
     monkeypatch.setattr(config, "TEST_USERNAME", "")
     monkeypatch.setattr(config, "TEST_PASSWORD", "")
+    # Same for the demo/live settings: start in demo, and never crawl in the background during tests.
+    monkeypatch.setattr(config, "APP_MODE", "demo")
+    monkeypatch.setattr(config, "DISCOVER_AUTO", False)
     from app.main import app
     with TestClient(app) as c:
         yield c

@@ -40,6 +40,15 @@ def test_readiness_levels_match_the_brief():
     assert rd["ocean_impact"]["score"] is not None
 
 
+def test_readiness_separates_the_demo_cases():
+    tide = engine.readiness(BY_NAME["TideLedger"]["evidence"])
+    rakko = engine.readiness(BY_NAME["Rakko Feed"]["evidence"])
+    # TideLedger: a real problem (moderate impact) but nothing investable behind it.
+    assert 2.5 <= tide["ocean_impact"]["score"] <= 3.5
+    assert tide["investment"]["score"] <= 2.0 and tide["business"]["score"] <= 2.0
+    assert rakko["investment"]["score"] >= 3.8 and rakko["business"]["score"] >= 3.8
+
+
 def test_readiness_is_honest_about_missing_evidence():
     rd = engine.readiness({})
     assert rd["tech"]["trl"] is None and rd["tech"]["score"] is None
@@ -56,7 +65,9 @@ def test_theses_return_score_and_evidence_grounded_why():
     # Rakko Feed is strong on fundamentals, so the investment fit should be high.
     assert th["redstone"]["score"] >= 3.8
     # The demo case with a weak team scores low on the accelerator/team-weighted fit.
-    assert engine.theses(BY_NAME["TideLedger"]["evidence"])["apelago"]["score"] <= 3.0
+    tide = engine.theses(BY_NAME["TideLedger"]["evidence"])
+    assert tide["apelago"]["score"] <= 2.2 and tide["redstone"]["score"] <= 2.2
+    assert tide["redstone"]["risks"] and "watch" in tide["redstone"]["why"]
 
 
 def test_theses_unknown_evidence_reports_not_invented():
@@ -67,6 +78,8 @@ def test_theses_unknown_evidence_reports_not_invented():
 def test_factor_trail_lists_every_known_factor():
     trail = engine.factor_trail(BY_NAME["BrineWorks"]["evidence"])
     assert trail and all({"key", "label", "value"} <= set(f) for f in trail)
+    assert all(f["value"] == engine.factor_value(BY_NAME["BrineWorks"]["evidence"], f["key"]) for f in trail)
+    assert len(engine.factor_trail({"redstone": {"team": 4}})) == 1
     labels = [f["label"] for f in trail]
     assert "Patents" in labels  # BrineWorks has patents: 0 -> a 1.0 factor is present
     assert "Tech readiness (TRL)" in labels

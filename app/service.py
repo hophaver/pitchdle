@@ -15,6 +15,40 @@ def new_handle(rng: random.Random | None = None) -> str:
     return f"{rng.choice(HANDLE_EMOJI)} {rng.randint(10, 99)}"
 
 
+# --- settings and mode ---------------------------------------------------------------------------
+
+def get_setting(db, key: str, default=None):
+    row = db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return j(row["value"], default) if row else default
+
+
+def set_setting(db, key: str, value) -> None:
+    db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+               (key, dumps(value)))
+    db.commit()
+
+
+def get_mode(db) -> str:
+    """demo = the seeded sample companies; live = real ones. Switches the game and the dashboard together."""
+    return get_setting(db, "mode") or config.APP_MODE
+
+
+def pool_is_real(mode: str) -> int:
+    return 1 if mode == "live" else 0
+
+
+LIVE_NOTICE = "We're lining up real startups for today's set. Check back soon."
+
+
+def pool_notice(db, mode: str) -> str | None:
+    """What a player sees when live mode has no real startups in the game yet."""
+    if mode != "live":
+        return None
+    if db.execute("SELECT 1 FROM companies WHERE active = 1 AND is_real = 1 LIMIT 1").fetchone():
+        return None
+    return LIVE_NOTICE
+
+
 # --- rows ---------------------------------------------------------------------------------------
 
 def get_company(db: sqlite3.Connection, cid: int):
@@ -51,17 +85,28 @@ def seconds_to_next_set() -> int:
 
 
 def todays_dive(db):
-    """The daily set for today; generated deterministically from active companies if missing."""
+    """Today's daily set for the current mode; generated deterministically from that pool's active companies.
+
+    A set made while the pool was empty (live mode before any startup was activated) is filled in once
+    companies are available, so the day doesn't stay empty.
+    """
     today = date.today().isoformat()
-    row = db.execute("SELECT * FROM dives WHERE mode = 'daily' AND date = ? ORDER BY id DESC LIMIT 1",
-                     (today,)).fetchone()
+    pool = get_mode(db)
+    ids = [r["id"] for r in db.execute("SELECT id FROM companies WHERE active = 1 AND is_real = ? ORDER BY id",
+                                       (pool_is_real(pool),))]
+    picked = random.Random(f"{today}:{pool}" if pool != "demo" else today).sample(ids, min(5, len(ids)))
+    row = db.execute("SELECT * FROM dives WHERE mode = 'daily' AND date = ? AND pool = ? ORDER BY id DESC LIMIT 1",
+                     (today, pool)).fetchone()
     if row:
+        if not j(row["company_ids"], []) and picked:
+            db.execute("UPDATE dives SET company_ids = ? WHERE id = ?", (dumps(picked), row["id"]))
+            db.commit()
+            return get_dive(db, row["id"])
         return row
-    ids = [r["id"] for r in db.execute("SELECT id FROM companies WHERE active = 1 ORDER BY id")]
-    picked = random.Random(today).sample(ids, min(5, len(ids)))
-    count = db.execute("SELECT COUNT(*) FROM dives WHERE mode = 'daily'").fetchone()[0]
-    cur = db.execute("INSERT INTO dives (label, date, company_ids, mode, created_at) VALUES (?, ?, ?, 'daily', ?)",
-                     (f"#{count + 1}", today, dumps(picked), now()))
+    count = db.execute("SELECT COUNT(*) FROM dives WHERE mode = 'daily' AND pool = ?", (pool,)).fetchone()[0]
+    label = f"#{count + 1}" if pool == "demo" else f"Live #{count + 1}"
+    cur = db.execute("INSERT INTO dives (label, date, company_ids, mode, pool, created_at) VALUES (?, ?, ?, 'daily', ?, ?)",
+                     (label, today, dumps(picked), pool, now()))
     db.commit()
     return get_dive(db, cur.lastrowid)
 
@@ -158,10 +203,10 @@ def history(db, pid: int) -> dict:
     """Every daily set up to today with how far the player got, plus their running stats."""
     todays_dive(db)
     today = date.today()
-    # One set per day: the newest, matching todays_dive.
+    # One set per day: the newest in the current mode's pool, matching todays_dive.
     by_day = {}
-    for d in db.execute("SELECT * FROM dives WHERE mode = 'daily' AND date IS NOT NULL AND date <= ? ORDER BY id",
-                        (today.isoformat(),)):
+    for d in db.execute("SELECT * FROM dives WHERE mode = 'daily' AND date IS NOT NULL AND date <= ? AND pool = ? "
+                        "ORDER BY id", (today.isoformat(), get_mode(db))):
         by_day[d["date"]] = d
     done_days, leans, sets = set(), {"higher": 0, "with": 0, "lower": 0}, []
     for day in sorted(by_day, reverse=True):
@@ -282,14 +327,13 @@ def company_insight(db, comp, real_only: bool) -> dict:
         # Thesis fit also steers the "next" list: a strong accelerator fit flags the accelerator-style
         # opportunities (partners, grants, customers); a strong investment fit flags investors.
         k = o["kind"]
-        if k in ("partner", "grant", "customer") and theses.get("apelago", {}).get("score"):
-            boost = (theses["apelago"]["score"] - 2.5) * 0.15
+        thesis = ("apelago", "fits the accelerator thesis") if k in ("partner", "grant", "customer") \
+            else ("redstone", "fits the investment thesis") if k == "investor" else None
+        if thesis and theses[thesis[0]]["score"] is not None:
+            boost = (theses[thesis[0]]["score"] - 2.5) * 0.15
             score += boost
-            reasons.append("fits the accelerator thesis")
-        elif k == "investor" and theses.get("redstone", {}).get("score"):
-            boost = (theses["redstone"]["score"] - 2.5) * 0.15
-            score += boost
-            reasons.append("fits the investment thesis")
+            if boost > 0:
+                reasons.append(thesis[1])
         score = round(score, 2)
         actions.append({"kind": o["kind"], "name": o["name"], "why": o["why"], "fit": o["fit"],
                         "stage_fit": o["stage_fit"], "score": score, "boosted": reasons})
@@ -302,6 +346,7 @@ def company_insight(db, comp, real_only: bool) -> dict:
         "active": bool(comp["active"]),
         "engine": {"axes": engine, "composite": ec},
         "readiness": readiness_levels, "theses": theses, "factors": factors,
+        "evidence_note": comp["evidence_note"] or "",
         "coverage": j(comp["engine_coverage"], {}),
         "crowd": {"n": room["n"], "signed_in": room["signed_in"], "means": room["means"],
                   "composite": room["composite"], "consensus": room["consensus"]},
@@ -311,5 +356,7 @@ def company_insight(db, comp, real_only: bool) -> dict:
 
 
 def overview(db, real_only: bool) -> dict:
-    comps = db.execute("SELECT * FROM companies ORDER BY name").fetchall()
-    return {"companies": [company_insight(db, c, real_only) for c in comps], "real_only": real_only}
+    mode = get_mode(db)
+    comps = db.execute("SELECT * FROM companies WHERE is_real = ? ORDER BY name", (pool_is_real(mode),)).fetchall()
+    return {"companies": [company_insight(db, c, real_only) for c in comps], "real_only": real_only,
+            "mode": mode, "autofill": get_setting(db, "autofill")}

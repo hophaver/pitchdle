@@ -168,9 +168,11 @@ def _thesis_why(evidence: dict, score: float | None, spec: list, weights: dict) 
     risks = [f for f in scored if f["value"] <= 2.0]
     if score is None:
         return "Not enough evidence to assess fit.", strengths[:3], risks[:3]
-    top = ", ".join(f"{f['label'].lower()} {f['value']:.1f}" for f in strengths[:2]) or "nothing rated high"
-    weak = ", ".join(f"{f['label'].lower()} at {f['value']:.1f}" for f in risks[:2]) or "no obvious weaknesses"
-    return f"Fits on {top}; watch {weak}.", strengths[:3], risks[:3]
+    top = ", ".join(f"{f['label'].lower()} {f['value']:.1f}" for f in strengths[:2])
+    weak = ", ".join(f"{f['label'].lower()} {f['value']:.1f}" for f in risks[::-1][:2])
+    fits = f"Fits on {top}" if top else "No standout strengths"
+    watch = f"watch {weak}" if weak else "no obvious weaknesses"
+    return f"{fits}; {watch}.", strengths[:3], risks[::-1][:3]
 
 
 def theses(evidence: dict, weights: dict | None = None) -> dict:

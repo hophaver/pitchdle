@@ -6,6 +6,8 @@ let dives = [];
 let submissions = [];
 let users = { users: [], guests: 0 };
 let candidates = [];
+let modeInfo = null;
+let autofillPoll = null;
 const discoverFilter = { status: "", sector: "", country: "" };
 let searching = false;
 let factors = null;
@@ -30,9 +32,63 @@ function textToOpps(text) {
 
 async function load() {
   const qs = new URLSearchParams(Object.entries(discoverFilter).filter(([, v]) => v)).toString();
-  [companies, dives, factors, submissions, users, candidates] = await Promise.all([
+  [companies, dives, factors, submissions, users, candidates, modeInfo] = await Promise.all([
     api("/api/admin/companies"), api("/api/host/dives"), factors ? factors : api("/api/admin/factors"),
-    api("/api/admin/submissions"), api("/api/admin/users"), api(`/api/admin/discover${qs ? `?${qs}` : ""}`)]);
+    api("/api/admin/submissions"), api("/api/admin/users"), api(`/api/admin/discover${qs ? `?${qs}` : ""}`),
+    api("/api/admin/mode")]);
+  // Keep polling while a background discovery run is going, so its results show up on their own.
+  clearTimeout(autofillPoll);
+  if (modeInfo.autofill.running) autofillPoll = setTimeout(refresh, 3000);
+}
+
+const AUTOFILL_START = {
+  started: "Looking for real startups…", running: "Discovery is already running",
+  "cap-reached": "Already at the DISCOVER_MAX cap", "not-live": "Switch to Live first", "auto-off": "Auto discovery is off",
+};
+
+// Demo shows the seeded sample companies everywhere (game + dashboard); live shows real ones.
+function modeSection() {
+  const m = modeInfo;
+  const live = m.mode === "live";
+  const af = m.autofill;
+  const d = m.discover;
+  async function setMode(mode) {
+    if (mode === m.mode) return;
+    try {
+      const r = await post("/api/admin/mode", { mode });
+      PD.toast(mode === "demo" ? "Demo mode" : r.autofill_start === "started" ? "Live mode · looking for real startups…" : "Live mode");
+      await refresh();
+    } catch (e) { PD.toast(e.message); }
+  }
+  async function findMore() {
+    try {
+      const r = await post("/api/admin/autofill", {});
+      PD.toast(AUTOFILL_START[r.autofill_start] || r.autofill_start);
+      await refresh();
+    } catch (e) { PD.toast(e.message); }
+  }
+  const seg = (value, text) => h("button", { class: `btn${m.mode === value ? " primary" : ""}`, "aria-pressed": String(m.mode === value),
+    onclick: () => setMode(value) }, text);
+  const c = m.counts;
+  return h("section", { class: "panel" },
+    h("div", { class: "row" }, h("h2", { style: { margin: 0 } }, "Mode"), h("span", { class: "spacer" }),
+      h("div", { class: "seg", role: "group", "aria-label": "Mode" }, seg("demo", "Demo"), seg("live", "Live"))),
+    h("p", { class: "muted small" }, live
+      ? `The game and dashboard show real startups. ${c.live_active} in the game, ${c.live_pending} waiting for you to add them.`
+      : `The game and dashboard show the ${c.demo} sample companies.`),
+    live && !c.live_active ? h("p", { class: "callout" },
+      "No real startups are in the game yet, so players see a “check back soon” notice. Add found startups below with “Add to game”.") : null,
+    live ? [
+      h("div", { class: "row" },
+        h("span", { class: "small" }, af.running ? h("b", {}, "Discovery running…")
+          : af.finished_at ? `Last run ${af.finished_at.slice(0, 16).replace("T", " ")}: ${af.added.length} added${af.added.length ? ` (${af.added.join(", ")})` : ""}` : "Discovery hasn't run yet."),
+        h("span", { class: "spacer" }),
+        h("button", { class: `btn small${af.running ? " busy" : ""}`, disabled: af.running, onclick: findMore }, "Find more now")),
+      af.errors && af.errors.length ? h("p", { class: "thin small" }, af.errors.join(" · ")) : null,
+      h("p", { class: "muted small" },
+        `Searching ${d.fields.join(", ") || "(no fields)"}${d.region ? ` in ${d.region}` : ""} · depth ${d.depth} per field · `,
+        `${af.found}/${d.max} auto-found${d.exclude.length ? ` · skipping ${d.exclude.join(", ")}` : ""}`,
+        `${d.auto ? "" : " · auto-run off"}. Edit DISCOVER_* in .env and restart.`)] : null);
 }
 
 const LEAN_SHORT = { positive: "pos", negative: "neg", mixed: "mixed", neutral: "neutral", silent: "silent" };
@@ -152,13 +208,11 @@ function submissionSection() {
 function companyTable() {
   return h("section", { class: "panel" },
     h("div", { class: "row" }, h("h2", { style: { margin: 0 } }, "Companies"), h("span", { class: "spacer" }),
-      h("button", { class: "btn small", onclick: () => hideReal(true) }, "Hide real companies"),
-      h("button", { class: "btn small", onclick: () => hideReal(false) }, "Show real companies"),
       h("button", { class: "btn small primary", onclick: () => { editing = {}; render(); } }, "+ Add company")),
     h("div", { class: "table-wrap" }, h("table", { class: "data" },
       h("thead", {}, h("tr", {}, ["Name", "Sector", "Active", "Real", ...AXES.map((a) => AXIS[a]), "Composite", "Coverage", "Answers", ""].map((t) => h("th", {}, t)))),
       h("tbody", {}, companies.map((c) => h("tr", {},
-        h("td", {}, h("b", {}, c.name)),
+        h("td", {}, h("b", {}, c.name), c.origin === "discovery-auto" ? h("span", { class: "chip", style: { marginLeft: ".4rem" } }, "auto-found") : null),
         h("td", {}, c.sector),
         h("td", {}, h("input", { type: "checkbox", checked: !!c.active, onchange: (e) => quickSave(c, { active: e.target.checked }) })),
         h("td", {}, h("input", { type: "checkbox", checked: !!c.is_real, onchange: (e) => quickSave(c, { is_real: e.target.checked }) })),
@@ -167,6 +221,8 @@ function companyTable() {
         h("td", { class: "num" }, `${c.engine_coverage.assessed}/${c.engine_coverage.total}`),
         h("td", { class: "num" }, c.votes),
         h("td", {}, h("div", { class: "row" },
+          c.is_real && !c.active ? h("button", { class: "btn small primary", onclick: () => quickSave(c, { active: true }),
+            title: "Put it in the live game's rotation" }, "Add to game") : null,
           h("button", { class: "btn small", onclick: () => { editing = c; render(); window.scrollTo({ top: 0 }); } }, "Edit"),
           h("button", { class: "btn small danger", onclick: () => remove(c) }, "Delete")))))))));
 }
@@ -184,12 +240,6 @@ async function quickSave(c, overrides) {
     await post(`/api/admin/companies/${c.id}`, companyBody(c, overrides), "PUT");
     await refresh();
   } catch (e) { PD.toast(e.message); }
-}
-
-async function hideReal(hide) {
-  await post("/api/admin/hide-real", { hide });
-  PD.toast(hide ? "Real companies hidden from new dives" : "Real companies active again");
-  await refresh();
 }
 
 async function remove(c) {
@@ -318,8 +368,10 @@ function diveSection() {
   const label = h("input", { type: "text", placeholder: "e.g. JunctionX final" });
   const mode = h("select", {}, h("option", { value: "live" }, "live (host-paced)"), h("option", { value: "daily" }, "daily (solo)"));
   const date = h("input", { type: "text", placeholder: "YYYY-MM-DD (daily only)" });
+  // A set draws on the current mode's companies: sample ones in demo, real ones in live.
+  const pool = companies.filter((c) => !!c.is_real === (modeInfo.mode === "live"));
   const picks = Array.from({ length: 5 }, () => h("select", {}, h("option", { value: "" }, "—"),
-    companies.map((c) => h("option", { value: c.id }, c.name))));
+    pool.map((c) => h("option", { value: c.id }, c.name))));
   async function create() {
     const ids = picks.map((p) => Number(p.value)).filter(Boolean);
     if (!label.value.trim() || !ids.length) return PD.toast("Give it a label and at least one company");
@@ -340,7 +392,7 @@ function diveSection() {
     await refresh();
   }
   return h("section", { class: "panel" },
-    h("h2", {}, "Sets"),
+    h("h2", {}, `Sets (${modeInfo.mode} companies)`),
     h("div", { class: "table-wrap" }, h("table", { class: "data" },
       h("thead", {}, h("tr", {}, ["Label", "Mode", "Date", "Cards", "Players", ""].map((t) => h("th", {}, t)))),
       h("tbody", {}, dives.map((d) => h("tr", {},
@@ -410,6 +462,7 @@ function render() {
   $app.replaceChildren(...[
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Admin"),
       h("p", {}, "Companies and evidence, discovery, sets, players and session controls."))),
+    modeSection(),
     editing ? editor() : null,
     discoverSection(),
     submissionSection(),

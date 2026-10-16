@@ -138,6 +138,7 @@ function detailRow(c, colspan) {
   const theses = Object.values(c.theses || {});
   return h("tr", { class: "detail" }, h("td", { colspan },
     h("div", { class: "verdict-bar" }, verdictBadge(c), h("span", {}, c.verdict_reason)),
+    c.crowd.n ? null : h("p", { class: "muted small" }, "No crowd answers yet — showing evidence-based assessment."),
     h("div", { class: "reads" }, crowdRead(c), engineRead(c), webRead(c)),
     h("div", { class: "detail-grid" },
       h("div", {},
@@ -156,7 +157,8 @@ function detailRow(c, colspan) {
           h("b", {}, t.label), " · ", h("span", { class: fitClass(t.score) }, unevidenced(t.score) ? "unevidenced" : `fit ${fmt1(t.score)}`),
           h("div", { class: "muted" }, t.why || t.description || "")))] : null)),
     c.factors && c.factors.length ? [h("h3", {}, "Evidence behind these numbers"),
-      h("div", { class: "factor-trail" }, c.factors.map((f) => h("span", { class: "chip" }, `${f.label}: ${fmt1(f.value)}`)))] : null));
+      h("div", { class: "factor-trail" }, c.factors.map((f) => h("span", { class: "chip" }, `${f.label}: ${fmt1(f.value)}`)))] : null,
+    c.evidence_note ? h("p", { class: "small muted" }, h("b", {}, "Sources: "), c.evidence_note) : null));
 }
 
 // --- table ----------------------------------------------------------------------------------------
@@ -209,7 +211,7 @@ function companyRows(c) {
   h("td", {}, h("div", { class: "row", style: { gap: ".3rem", flexWrap: "nowrap", alignItems: "flex-start" } },
     h("span", { class: "caret", "aria-hidden": "true" }, "›"),
     h("div", {}, h("div", { class: "co-name" }, c.name),
-      h("div", { class: "co-meta" }, [c.sector, c.is_real ? "real" : null, c.active ? null : "inactive"].filter(Boolean).join(" · "))))),
+      h("div", { class: "co-meta" }, [c.sector, c.active ? null : (c.is_real ? "not in game yet" : "inactive")].filter(Boolean).join(" · "))))),
   h("td", { class: "num" }, c.crowd.n),
   h("td", {}, track(c)),
   h("td", { class: `num ${gapClass(c.gap)}` }, signed(c.gap)),
@@ -242,16 +244,28 @@ function needsAttention(list) {
 }
 
 function thesisPanel(list) {
-  const ranked = [...list].filter((c) => c.theses).sort((x, y) => (y.theses?.redstone?.score ?? -1) - (x.theses?.redstone?.score ?? -1));
+  // Evidence-only ranking: works with zero players. Unscored companies sink to the bottom.
+  const ranked = [...list].filter((c) => c.theses)
+    .sort((x, y) => (y.theses.redstone?.score ?? -1) - (x.theses.redstone?.score ?? -1));
   if (!ranked.length) return null;
   return h("section", { class: "panel" },
-    h("div", { class: "panel-head" }, h("h2", {}, "Thesis fit"), h("span", { class: "muted small" }, "From the evidence alone, no crowd needed")),
-    h("div", { class: "table-wrap" }, h("table", { class: "data" },
-      h("thead", {}, h("tr", {}, h("th", {}, "Company"), Object.values(ranked[0].theses).map((t) => h("th", { class: "num" }, t.label)), h("th", {}, "Why"))),
-      h("tbody", {}, ranked.slice(0, 5).map((c) => h("tr", {},
-        h("td", {}, h("div", { class: "co-name" }, c.name), h("div", { class: "co-meta" }, c.sector)),
-        Object.values(c.theses).map((t) => h("td", { class: `num ${fitClass(t.score)}` }, unevidenced(t.score) ? "–" : fmt1(t.score))),
-        h("td", { class: "small muted wide" }, c.theses?.redstone?.why || "")))))));
+    h("div", { class: "panel-head" }, h("h2", {}, "Thesis read (no crowd needed)"),
+      h("span", { class: "muted small" }, "Evidence-based view — plays work as soon as anyone votes.")),
+    h("div", { class: "thesis-cards" }, ranked.slice(0, 4).map((c) => h("div", { class: "read thesis-card" },
+      h("h4", {}, h("span", {}, h("span", { class: "co-name" }, c.name), h("span", { class: "co-meta" }, c.sector)),
+        h("b", { title: "Engine composite" }, fmt1(c.engine.composite))),
+      h("dl", {}, Object.values(c.theses).map((t) => [h("dt", {}, t.label),
+        h("dd", { class: fitClass(t.score) }, unevidenced(t.score) ? "–" : fmt1(t.score))])),
+      h("p", { class: "note" }, c.theses.redstone?.why || "")))));
+}
+
+// Live mode before discovery has found anything (or before it's run).
+function emptyLive() {
+  const af = data.autofill || {};
+  return h("section", { class: "panel" }, h("p", { class: "callout", style: { margin: 0 } },
+    data.mode === "live" && af.started_at && !af.finished_at ? "Discovery is running… real startups will appear here as they're found."
+      : data.mode === "live" ? h("span", {}, "No real startups yet. Run discovery in ", h("a", { href: "/admin" }, "Admin"), ".")
+        : "No sample companies. Reset in Admin to reload them."));
 }
 
 function render() {
@@ -266,9 +280,12 @@ function render() {
   const pulsed = active.filter((c) => c.pulse).length;
   const scroll = window.scrollY;
 
-  $app.replaceChildren(
+  // replaceChildren (unlike h) would print a skipped section as the text "null".
+  $app.replaceChildren(...[
     h("div", { class: "page-head" },
-      h("div", {}, h("h1", {}, "Perception vs reality"),
+      h("div", {}, h("h1", {}, "Perception vs reality ",
+        h("span", { class: `badge ${data.mode === "live" ? "positive" : "neutral"}`, style: { verticalAlign: "middle" } },
+          data.mode === "live" ? "Live: real startups" : "Demo data")),
         h("p", {}, "How the room reads each startup, what the evidence says, and what the open web shows.")),
       h("span", { class: "spacer" }),
       h("label", { class: "check" },
@@ -286,6 +303,8 @@ function render() {
       kpi("Divergent", all.filter((c) => c.verdict === "divergent").length,
         `${all.filter((c) => c.verdict === "convergent").length} convergent`),
       kpi("Web pulse", h("span", {}, pulsed, h("small", {}, ` / ${active.length}`)), "active companies checked")),
+    !all.length ? emptyLive() : null,
+    thesisPanel(all),
     needsAttention(all),
     h("section", { class: "panel" },
       h("div", { class: "panel-head" }, h("h2", {}, "Companies"), h("span", { class: "spacer" }),
@@ -299,8 +318,7 @@ function render() {
         h("tbody", {}, shown.length ? shown.map(companyRows)
           : h("tr", {}, h("td", { colspan: COLUMNS.length, class: "muted" }, "No companies match."))))),
       h("p", { class: "muted small", style: { margin: ".7rem 0 0" } },
-        "Split is how much the crowd disagrees with itself. Coverage is how many evidence factors the engine knows. Click a row for the full triangulation.")),
-    thesisPanel(all));
+        "Split is how much the crowd disagrees with itself. Coverage is how many evidence factors the engine knows. Click a row for the full triangulation."))].filter(Boolean));
   window.scrollTo({ top: scroll });
 }
 

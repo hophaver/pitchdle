@@ -1,3 +1,7 @@
+import csv
+import io
+
+
 from app import config
 from tests.conftest import new_player
 
@@ -99,7 +103,22 @@ def test_host_overview_carries_readiness_thesis_and_factors_without_any_votes(cl
     # No one has played yet (fresh test DB) -> the dashboard is still a full evidence-based read.
     assert all(c["crowd"]["n"] == 0 for c in comps)
     # Seed data has evidence, so at least one company has both theses scored.
-    assert any(c["theses"]["redstone"]["score"] is not None for c in comps)
+    assert any(c["theses"]["redstone"]["score"] is not None and c["theses"]["apelago"]["score"] is not None
+               for c in comps)
+    by_name = {c["name"]: c for c in comps}
+    # The thesis read alone puts the boring-but-solid case above the pure-story one.
+    assert by_name["Rakko Feed"]["theses"]["redstone"]["score"] > by_name["TideLedger"]["theses"]["redstone"]["score"]
+    assert by_name["Rakko Feed"]["evidence_note"]
+    # A weak thesis fit lowers an action's score but never claims it "fits".
+    assert not any("thesis" in b for a in by_name["TideLedger"]["actions"] for b in a["boosted"])
+
+
+def test_csv_export_includes_readiness_and_thesis_columns(client, admin):
+    rows = list(csv.DictReader(io.StringIO(client.get("/api/admin/export.csv", auth=admin).text)))
+    for col in ("ocean_impact", "business_ready", "tech_trl", "investment_ready", "thesis_apelago", "thesis_redstone"):
+        assert col in rows[0]
+    rakko = next(r for r in rows if r["company"] == "Rakko Feed")
+    assert rakko["tech_trl"] == "8" and float(rakko["thesis_redstone"]) >= 3.8
 
 
 def test_demo_votes_reorder_thesis_aware_actions(client, admin):
