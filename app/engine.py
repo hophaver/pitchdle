@@ -102,3 +102,107 @@ def composite_of(scores: dict, weights: dict | None = None) -> float:
     """Weighted mean of the four axes. Used for engine, player and crowd composites alike."""
     cw = (weights or load_weights())["composite"]
     return round(sum(cw[a] * float(scores[a]) for a in AXES) / sum(cw[a] for a in AXES), 1)
+
+
+def _weighted_known(evidence: dict, spec: list, weights: dict) -> tuple[float | None, int, int]:
+    """Weighted mean over known factors (0-5), plus how many were assessed and total.
+
+    Mirrors the per-axis loop in `score`: unknown factors drop out of the mean and coverage records
+    what was missing. Returns (None, 0, total) when nothing is known for this spec.
+    """
+    num = den = 0.0
+    known = 0
+    for key, weight in spec:
+        value = factor_value(evidence, key)
+        if value is None:
+            continue
+        num += weight * value
+        den += weight
+        known += 1
+    if not den:
+        return None, 0, len(spec)
+    return round(num / den, 1), known, len(spec)
+
+
+def TRL_number(evidence: dict) -> int | None:
+    """Evidence-derived TRL 1-9, or None when the stage isn't given. Never a self-claim."""
+    stage = evidence.get("trl_stage")
+    return TRL_STAGES.get(stage)
+
+
+def readiness(evidence: dict, weights: dict | None = None) -> dict:
+    """The four named readiness levels the challenge brief asks for, plus coverage for each.
+
+    Each level is a weighted mean of its factors (or the TRL factor directly). A missing read comes
+    back as None so the dashboard can show \"unknown/unevidenced\" honestly.
+    """
+    weights = weights or load_weights()
+    out = {}
+    for key, spec in weights["levels"].items():
+        label = spec["label"]
+        if "factor" in spec:  # TRL: one factor, surfaced as 1-9
+            trl = TRL_number(evidence)
+            score = round((trl - 1) / 8 * 5, 1) if trl is not None else None
+            out[key] = {"key": key, "label": label, "score": score, "trl": trl,
+                        "coverage": {"assessed": 1 if trl is not None else 0, "total": 1}}
+        else:
+            score, assessed, total = _weighted_known(evidence, spec["factors"], weights)
+            out[key] = {"key": key, "label": label, "score": score,
+                        "coverage": {"assessed": assessed, "total": total}}
+    return out
+
+
+def _thesis_why(evidence: dict, score: float | None, spec: list, weights: dict) -> tuple[str, list, list]:
+    """A short, evidence-grounded reason for a thesis score: top strengths and top risks.
+
+    Strengths and risks are the factors pulling the score up or down, from the actual values.
+    """
+    scored = []
+    for key, weight in spec:
+        value = factor_value(evidence, key)
+        if value is None:
+            continue
+        scored.append({"key": key, "label": factor_label(key), "value": value, "weight": weight})
+    scored.sort(key=lambda f: (f["value"] - 2.5) * f["weight"], reverse=True)
+    strengths = [f for f in scored if f["value"] >= 3.5]
+    risks = [f for f in scored if f["value"] <= 2.0]
+    if score is None:
+        return "Not enough evidence to assess fit.", strengths[:3], risks[:3]
+    top = ", ".join(f"{f['label'].lower()} {f['value']:.1f}" for f in strengths[:2]) or "nothing rated high"
+    weak = ", ".join(f"{f['label'].lower()} at {f['value']:.1f}" for f in risks[:2]) or "no obvious weaknesses"
+    return f"Fits on {top}; watch {weak}.", strengths[:3], risks[:3]
+
+
+def theses(evidence: dict, weights: dict | None = None) -> dict:
+    """Thesis-fit for each holder (A'Pelago accelerator, Redstone investment): score + why + causes."""
+    weights = weights or load_weights()
+    out = {}
+    for key, spec in weights["theses"].items():
+        score, assessed, total = _weighted_known(evidence, spec["factors"], weights)
+        why, strengths, risks = _thesis_why(evidence, score, spec["factors"], weights)
+        out[key] = {"key": key, "label": spec["label"], "description": spec["description"],
+                    "score": score, "why": why, "strengths": strengths, "risks": risks,
+                    "coverage": {"assessed": assessed, "total": total}}
+    return out
+
+
+def factor_trail(evidence: dict, weights: dict | None = None) -> list[dict]:
+    """Every known evidence factor with its value and label — the provable reasoning behind a score."""
+    weights = weights or load_weights()
+    trail = []
+    for key in factor_keys():
+        value = factor_value(evidence, key)
+        if value is not None:
+            trail.append({"key": key, "label": factor_label(key), "value": value})
+    return trail
+
+
+def full_score(evidence: dict, weights: dict | None = None) -> dict:
+    """Everything the dashboard needs: axes, composite, the readiness levels, thesis fit, and the
+    factor trail behind the numbers. Pure and deterministic — used by the host, never the game path."""
+    weights = weights or load_weights()
+    base = score(evidence, weights)
+    base["readiness"] = readiness(evidence, weights)
+    base["theses"] = theses(evidence, weights)
+    base["factors"] = factor_trail(evidence, weights)
+    return base

@@ -3,6 +3,11 @@ const { h, api, post, AXES, AXIS, fmt1 } = PD;
 const $app = document.getElementById("app");
 let companies = [];
 let dives = [];
+let submissions = [];
+let users = { users: [], guests: 0 };
+let candidates = [];
+const discoverFilter = { status: "", sector: "", country: "" };
+let searching = false;
 let factors = null;
 let editing = null; // company object being edited, or {} for new
 
@@ -24,8 +29,124 @@ function textToOpps(text) {
 }
 
 async function load() {
-  [companies, dives, factors] = await Promise.all([
-    api("/api/admin/companies"), api("/api/host/dives"), factors ? factors : api("/api/admin/factors")]);
+  const qs = new URLSearchParams(Object.entries(discoverFilter).filter(([, v]) => v)).toString();
+  [companies, dives, factors, submissions, users, candidates] = await Promise.all([
+    api("/api/admin/companies"), api("/api/host/dives"), factors ? factors : api("/api/admin/factors"),
+    api("/api/admin/submissions"), api("/api/admin/users"), api(`/api/admin/discover${qs ? `?${qs}` : ""}`)]);
+}
+
+const LEAN_SHORT = { positive: "pos", negative: "neg", mixed: "mixed", neutral: "neutral", silent: "silent" };
+const leanBadge = (lean) => h("span", { class: `badge ${lean}` }, LEAN_SHORT[lean] || lean);
+const pulseSummary = (p) => (p ? h("span", { class: "row", style: { gap: ".35rem", flexWrap: "nowrap" } },
+  h("span", { class: "num" }, `${p.items_total} hits`), leanBadge(p.lean)) : h("span", { class: "muted" }, "–"));
+
+// Startups found on the open web for a sector (and optional country). Nothing here is in the game until
+// it's approved, and then it arrives inactive, like a submission.
+function discoverSection() {
+  const sector = h("input", { type: "text", placeholder: "e.g. ocean plastics", maxlength: 60 });
+  const country = h("input", { type: "text", placeholder: "optional, e.g. Finland", maxlength: 40 });
+  const limit = h("select", {}, [5, 8, 10].map((n) => h("option", { value: n, selected: n === 8 }, `${n} results`)));
+  async function search() {
+    if (sector.value.trim().length < 2) return PD.toast("Enter a sector keyword");
+    searching = true;
+    render();
+    try {
+      const found = await post("/api/admin/discover/search", { sector: sector.value.trim(), country: country.value.trim(), limit: Number(limit.value) });
+      PD.toast(found.length ? `Found ${found.length} candidate${found.length === 1 ? "" : "s"}` : "Nothing found (or the feeds are unreachable)");
+    } catch (e) { PD.toast(e.message); }
+    searching = false;
+    await refresh();
+  }
+  async function act(c, path, body, method = "POST") {
+    try {
+      const out = await post(`/api/admin/discover/${c.id}${path}`, body, method);
+      if (path === "/approve") {
+        editing = out;
+        PD.toast(`${c.name} added (inactive). Check the evidence, then tick Active.`);
+        window.scrollTo({ top: 0 });
+      }
+      await refresh();
+    } catch (e) { PD.toast(e.message); }
+  }
+  const filterSel = (key, label, options) => h("select", { "aria-label": label, onchange: (e) => { discoverFilter[key] = e.target.value; refresh(); } },
+    options.map(([v, t]) => h("option", { value: v, selected: discoverFilter[key] === v }, t)));
+  const uniq = (key) => [...new Set(candidates.map((c) => c[key]).filter(Boolean))].sort();
+  const queued = candidates.filter((c) => c.status === "queued").length;
+  return h("section", { class: "panel" },
+    h("div", { class: "panel-head" }, h("h2", {}, "Discover startups"), h("span", { class: "spacer" }),
+      h("span", { class: "chip" }, `Queued for next game: ${queued}`)),
+    h("p", { class: "muted small", style: { marginTop: 0 } },
+      "Searches public news and Hacker News. Auto-estimates score only what a crawl can show, so coverage is low by design; approve to add as an inactive company and finish the evidence yourself."),
+    h("div", { class: "form-grid" }, h("label", {}, "Sector keyword", sector), h("label", {}, "Country tag", country), h("label", {}, "Limit", limit)),
+    h("div", { class: "btns", style: { marginTop: ".7rem" } },
+      h("button", { class: `btn primary${searching ? " busy" : ""}`, disabled: searching, onclick: search }, searching ? "Searching… (can take a minute)" : "Search")),
+    h("div", { class: "toolbar", style: { marginTop: "1rem" } },
+      filterSel("status", "Status", [["", "Open (new + queued)"], ["queued", "Queued"], ["new", "New"], ["approved", "Approved"], ["dismissed", "Dismissed"]]),
+      filterSel("sector", "Sector", [["", "All sectors"], ...uniq("sector_query").map((v) => [v, v])]),
+      filterSel("country", "Country", [["", "All countries"], ...uniq("country_tag").map((v) => [v, v])])),
+    candidates.length ? h("div", { class: "table-wrap" }, h("table", { class: "data" },
+      h("thead", {}, h("tr", {}, ["Name", "Source", "Query", "Auto-estimate", "Web pulse", "Status", ""].map((t) => h("th", {}, t)))),
+      h("tbody", {}, candidates.map((c) => {
+        const hint = c.engine_hint;
+        return h("tr", {},
+          h("td", {}, h("div", { class: "co-name" }, c.url ? h("a", { href: c.url, target: "_blank", rel: "noopener noreferrer" }, c.name) : c.name),
+            h("div", { class: "co-meta" }, c.snippet)),
+          h("td", {}, c.source),
+          h("td", {}, [c.sector_query, c.country_tag].filter(Boolean).join(" · ")),
+          // With nothing learned the engine only returns its unknown default, so don't show that as a score.
+          h("td", {}, hint && hint.coverage.assessed ? [h("span", { class: "num" }, fmt1(hint.composite)),
+            h("div", { class: "co-meta" }, `auto-estimate · ${hint.coverage.assessed}/${hint.coverage.total} factors${hint.flags.length ? ` · ${hint.flags.join(", ")} mentioned` : ""}`)]
+            : [h("span", { class: "muted" }, "–"),
+              h("div", { class: "co-meta" }, hint ? `not estimated${c.url ? "" : " (no site found)"}` : "")]),
+          h("td", {}, pulseSummary(c.pulse)),
+          h("td", {}, h("span", { class: `badge ${c.status === "queued" ? "mixed" : c.status === "approved" ? "convergent" : "unknown"}` }, c.status)),
+          h("td", {}, c.status === "approved" || c.status === "dismissed" ? null : h("div", { class: "row", style: { flexWrap: "nowrap" } },
+            h("button", { class: "btn small", onclick: () => act(c, "/queue", { queued: c.status !== "queued" }) }, c.status === "queued" ? "Unqueue" : "Queue for next game"),
+            h("button", { class: "btn small primary", onclick: () => act(c, "/approve", {}) }, "Approve"),
+            h("button", { class: "btn small danger", onclick: () => act(c, "", undefined, "DELETE") }, "Dismiss"))));
+      }))))
+      : h("p", { class: "muted small" }, "No candidates yet. Search a sector above."));
+}
+
+function pulseView(p) {
+  return h("div", { style: { marginTop: "1rem" } },
+    h("h3", {}, "Web pulse (a hint; never changes the score)"),
+    h("p", { class: "small" }, pulseSummary(p), " ",
+      h("span", { class: "muted" }, `${p.items_recent} in the last 30 days · ${p.good_count} positive / ${p.risk_count} risk · coverage ${p.coverage} · fetched ${p.fetched_at.slice(0, 10)}`)),
+    p.errors && p.errors.length ? h("p", { class: "thin" }, p.errors.join(" · ")) : null,
+    p.top_hits.length ? h("ul", { class: "small" }, p.top_hits.map((t) => h("li", {},
+      h("a", { href: t.link, target: "_blank", rel: "noopener noreferrer" }, t.title),
+      h("span", { class: "muted" }, ` · ${t.source}${t.published ? ` · ${t.published}` : ""}${t.lean ? ` · ${t.lean}` : ""}`)))) : null);
+}
+
+// Startups sent in from the player page. Approving adds them as real but inactive, then opens the editor
+// so evidence and an emoji can go in before they're put in rotation.
+function submissionSection() {
+  if (!submissions.length) return null;
+  async function approve(sub) {
+    try {
+      editing = await post(`/api/admin/submissions/${sub.id}/approve`, {});
+      PD.toast(`${sub.name} added (inactive). Add evidence, then tick Active.`);
+      await refresh();
+      window.scrollTo({ top: 0 });
+    } catch (e) { PD.toast(e.message); }
+  }
+  async function reject(sub) {
+    if (!confirm(`Discard the submission from ${sub.name}?`)) return;
+    await post(`/api/admin/submissions/${sub.id}`, undefined, "DELETE");
+    await refresh();
+  }
+  return h("section", { class: "panel" },
+    h("h2", {}, `Submitted startups (${submissions.length})`),
+    h("div", { class: "table-wrap" }, h("table", { class: "data" },
+      h("thead", {}, h("tr", {}, ["Name", "Field", "Pitch", "Ask", "Link", "Sent", ""].map((t) => h("th", {}, t)))),
+      h("tbody", {}, submissions.map((sub) => h("tr", {},
+        h("td", {}, h("b", {}, sub.name)), h("td", {}, sub.sector), h("td", {}, sub.one_liner), h("td", {}, sub.claim_ask),
+        h("td", {}, /^https?:\/\//i.test(sub.website) ? h("a", { href: sub.website, target: "_blank", rel: "noopener noreferrer" }, sub.website) : sub.website),
+        h("td", {}, sub.created_at.slice(0, 10)),
+        h("td", {}, h("div", { class: "row" },
+          h("button", { class: "btn small primary", onclick: () => approve(sub) }, "Approve"),
+          h("button", { class: "btn small danger", onclick: () => reject(sub) }, "Discard")))))))));
 }
 
 function companyTable() {
@@ -106,6 +227,7 @@ function editor() {
   const opps = h("textarea", { rows: 4 });
   opps.value = oppsToText(c.opportunities);
   const crawlOut = h("div", {}, c.crawl ? crawlView(c.crawl) : null);
+  const pulseOut = h("div", {}, c.pulse ? pulseView(c.pulse) : null);
 
   function collectEvidence() {
     const out = {};
@@ -143,6 +265,14 @@ function editor() {
     } catch (e) { crawlOut.replaceChildren(h("p", { class: "callout" }, e.message)); }
   }
 
+  async function runPulse() {
+    if (!c.id) return PD.toast("Save the company first");
+    pulseOut.replaceChildren(h("p", { class: "muted" }, "Fetching web coverage… (needs internet; the game never waits for this)"));
+    try {
+      pulseOut.replaceChildren(pulseView(await post(`/api/admin/pulse/run/${c.id}`, {})));
+    } catch (e) { pulseOut.replaceChildren(h("p", { class: "callout" }, e.message)); }
+  }
+
   return h("section", { class: "panel" },
     h("div", { class: "row" }, h("h2", { style: { margin: 0 } }, c.id ? `Edit ${c.name}` : "Add company"), h("span", { class: "spacer" }),
       c.id ? h("span", { class: "chip" }, `Engine ${fmt1(c.engine_composite)} · ${AXES.map((a) => `${AXIS[a][0]} ${fmt1(c.engine_axes[a])}`).join(" ")}`) : null,
@@ -168,8 +298,9 @@ function editor() {
     h("p", { class: "muted small" }, OPP_HELP), opps,
     h("div", { class: "btns" },
       h("button", { class: "btn primary", onclick: save }, "Save and score"),
-      h("button", { class: "btn", onclick: recrawl }, "Recrawl website (optional)")),
-    crawlOut);
+      h("button", { class: "btn", onclick: recrawl }, "Recrawl website (optional)"),
+      h("button", { class: "btn", onclick: runPulse }, "Run web pulse")),
+    crawlOut, pulseOut);
 }
 
 function crawlView(cr) {
@@ -226,6 +357,33 @@ function diveSection() {
     h("div", { class: "btns" }, h("button", { class: "btn primary", onclick: create }, "Create set")));
 }
 
+// Player accounts. Deleting one removes its answers from every crowd score.
+function userSection() {
+  async function del(u) {
+    if (!confirm(`Delete ${u.username} and all ${u.answers} of their answers? This can't be undone.`)) return;
+    try {
+      await post(`/api/admin/users/${u.id}`, undefined, "DELETE");
+      PD.toast(`${u.username} deleted`);
+      await refresh();
+    } catch (e) { PD.toast(e.message); }
+  }
+  const list = users.users;
+  return h("section", { class: "panel" },
+    h("div", { class: "row" }, h("h2", { style: { margin: 0 } }, `Users (${list.length})`), h("span", { class: "spacer" }),
+      h("span", { class: "chip" }, `${users.guests} guest device${users.guests === 1 ? "" : "s"}`)),
+    h("p", { class: "muted small" }, "Signed-in answers count fully in crowd scores; guest answers count for less and are capped as a group."),
+    list.length ? h("div", { class: "table-wrap" }, h("table", { class: "data" },
+      h("thead", {}, h("tr", {}, ["Username", "Joined", "Sets", "Answers", "Last played", ""].map((t) => h("th", {}, t)))),
+      h("tbody", {}, list.map((u) => h("tr", {},
+        h("td", {}, h("b", {}, u.username)),
+        h("td", {}, (u.created_at || "").slice(0, 10)),
+        h("td", {}, u.sets),
+        h("td", {}, u.answers),
+        h("td", {}, u.last_played ? u.last_played.slice(0, 10) : "–"),
+        h("td", {}, h("button", { class: "btn small danger", onclick: () => del(u) }, "Delete")))))))
+      : h("p", { class: "muted" }, "No accounts yet."));
+}
+
 function sessionSection() {
   const reset = (scope, text) => h("button", { class: `btn${scope === "everything" ? " danger" : ""}`, onclick: async () => {
     if (!confirm(text)) return;
@@ -248,12 +406,17 @@ function sessionSection() {
 }
 
 function render() {
-  $app.replaceChildren(
-    h("h1", {}, "Admin"),
+  // replaceChildren (unlike h) would print a skipped section as the text "null".
+  $app.replaceChildren(...[
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Admin"),
+      h("p", {}, "Companies and evidence, discovery, sets, players and session controls."))),
     editing ? editor() : null,
+    discoverSection(),
+    submissionSection(),
     companyTable(),
     diveSection(),
-    sessionSection());
+    userSection(),
+    sessionSection()].filter(Boolean));
 }
 
 async function refresh() {

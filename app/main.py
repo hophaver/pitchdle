@@ -2,6 +2,7 @@
 import csv
 import io
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -12,9 +13,11 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from urllib.parse import urlsplit
 
-from . import config, live, scoring, seed, service
+from pydantic import BaseModel, Field, field_validator
+
+from . import accounts, config, live, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, now
 from .engine import AXES
 
@@ -27,13 +30,14 @@ async def lifespan(_app: FastAPI):
     init_db(db)
     if seed.seed_if_empty(db):
         log.warning("Pitchdle: empty database, loaded seed data into %s", config.DB_PATH)
+    accounts.ensure_test_account(db)
     db.close()
     if config.ADMIN_PASSWORD == "admin":
         log.warning("Pitchdle: ADMIN_PASSWORD is the default 'admin'. Set it before exposing this beyond localhost.")
     yield
 
 
-app = FastAPI(title="Pitchdle", lifespan=lifespan)
+app = FastAPI(title="Startup game", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 
 
@@ -47,17 +51,28 @@ async def revalidate_static(request: Request, call_next):
 
 # --- auth & identity -------------------------------------------------------------------------------
 
-basic = HTTPBasic(realm="Pitchdle host")
+basic = HTTPBasic(realm="Host")
 
 
 def require_admin(creds: HTTPBasicCredentials = Depends(basic)) -> None:
     if not secrets.compare_digest(creds.password.encode(), config.ADMIN_PASSWORD.encode()):
-        raise HTTPException(401, "Wrong password", headers={"WWW-Authenticate": 'Basic realm="Pitchdle host"'})
+        raise HTTPException(401, "Wrong password", headers={"WWW-Authenticate": 'Basic realm="Host"'})
 
 
-def get_player(request: Request, response: Response, db=Depends(get_db)):
-    """Anonymous device identity from a cookie; created on first contact."""
-    token = request.cookies.get("pd_token")
+SESSION_COOKIE = "pd_session"
+DEVICE_COOKIE = "pd_token"
+YEAR = 365 * 24 * 3600
+
+
+def current_user(request: Request, db=Depends(get_db)):
+    return accounts.user_for_session(db, request.cookies.get(SESSION_COOKIE))
+
+
+def get_player(request: Request, response: Response, db=Depends(get_db), user=Depends(current_user)):
+    """The signed-in player's own row, or else an anonymous guest identity per device, created on first contact."""
+    if user:
+        return accounts.player_for(db, user)
+    token = request.cookies.get(DEVICE_COOKIE)
     row = db.execute("SELECT * FROM players WHERE device_token = ?", (token,)).fetchone() if token else None
     if row is None:
         token = uuid.uuid4().hex
@@ -65,8 +80,12 @@ def get_player(request: Request, response: Response, db=Depends(get_db)):
                    (token, service.new_handle(), now()))
         db.commit()
         row = db.execute("SELECT * FROM players WHERE device_token = ?", (token,)).fetchone()
-    response.set_cookie("pd_token", token, max_age=365 * 24 * 3600, samesite="lax", httponly=True)
+    response.set_cookie(DEVICE_COOKIE, token, max_age=YEAR, samesite="lax", httponly=True)
     return row
+
+
+def is_guest(player) -> bool:
+    return player["user_id"] is None
 
 
 def base_url(request: Request) -> str:
@@ -123,9 +142,72 @@ def qr(request: Request, path: str = "/live"):
 # --- player API ------------------------------------------------------------------------------------
 
 @app.get("/api/me")
-def me(player=Depends(get_player)):
+def me(player=Depends(get_player), user=Depends(current_user)):
     """Called first by every player page so the device cookie exists before anything else."""
+    return {"ok": True, "user": accounts.public_user(user) if user else None}
+
+
+# --- accounts --------------------------------------------------------------------------------------
+# Everyone starts as a guest. Logging in (or signing up) moves the guest's answers onto the account.
+
+class Credentials(BaseModel):
+    username: str = Field(max_length=40)
+    password: str = Field(max_length=200)
+
+
+def sign_in(request: Request, response: Response, db, user) -> dict:
+    moved = accounts.claim_guest(db, user, request.cookies.get(DEVICE_COOKIE))
+    response.set_cookie(SESSION_COOKIE, accounts.start_session(db, user), max_age=YEAR, samesite="lax", httponly=True)
+    return {"user": accounts.public_user(user), "claimed": moved}
+
+
+@app.post("/api/account/register")
+def register(body: Credentials, request: Request, response: Response, db=Depends(get_db)):
+    try:
+        user = accounts.register(db, body.username, body.password)
+    except accounts.AccountError as e:
+        raise HTTPException(400, str(e))
+    return sign_in(request, response, db, user)
+
+
+@app.post("/api/account/login")
+def login(body: Credentials, request: Request, response: Response, db=Depends(get_db)):
+    try:
+        user = accounts.authenticate(db, body.username, body.password)
+    except accounts.AccountError as e:
+        raise HTTPException(401, str(e))
+    return sign_in(request, response, db, user)
+
+
+@app.post("/api/account/logout")
+def logout(request: Request, response: Response, db=Depends(get_db)):
+    accounts.end_session(db, request.cookies.get(SESSION_COOKIE))
+    response.delete_cookie(SESSION_COOKIE)
     return {"ok": True}
+
+
+@app.delete("/api/account")
+def delete_account(response: Response, user=Depends(current_user), db=Depends(get_db)):
+    if not user:
+        raise HTTPException(401, "You're not logged in.")
+    accounts.delete_user(db, user["id"])
+    response.delete_cookie(SESSION_COOKIE)
+    return {"ok": True}
+
+
+@app.post("/api/account/reset")
+def reset_account(user=Depends(current_user), db=Depends(get_db)):
+    """Test account only: forget every answer so the game can be played through again."""
+    if not user or not accounts.is_test(user):
+        raise HTTPException(403, "Only the test account can reset its data.")
+    return {"removed": accounts.reset_player_data(db, user["id"])}
+
+
+@app.get("/api/account/history")
+def account_history(player=Depends(get_player), db=Depends(get_db)):
+    if is_guest(player):
+        raise HTTPException(401, "Log in to see your history.")
+    return service.history(db, player["id"])
 
 
 def set_response(db, dive, player) -> dict:
@@ -148,6 +230,8 @@ def dive_by_id(dive_id: int, player=Depends(get_player), db=Depends(get_db)):
     dive = service.get_dive(db, dive_id)
     if not dive:
         raise HTTPException(404, "No such set.")
+    if is_guest(player) and service.guest_locked(db, dive, player["id"]):
+        raise HTTPException(401, "Log in to play earlier sets.")
     return set_response(db, dive, player)
 
 
@@ -180,6 +264,8 @@ def vote(body: VoteIn, player=Depends(get_player), db=Depends(get_db)):
             raise HTTPException(409, "That's not the live card right now.")
         if st["phase"] != "open":
             raise HTTPException(409, "Voting is closed for this card.")
+    if is_guest(player) and service.needs_account(dive):
+        raise HTTPException(401, "Log in to play earlier sets.")
     if comp["id"] in service.answered(db, player["id"], dive["id"]):
         raise HTTPException(409, "You've already answered this card.")
     s = body.scores
@@ -206,6 +292,67 @@ def results(dive_id: int, player=Depends(get_player), db=Depends(get_db)):
         if len(service.answered(db, player["id"], dive_id)) < total:
             raise HTTPException(403, "Answer every card first.")
     return service.results(db, dive, player["id"])
+
+
+# --- startup submissions --------------------------------------------------------------------------
+# Anyone can suggest a startup; it waits in /admin until the host approves it. Limits match what fits
+# on a card (the seed pitches run 50-75 characters) and are mirrored as maxlength in play.js.
+
+SUBMIT_LIMITS = {"name": (2, 30), "sector": (2, 24), "one_liner": (20, 90), "claim_ask": (10, 60)}
+MAX_PENDING_PER_DEVICE = 3
+MAX_PENDING_TOTAL = 200
+
+
+def clean_text(value: str) -> str:
+    """One line of plain text: no control characters, single spaces."""
+    return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", value)).strip()
+
+
+class SubmissionIn(BaseModel):
+    name: str
+    sector: str
+    one_liner: str
+    claim_ask: str
+    website: str
+
+    @field_validator("name", "sector", "one_liner", "claim_ask")
+    @classmethod
+    def fits_on_a_card(cls, value: str, info) -> str:
+        value = clean_text(value)
+        lo, hi = SUBMIT_LIMITS[info.field_name]
+        label = info.field_name.replace("_", " ")
+        if not lo <= len(value) <= hi:
+            raise ValueError(f"{label} must be {lo}-{hi} characters")
+        if re.search(r"https?://|www\.", value, re.I):
+            raise ValueError(f"put links in the link field, not the {label}")
+        return value
+
+    @field_validator("website")
+    @classmethod
+    def plain_web_link(cls, value: str) -> str:
+        value = value.strip()
+        if value and "://" not in value:
+            value = "https://" + value
+        parts = urlsplit(value)
+        host = parts.hostname or ""
+        if (len(value) > 200 or parts.scheme not in ("http", "https") or "." not in host
+                or parts.username or parts.password or re.search(r"\s", value)):
+            raise ValueError("link must be a web address like https://example.com")
+        return value
+
+
+@app.post("/api/submit")
+def submit_startup(body: SubmissionIn, player=Depends(get_player), db=Depends(get_db)):
+    mine = db.execute("SELECT COUNT(*) FROM submissions WHERE player_id = ?", (player["id"],)).fetchone()[0]
+    if mine >= MAX_PENDING_PER_DEVICE:
+        raise HTTPException(429, "You've already sent a few. We'll look at those first.")
+    if db.execute("SELECT COUNT(*) FROM submissions").fetchone()[0] >= MAX_PENDING_TOTAL:
+        raise HTTPException(503, "The review queue is full right now. Try again later.")
+    db.execute("INSERT INTO submissions (player_id, name, sector, one_liner, claim_ask, website, created_at) "
+               "VALUES (?, ?, ?, ?, ?, ?, ?)",
+               (player["id"], body.name, body.sector, body.one_liner, body.claim_ask, body.website, now()))
+    db.commit()
+    return {"ok": True}
 
 
 # --- live room -------------------------------------------------------------------------------------
@@ -244,7 +391,8 @@ def live_state(player=Depends(get_player), db=Depends(get_db)):
 
 
 def wall_card(db, dive_id: int, comp) -> dict:
-    room = scoring.crowd(service.card_votes(db, dive_id, comp["id"]))
+    # The room on the wall counts everyone in it alike.
+    room = scoring.crowd(service.card_votes(db, dive_id, comp["id"]), weighted=False)
     return {
         "card": service.public_card(comp),
         "engine": {"axes": j(comp["engine_axes"]), "composite": comp["engine_composite"]},
@@ -327,7 +475,8 @@ class CompanyIn(BaseModel):
 
 def admin_company(db, row) -> dict:
     out = dict(row)
-    for key, default in (("facts", []), ("evidence", {}), ("engine_axes", {}), ("engine_coverage", {}), ("crawl", None)):
+    for key, default in (("facts", []), ("evidence", {}), ("engine_axes", {}), ("engine_coverage", {}), ("crawl", None),
+                         ("pulse", None)):
         out[key] = j(row[key], default)
     out["opportunities"] = [dict(o) for o in db.execute("SELECT * FROM opportunities WHERE company_id = ? ORDER BY fit DESC",
                                                         (row["id"],))]
@@ -381,6 +530,43 @@ def admin_delete(cid: int, db=Depends(get_db)):
     return {"ok": True}
 
 
+@app.get("/api/admin/submissions", dependencies=[Depends(require_admin)])
+def admin_submissions(db=Depends(get_db)):
+    return [dict(r) for r in db.execute(
+        "SELECT id, name, sector, one_liner, claim_ask, website, created_at FROM submissions ORDER BY id")]
+
+
+@app.post("/api/admin/submissions/{sid}/approve", dependencies=[Depends(require_admin)])
+def admin_approve_submission(sid: int, db=Depends(get_db)):
+    """Turn a submission into a real company, kept out of rotation until the host adds evidence and activates it."""
+    sub = db.execute("SELECT * FROM submissions WHERE id = ?", (sid,)).fetchone()
+    if not sub:
+        raise HTTPException(404, "No such submission.")
+    body = CompanyIn(name=sub["name"], sector=sub["sector"], one_liner=sub["one_liner"], claim_ask=sub["claim_ask"],
+                     website=sub["website"], is_real=True, active=False)
+    db.execute("DELETE FROM submissions WHERE id = ?", (sid,))
+    return admin_company(db, service.get_company(db, save_company(db, body, None)))
+
+
+@app.delete("/api/admin/submissions/{sid}", dependencies=[Depends(require_admin)])
+def admin_reject_submission(sid: int, db=Depends(get_db)):
+    db.execute("DELETE FROM submissions WHERE id = ?", (sid,))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/admin/users", dependencies=[Depends(require_admin)])
+def admin_users(db=Depends(get_db)):
+    return {"users": accounts.list_users(db), "guests": accounts.guest_count(db)}
+
+
+@app.delete("/api/admin/users/{uid}", dependencies=[Depends(require_admin)])
+def admin_delete_user(uid: int, db=Depends(get_db)):
+    if not accounts.delete_user(db, uid):
+        raise HTTPException(404, "No such user.")
+    return {"ok": True}
+
+
 class Opportunity(BaseModel):
     kind: str
     name: str
@@ -411,6 +597,148 @@ def admin_recrawl(cid: int, db=Depends(get_db)):
     db.execute("UPDATE companies SET crawl = ? WHERE id = ?", (dumps(result), cid))
     db.commit()
     return result
+
+
+# --- web pulse (host hint only: never feeds engine scores or player routes) ---------------------------
+
+def store_pulse(db, cid: int, name: str) -> dict:
+    from .crawler.pulse import compute_pulse
+    result = compute_pulse(name)
+    db.execute("UPDATE companies SET pulse = ? WHERE id = ?", (dumps(result), cid))
+    db.commit()
+    return result
+
+
+@app.post("/api/admin/pulse/run/{cid}", dependencies=[Depends(require_admin)])
+def admin_pulse_one(cid: int, db=Depends(get_db)):
+    comp = service.get_company(db, cid)
+    if not comp:
+        raise HTTPException(404, "No such company.")
+    return store_pulse(db, cid, comp["name"])
+
+
+class PulseAll(BaseModel):
+    active_only: bool = True
+    limit: int | None = Field(None, ge=1)
+
+
+@app.post("/api/admin/pulse/run-all", dependencies=[Depends(require_admin)])
+def admin_pulse_all(body: PulseAll, db=Depends(get_db)):
+    """One company at a time, each stored as it finishes, so a failure or a re-run picks up where it left off."""
+    where = " WHERE active = 1" if body.active_only else ""
+    rows = db.execute(f"SELECT id, name FROM companies{where} ORDER BY id").fetchall()
+    ran, errors = 0, []
+    for row in rows[:body.limit] if body.limit else rows:
+        try:
+            result = store_pulse(db, row["id"], row["name"])
+        except Exception as e:  # noqa: BLE001 - one bad company never stops the batch
+            errors.append({"id": row["id"], "name": row["name"], "error": str(e)})
+            continue
+        ran += 1
+        if result["errors"]:
+            errors.append({"id": row["id"], "name": row["name"], "error": "; ".join(result["errors"])})
+    return {"ran": ran, "skipped": len(rows) - ran, "errors": errors}
+
+
+# --- discovery: candidate startups from the open web, queued for the host ---------------------------
+
+def candidate_out(row) -> dict:
+    out = dict(row)
+    out["engine_hint"] = j(row["engine_hint"])
+    out["pulse"] = j(row["pulse"])
+    return out
+
+
+class DiscoverIn(BaseModel):
+    sector: str = Field(min_length=2, max_length=60)
+    country: str = Field("", max_length=40)
+    limit: int = Field(8, ge=1, le=10)
+
+
+@app.post("/api/admin/discover/search", dependencies=[Depends(require_admin)])
+def admin_discover_search(body: DiscoverIn, db=Depends(get_db)):
+    from .crawler import discovery, pulse
+    sector, country = clean_text(body.sector), clean_text(body.country)
+    query = f"{sector} {country}".strip()
+    found = []
+    for c in discovery.search_candidates(query, body.limit):
+        key = discovery.name_key(c["name"])
+        row = db.execute("SELECT * FROM candidates WHERE name_key = ?", (key,)).fetchone()
+        if row is None:
+            cid = db.execute(
+                "INSERT INTO candidates (name, name_key, url, source, snippet, sector_query, country_tag, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (c["name"], key, c["url"], c["source"], c["snippet"], sector, country, now())).lastrowid
+        else:
+            cid = row["id"]
+            if not row["url"] and c["url"]:
+                db.execute("UPDATE candidates SET url = ? WHERE id = ?", (c["url"], cid))
+        row = db.execute("SELECT * FROM candidates WHERE id = ?", (cid,)).fetchone()
+        if row["status"] in ("new", "queued"):
+            hint = discovery.expand_candidate(dict(row))
+            db.execute("UPDATE candidates SET engine_hint = ?, pulse = ? WHERE id = ?",
+                       (dumps(hint), dumps(pulse.compute_pulse(row["name"])), cid))
+        db.commit()
+        found.append(candidate_out(db.execute("SELECT * FROM candidates WHERE id = ?", (cid,)).fetchone()))
+    return found
+
+
+@app.get("/api/admin/discover", dependencies=[Depends(require_admin)])
+def admin_discover_list(status: str = "", sector: str = "", country: str = "", db=Depends(get_db)):
+    sql, args = "SELECT * FROM candidates WHERE 1 = 1", []
+    for col, value in (("status", status), ("sector_query", sector), ("country_tag", country)):
+        if value:
+            sql += f" AND {col} = ? COLLATE NOCASE"
+            args.append(value)
+    if not status:
+        sql += " AND status != 'dismissed'"
+    return [candidate_out(r) for r in db.execute(sql + " ORDER BY status = 'queued' DESC, id DESC", args)]
+
+
+def get_candidate(db, cand_id: int):
+    row = db.execute("SELECT * FROM candidates WHERE id = ?", (cand_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "No such candidate.")
+    return row
+
+
+class QueueIn(BaseModel):
+    queued: bool
+
+
+@app.post("/api/admin/discover/{cand_id}/queue", dependencies=[Depends(require_admin)])
+def admin_discover_queue(cand_id: int, body: QueueIn, db=Depends(get_db)):
+    row = get_candidate(db, cand_id)
+    if row["status"] == "approved":
+        raise HTTPException(409, "Already approved into companies.")
+    db.execute("UPDATE candidates SET status = ? WHERE id = ?", ("queued" if body.queued else "new", cand_id))
+    db.commit()
+    return candidate_out(get_candidate(db, cand_id))
+
+
+@app.post("/api/admin/discover/{cand_id}/approve", dependencies=[Depends(require_admin)])
+def admin_discover_approve(cand_id: int, db=Depends(get_db)):
+    """Like approving a submission: a real company, out of rotation until the host checks evidence and activates it."""
+    row = get_candidate(db, cand_id)
+    if row["status"] == "approved":
+        raise HTTPException(409, "Already approved into companies.")
+    hint = j(row["engine_hint"], {}) or {}
+    body = CompanyIn(name=row["name"], sector=row["sector_query"], website=row["url"] or "",
+                     evidence=hint.get("evidence", {}), is_real=True, active=False,
+                     evidence_note=f"Auto-estimate from discovery ({row['source']}): {row['snippet']}")
+    cid = save_company(db, body, None)
+    db.execute("UPDATE companies SET pulse = ? WHERE id = ?", (row["pulse"], cid))
+    db.execute("UPDATE candidates SET status = 'approved', company_id = ? WHERE id = ?", (cid, cand_id))
+    db.commit()
+    return admin_company(db, service.get_company(db, cid))
+
+
+@app.delete("/api/admin/discover/{cand_id}", dependencies=[Depends(require_admin)])
+def admin_discover_dismiss(cand_id: int, db=Depends(get_db)):
+    get_candidate(db, cand_id)
+    db.execute("UPDATE candidates SET status = 'dismissed' WHERE id = ? AND status != 'approved'", (cand_id,))
+    db.commit()
+    return {"ok": True}
 
 
 class HideReal(BaseModel):
@@ -481,7 +809,7 @@ def admin_demo_votes(body: DemoIn, db=Depends(get_db)):
 def export_json(db=Depends(get_db)):
     data = service.overview(db, real_only=True)
     return Response(dumps(data), media_type="application/json",
-                    headers={"Content-Disposition": 'attachment; filename="pitchdle-insights.json"'})
+                    headers={"Content-Disposition": 'attachment; filename="insights.json"'})
 
 
 @app.get("/api/admin/export.csv", dependencies=[Depends(require_admin)])
@@ -490,15 +818,24 @@ def export_csv(db=Depends(get_db)):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["company", "sector", "votes", *[f"crowd_{a}" for a in AXES], "crowd_composite",
-                *[f"engine_{a}" for a in AXES], "engine_composite", "gap", "coverage", "flags",
-                "top_action"])
+                *[f"engine_{a}" for a in AXES], "engine_composite",
+                "ocean_impact", "business_ready", "tech_trl", "investment_ready",
+                "thesis_apelago", "thesis_redstone",
+                "gap", "coverage", "flags", "top_action", "web_items", "web_lean", "verdict", "verdict_reason"])
     for c in data["companies"]:
         cm = c["crowd"]["means"] or {}
+        rd = c["readiness"]
+        th = c["theses"]
         w.writerow([c["name"], c["sector"], c["crowd"]["n"], *[cm.get(a, "") for a in AXES], c["crowd"]["composite"] or "",
                     *[c["engine"]["axes"].get(a, "") for a in AXES], c["engine"]["composite"],
+                    rd["ocean_impact"]["score"] or "", rd["business"]["score"] or "", rd["tech"]["trl"] or "",
+                    rd["investment"]["score"] or "",
+                    th["apelago"]["score"] or "", th["redstone"]["score"] or "",
                     "" if c["gap"] is None else c["gap"],
                     f"{c['coverage'].get('assessed', '')}/{c['coverage'].get('total', '')}",
                     "; ".join(f["label"] for f in c["flags"]),
-                    c["actions"][0]["name"] if c["actions"] else ""])
+                    c["actions"][0]["name"] if c["actions"] else "",
+                    c["pulse"]["items_total"] if c["pulse"] else "", c["pulse"]["lean"] if c["pulse"] else "",
+                    c["verdict"], c["verdict_reason"]])
     return Response(buf.getvalue(), media_type="text/csv",
-                    headers={"Content-Disposition": 'attachment; filename="pitchdle-insights.csv"'})
+                    headers={"Content-Disposition": 'attachment; filename="insights.csv"'})

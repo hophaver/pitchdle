@@ -40,7 +40,8 @@ async function refresh() {
   const p = st.phase;
   const last = st.dive && st.card_index + 1 >= st.dive.total;
   $app.replaceChildren(
-    h("h1", {}, "Live control"),
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Live control"),
+      h("p", {}, "Run the room: open each card, lock voting, reveal on the wall."))),
     h("section", { class: "panel" },
       h("div", { class: "row" },
         h("label", { class: "field", style: { flex: 1 } }, "Set",
@@ -54,9 +55,9 @@ async function refresh() {
       st.dive ? h("p", {}, `${st.dive.label} · card ${Math.max(0, st.card_index + 1)} of ${st.dive.total}`,
         st.card ? h("b", {}, ` · ${st.card.name}`) : null) : null,
       h("div", { class: "row" },
-        h("span", { class: "chip" }, `🤿 ${st.joined} in the room`),
-        st.card ? h("span", { class: "chip" }, `🗳 ${st.votes} reads`) : null,
-        st.remaining !== null ? h("span", { class: "chip" }, `⏱ ${st.remaining}s`) : null),
+        h("span", { class: "chip" }, `In the room: ${st.joined}`),
+        st.card ? h("span", { class: "chip" }, `Answers: ${st.votes}`) : null,
+        st.remaining !== null ? h("span", { class: "chip" }, `Time left: ${st.remaining}s`) : null),
       h("div", { class: "ctl-buttons", style: { marginTop: "1rem" } },
         btn("open", "Open first card", p === "lobby", p === "lobby"),
         btn("lock", "Lock voting", false, p === "open"),

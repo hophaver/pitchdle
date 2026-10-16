@@ -53,6 +53,17 @@ Copy `.env.example` to `.env` to override any of these:
 
 Engine weights are in `weights.json`. After editing them, run `.venv/bin/python -m app.seed --rescore`.
 
+## Accounts and guests
+
+Everyone plays as a guest (a device cookie) until they sign up or log in with a username and password.
+Guests get today's set only; an account keeps history, stats and streaks, and opens earlier daily sets.
+Logging in moves whatever the device played as a guest onto the account. Players delete their account from
+the menu under their username; the host can list and delete accounts in `/admin` → Users.
+
+To blunt bot farms, crowd scores (player results, host dashboard, exports) weigh guests down: each guest
+answer counts `GUEST_WEIGHT` (0.5) of a signed-in one, and once anyone signed in has answered a card, all
+guests together make up at most `GUEST_MAX_SHARE` (40%) of its score. The live wall counts the room evenly.
+
 ## Rehearsing the live demo
 
 1. Open `/wall` on the projector and `/host/live` on your laptop.

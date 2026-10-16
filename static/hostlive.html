@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pitchdle Live Control</title>
+  <title>Live Control</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧭</text></svg>">
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body class="tool">
   <div class="tool-shell">
     <nav>
-      <span class="brand">Pitch<span>dle</span></span>
+      <span class="brand"><i aria-hidden="true"></i>Pitchdle <small>Host</small></span>
       <a href="/host" data-nav="/host">Dashboard</a>
       <a href="/host/live" data-nav="/host/live">Live control</a>
       <a href="/admin" data-nav="/admin">Admin</a>
-      <a href="/wall" target="_blank">Wall ↗</a>
-      <a href="/play" target="_blank">Play ↗</a>
+      <a class="ext" href="/wall" target="_blank">Wall ↗</a>
+      <a class="ext" href="/play" target="_blank">Play ↗</a>
     </nav>
     <main id="app"><p class="muted">Loading…</p></main>
   </div>

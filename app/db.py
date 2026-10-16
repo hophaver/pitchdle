@@ -44,9 +44,23 @@ CREATE TABLE IF NOT EXISTS dives (
   mode        TEXT DEFAULT 'daily',
   created_at  TEXT
 );
+CREATE TABLE IF NOT EXISTS users (
+  id            INTEGER PRIMARY KEY,
+  username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  created_at    TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token       TEXT PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at  TEXT
+);
+-- A guest is a device (device_token, user_id NULL). A signed-in player has one row of their own
+-- (user_id set, no device token), and a guest's answers move onto it when they log in.
 CREATE TABLE IF NOT EXISTS players (
   id           INTEGER PRIMARY KEY,
   device_token TEXT UNIQUE,
+  user_id      INTEGER REFERENCES users(id) ON DELETE CASCADE,
   handle       TEXT,
   is_seed      INTEGER DEFAULT 0,
   last_seen    REAL,
@@ -67,6 +81,16 @@ CREATE TABLE IF NOT EXISTS votes (
   UNIQUE (player_id, dive_id, company_id, round)
 );
 CREATE INDEX IF NOT EXISTS votes_card ON votes (dive_id, company_id, round);
+CREATE TABLE IF NOT EXISTS submissions (
+  id          INTEGER PRIMARY KEY,
+  player_id   INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  name        TEXT,
+  sector      TEXT,
+  one_liner   TEXT,
+  claim_ask   TEXT,
+  website     TEXT,
+  created_at  TEXT
+);
 CREATE TABLE IF NOT EXISTS live_state (
   id               INTEGER PRIMARY KEY CHECK (id = 1),
   dive_id          INTEGER,
@@ -75,6 +99,22 @@ CREATE TABLE IF NOT EXISTS live_state (
   phase_started_at REAL
 );
 INSERT OR IGNORE INTO live_state (id, phase) VALUES (1, 'idle');
+-- Startups found on the open web, waiting for the host. Kept apart from companies until approved.
+CREATE TABLE IF NOT EXISTS candidates (
+  id            INTEGER PRIMARY KEY,
+  name          TEXT NOT NULL,
+  name_key      TEXT NOT NULL UNIQUE,
+  url           TEXT DEFAULT '',
+  source        TEXT,
+  snippet       TEXT DEFAULT '',
+  sector_query  TEXT DEFAULT '',
+  country_tag   TEXT DEFAULT '',
+  engine_hint   TEXT,
+  pulse         TEXT,
+  status        TEXT DEFAULT 'new',  -- new | queued | approved | dismissed
+  company_id    INTEGER REFERENCES companies(id) ON DELETE SET NULL,
+  created_at    TEXT
+);
 """
 
 
@@ -98,7 +138,11 @@ def get_db():
 
 
 # Columns added after the first release: (table, column, definition).
-MIGRATIONS = [("companies", "emoji", "TEXT DEFAULT ''")]
+MIGRATIONS = [
+    ("companies", "emoji", "TEXT DEFAULT ''"),
+    ("players", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"),
+    ("companies", "pulse", "TEXT"),
+]
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -106,6 +150,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     for table, column, definition in MIGRATIONS:
         if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.execute("CREATE INDEX IF NOT EXISTS players_user ON players (user_id)")
     conn.commit()
 
 

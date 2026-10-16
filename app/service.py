@@ -1,11 +1,11 @@
 """Queries and payload builders shared by the API routes."""
 import random
 import sqlite3
-from datetime import date
+from datetime import date, datetime, time, timedelta
 
 from . import config, scoring
 from .db import dumps, j, now
-from .engine import AXES, composite_of
+from .engine import AXES, composite_of, full_score as engine_full
 
 HANDLE_EMOJI = ["🐙", "🦈", "🐳", "🐬", "🦀", "🐡", "🐠", "🦑", "🦭", "🐢", "🪼", "🦞", "🐚", "🐟"]
 
@@ -41,7 +41,13 @@ def dive_companies(db, dive) -> list:
 
 
 def dive_payload(dive) -> dict:
-    return {"id": dive["id"], "label": dive["label"], "mode": dive["mode"], "date": dive["date"]}
+    return {"id": dive["id"], "label": dive["label"], "mode": dive["mode"], "date": dive["date"], "today": is_today(dive)}
+
+
+def seconds_to_next_set() -> int:
+    """The daily set is keyed on the server's local date, so a new one is playable from local midnight."""
+    current = datetime.now()
+    return int((datetime.combine(current.date() + timedelta(days=1), time.min) - current).total_seconds())
 
 
 def todays_dive(db):
@@ -64,8 +70,12 @@ def scores_of(vote) -> dict:
     return {a: vote[a] for a in AXES}
 
 
+# Votes with the voter's user_id alongside, so crowd scores can weigh guests and signed-in players apart.
+VOTES_WITH_USER = "SELECT v.*, p.user_id FROM votes v LEFT JOIN players p ON p.id = v.player_id"
+
+
 def card_votes(db, dive_id: int, cid: int) -> list:
-    return db.execute("SELECT * FROM votes WHERE dive_id = ? AND company_id = ? AND round = 1",
+    return db.execute(f"{VOTES_WITH_USER} WHERE v.dive_id = ? AND v.company_id = ? AND v.round = 1",
                       (dive_id, cid)).fetchall()
 
 
@@ -77,38 +87,98 @@ def answered(db, pid: int, dive_id: int) -> set[int]:
 # --- player results ------------------------------------------------------------------------------
 
 def results(db, dive, pid: int) -> dict:
-    """The player's reads next to the crowd's, for every card they answered in this set."""
+    """The player's reads next to the average of every other player's, for each card they answered in this set."""
     comps = dive_companies(db, dive)
     mine = {r["company_id"]: r for r in db.execute(
         "SELECT * FROM votes WHERE player_id = ? AND dive_id = ? AND round = 1", (pid, dive["id"]))}
-    cards, leans, axes_with = [], {"higher": 0, "with": 0, "lower": 0}, 0
+    cards, leans = [], {"higher": 0, "with": 0, "lower": 0}
     for comp in comps:
         vote = mine.get(comp["id"])
         if not vote:
             continue
         you = scores_of(vote)
-        room = scoring.crowd(card_votes(db, dive["id"], comp["id"]))
+        # A live room is the people in it, all counted alike; everywhere else guests count for less.
+        others = scoring.crowd([v for v in card_votes(db, dive["id"], comp["id"]) if v["player_id"] != pid],
+                               weighted=dive["mode"] != "live")
         you_composite = composite_of(you)
-        lean = scoring.lean(you_composite, room["composite"])
-        leans[lean] += 1
-        axes = []
-        for a in AXES:
-            same = abs(you[a] - room["means"][a]) < scoring.LEAN_THRESHOLD
-            axes_with += same
-            axes.append({"axis": a, "you": you[a], "crowd": room["means"][a], "share": room["share"][a],
-                         "lean": scoring.lean(you[a], room["means"][a])})
+        # Nobody else has answered yet: nothing to lean against.
+        lean = scoring.lean(you_composite, others["composite"]) if others["n"] else None
+        if lean:
+            leans[lean] += 1
         cards.append({
             "card": public_card(comp),
+            # Only shown after answering, so the link can't give the pitch away mid-game.
+            "website": comp["website"] or "",
             "you": {"scores": you, "composite": you_composite},
-            "crowd": {"n": room["n"], "composite": room["composite"]},
+            "crowd": {"n": others["n"], "means": others["means"], "composite": others["composite"]},
             "lean": lean,
-            "axes": axes,
         })
     return {
         "dive": dive_payload(dive),
         "total": len(comps),
         "cards": cards,
-        "summary": {"leans": leans, "axes_with": axes_with, "axes_total": len(cards) * len(AXES)},
+        "summary": {"leans": leans},
+        # Countdown to the next daily set, shown under today's; other sets don't have one.
+        "next_set_in": seconds_to_next_set() if is_today(dive) else None,
+    }
+
+
+def is_today(dive) -> bool:
+    return dive["mode"] == "daily" and dive["date"] == date.today().isoformat()
+
+
+def needs_account(dive) -> bool:
+    """Daily sets from other days are for signed-in players. Today's, live rooms and undated custom sets are open."""
+    return dive["mode"] == "daily" and bool(dive["date"]) and not is_today(dive)
+
+
+def guest_locked(db, dive, pid: int) -> bool:
+    """Whether a guest is kept out of a set. One they already started (when it was today's) stays viewable."""
+    return needs_account(dive) and not answered(db, pid, dive["id"])
+
+
+# --- history (signed-in players) -------------------------------------------------------------------
+
+def streaks(days: set[str], today: date) -> tuple[int, int]:
+    """(current, best) runs of consecutive days. The current run survives until today's set is missed."""
+    best = run = 0
+    prev = None
+    for d in sorted(date.fromisoformat(x) for x in days):
+        run = run + 1 if prev and d - prev == timedelta(days=1) else 1
+        best = max(best, run)
+        prev = d
+    current, day = 0, today if today.isoformat() in days else today - timedelta(days=1)
+    while day.isoformat() in days:
+        current += 1
+        day -= timedelta(days=1)
+    return current, best
+
+
+def history(db, pid: int) -> dict:
+    """Every daily set up to today with how far the player got, plus their running stats."""
+    todays_dive(db)
+    today = date.today()
+    # One set per day: the newest, matching todays_dive.
+    by_day = {}
+    for d in db.execute("SELECT * FROM dives WHERE mode = 'daily' AND date IS NOT NULL AND date <= ? ORDER BY id",
+                        (today.isoformat(),)):
+        by_day[d["date"]] = d
+    done_days, leans, sets = set(), {"higher": 0, "with": 0, "lower": 0}, []
+    for day in sorted(by_day, reverse=True):
+        dive = by_day[day]
+        total = len(dive_companies(db, dive))
+        n = len(answered(db, pid, dive["id"]))
+        done = bool(total) and n >= total
+        if done:
+            done_days.add(day)
+            for key, count in results(db, dive, pid)["summary"]["leans"].items():
+                leans[key] += count
+        sets.append(dive_payload(dive) | {"answered": n, "total": total, "done": done, "today": day == today.isoformat()})
+    current, best = streaks(done_days, today)
+    cards = db.execute("SELECT COUNT(*) FROM votes WHERE player_id = ?", (pid,)).fetchone()[0]
+    return {
+        "stats": {"sets": len(done_days), "cards": cards, "streak": current, "best_streak": best, "leans": leans},
+        "sets": sets,
     }
 
 
@@ -141,13 +211,53 @@ FLAG_BOOST = {
 }
 
 
+VERDICT_GAP = 1.0   # crowd vs engine this far apart: they disagree (same line as the story/substance flags)
+AGREE_GAP = 0.5     # closer than this: they agree
+
+
+def triangulate(crowd_n: int, crowd_c: float | None, engine_c: float, pulse: dict | None,
+                min_votes: int) -> tuple[str, str]:
+    """Crowd, engine and web pulse in one read: 'convergent', 'divergent' or 'unknown', with a reason."""
+    if crowd_n < min_votes or crowd_c is None:
+        return "unknown", f"Needs {min_votes}+ answers ({crowd_n} so far)"
+    gap = round(crowd_c - engine_c, 1)
+    lean = pulse["lean"] if pulse else None
+    if abs(gap) >= VERDICT_GAP:
+        side = "overrates" if gap > 0 else "underrates"
+        reason = f"Crowd {crowd_c:.1f} vs engine {engine_c:.1f}: the room {side} it"
+        if lean in ("positive", "negative"):
+            web_high = lean == "positive"
+            reason += f"; the web sides with the {'room' if web_high == (gap > 0) else 'engine'}"
+        return "divergent", reason
+    if abs(gap) >= AGREE_GAP:
+        return "unknown", f"Crowd and engine lean apart (gap {gap:+.1f})"
+    if pulse is None:
+        return "unknown", "Crowd and engine agree. Run web pulse to triangulate"
+    mean = (crowd_c + engine_c) / 2
+    if lean == "negative" and mean >= 3:
+        return "divergent", f"Web coverage leans negative while room and engine rate it {mean:.1f}"
+    if lean == "positive" and mean < 2:
+        return "divergent", f"Web coverage leans positive while room and engine rate it {mean:.1f}"
+    if lean == "silent":
+        return "convergent", "Crowd and engine agree; no web coverage (possible discovery gap)"
+    return "convergent", f"Crowd, engine and web ({lean}) agree"
+
+
 def company_insight(db, comp, real_only: bool) -> dict:
-    seed_clause = " AND is_seed = 0" if real_only else ""
-    votes = db.execute(f"SELECT * FROM votes WHERE company_id = ? AND round = 1{seed_clause}", (comp["id"],)).fetchall()
+    seed_clause = " AND v.is_seed = 0" if real_only else ""
+    votes = db.execute(f"{VOTES_WITH_USER} WHERE v.company_id = ? AND v.round = 1{seed_clause}", (comp["id"],)).fetchall()
     room = scoring.crowd(votes)
     engine = j(comp["engine_axes"], {})
     ec = comp["engine_composite"]
     gap = round(room["composite"] - ec, 2) if room["n"] else None
+
+    # The named readiness levels, thesis-fit and the factor trail are pure projections of the
+    # stored evidence — computed fresh so the dashboard always matches what's in evidence, and
+    # so it works on its own before anyone has played.
+    full = engine_full(j(comp["evidence"], {}))
+    readiness_levels = full["readiness"]
+    theses = full["theses"]
+    factors = full["factors"]
 
     flags = []
     if room["n"] >= config.MIN_VOTES:
@@ -169,18 +279,34 @@ def company_insight(db, comp, real_only: bool) -> dict:
             if key in FLAG_BOOST and o["kind"] in FLAG_BOOST[key][0]:
                 score += 0.3
                 reasons.append(FLAG_BOOST[key][1])
+        # Thesis fit also steers the "next" list: a strong accelerator fit flags the accelerator-style
+        # opportunities (partners, grants, customers); a strong investment fit flags investors.
+        k = o["kind"]
+        if k in ("partner", "grant", "customer") and theses.get("apelago", {}).get("score"):
+            boost = (theses["apelago"]["score"] - 2.5) * 0.15
+            score += boost
+            reasons.append("fits the accelerator thesis")
+        elif k == "investor" and theses.get("redstone", {}).get("score"):
+            boost = (theses["redstone"]["score"] - 2.5) * 0.15
+            score += boost
+            reasons.append("fits the investment thesis")
+        score = round(score, 2)
         actions.append({"kind": o["kind"], "name": o["name"], "why": o["why"], "fit": o["fit"],
-                        "stage_fit": o["stage_fit"], "score": round(score, 2), "boosted": reasons})
+                        "stage_fit": o["stage_fit"], "score": score, "boosted": reasons})
     actions.sort(key=lambda a: a["score"], reverse=True)
+    pulse = j(comp["pulse"])
+    verdict, verdict_reason = triangulate(room["n"], room["composite"], ec, pulse, config.MIN_VOTES)
 
     return {
         "id": comp["id"], "name": comp["name"], "sector": comp["sector"], "is_real": bool(comp["is_real"]),
         "active": bool(comp["active"]),
         "engine": {"axes": engine, "composite": ec},
+        "readiness": readiness_levels, "theses": theses, "factors": factors,
         "coverage": j(comp["engine_coverage"], {}),
-        "crowd": {"n": room["n"], "means": room["means"], "composite": room["composite"],
-                  "consensus": room["consensus"]},
+        "crowd": {"n": room["n"], "signed_in": room["signed_in"], "means": room["means"],
+                  "composite": room["composite"], "consensus": room["consensus"]},
         "gap": gap, "flags": flags, "actions": actions,
+        "pulse": pulse, "verdict": verdict, "verdict_reason": verdict_reason,
     }
 
 

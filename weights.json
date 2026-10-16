@@ -31,5 +31,25 @@
     ]
   },
   "composite": {"novel": 1, "useful": 1, "plausible": 1, "investable": 1},
-  "unknown_axis_default": 2.0
+  "unknown_axis_default": 2.0,
+  "_readiness": "The named readiness levels the challenge brief asks for. Each is a weighted mean of evidence factors (0-5); 'factor' levels read a single factor (TRL).",
+  "levels": {
+    "ocean_impact": {"label": "Ocean Impact Readiness", "factors": [["impact.measurability", 1], ["impact.problem_pressure", 1], ["impact.solution_potential", 1]]},
+    "business": {"label": "Business Readiness (BRL)", "factors": [["brl.market", 1], ["brl.value_prop", 1], ["brl.business_model", 1], ["brl.scalability", 1]]},
+    "tech": {"label": "Tech Readiness (TRL)", "factor": "trl"},
+    "investment": {"label": "Investment Readiness", "factors": [["redstone.market", 1.2], ["redstone.product", 1.1], ["redstone.team", 1.1], ["redstone.business_model", 1.1], ["redstone.competition", 1], ["redstone.marketing", 0.9], ["redstone.financials", 1.3], ["redstone.tech", 1], ["redstone.deal_dynamics", 1.3], ["redstone.impact", 1]]}
+  },
+  "_theses": "How well a venture fits each holder's thesis, from the evidence. A'Pelago = early-stage ocean accelerator (impact + business + team). Redstone = early-stage investor (investment factors).",
+  "theses": {
+    "apelago": {
+      "label": "A'Pelago accelerator",
+      "description": "Early-stage blue-economy accelerator: ocean impact, business readiness, founding team.",
+      "factors": [["impact.problem_pressure", 1.5], ["impact.solution_potential", 1.5], ["impact.measurability", 1], ["brl.market", 1.3], ["brl.value_prop", 1.2], ["brl.business_model", 1.2], ["brl.scalability", 1], ["redstone.team", 1.7], ["redstone.product", 1], ["trl", 0.8]]
+    },
+    "redstone": {
+      "label": "Redstone investment",
+      "description": "Early-stage venture: market, product, team, business model, financials, deal dynamics.",
+      "factors": [["redstone.market", 1.5], ["redstone.product", 1.4], ["redstone.team", 1.4], ["redstone.business_model", 1.4], ["redstone.financials", 1.5], ["redstone.deal_dynamics", 1.5], ["redstone.competition", 1.1], ["redstone.tech", 1], ["redstone.impact", 0.8]]
+    }
+  }
 }

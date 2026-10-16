@@ -50,7 +50,7 @@ def seed_if_empty(db) -> bool:
 
 
 def reset(db) -> None:
-    for table in ("votes", "players", "opportunities", "dives", "companies"):
+    for table in ("votes", "sessions", "players", "users", "opportunities", "dives", "candidates", "companies"):
         db.execute(f"DELETE FROM {table}")
     db.execute("UPDATE live_state SET dive_id = NULL, card_index = -1, phase = 'idle'")
     db.commit()

@@ -1,15 +1,15 @@
 """Crowd statistics over stored votes, and how one player's read compares with the crowd's."""
 import math
-import statistics
 
+from . import config
 from .engine import AXES, composite_of
 
 # How far a player's composite can sit from the crowd's and still count as "with the crowd".
 LEAN_THRESHOLD = 0.5
 
 
-def largest_remainder(counts: list[int]) -> list[int]:
-    """Whole-number percentages that always add up to 100 (or all zero)."""
+def largest_remainder(counts: list[float]) -> list[int]:
+    """Whole-number percentages that always add up to 100 (or all zero). Counts may be weighted."""
     total = sum(counts)
     if not total:
         return [0] * len(counts)
@@ -22,20 +22,48 @@ def largest_remainder(counts: list[int]) -> list[int]:
     return floors
 
 
-def crowd(votes: list) -> dict:
-    """Aggregate votes (rows or dicts with the four axis columns)."""
+def signed_in(vote) -> bool:
+    """Whether a vote came from a signed-in player (rows carry user_id when joined with players)."""
+    try:
+        return vote["user_id"] is not None
+    except (KeyError, IndexError):
+        return False
+
+
+def vote_weights(votes: list) -> list[float]:
+    """How much each vote counts towards a crowd score, to blunt guest bot farms.
+
+    Signed-in players count 1. Guests count GUEST_WEIGHT each, shrinking further as guests pile up so that
+    together they never make up more than GUEST_MAX_SHARE of the total. With nobody signed in (or nobody
+    a guest) every vote counts the same: there's nothing to weigh them against.
+    """
+    users = sum(signed_in(v) for v in votes)
+    guests = len(votes) - users
+    if not users or not guests:
+        return [1.0] * len(votes)
+    share = min(max(config.GUEST_MAX_SHARE, 0.0), 0.99)
+    guest = min(config.GUEST_WEIGHT, share / (1 - share) * users / guests)
+    return [1.0 if signed_in(v) else guest for v in votes]
+
+
+def crowd(votes: list, weighted: bool = True) -> dict:
+    """Aggregate votes (rows or dicts with the four axis columns), guests weighted down unless weighted=False."""
     n = len(votes)
-    dist = {a: [0] * 6 for a in AXES}
-    for v in votes:
+    weights = vote_weights(votes) if weighted else [1.0] * n
+    dist = {a: [0.0] * 6 for a in AXES}
+    for v, w in zip(votes, weights):
         for a in AXES:
-            dist[a][int(v[a])] += 1
+            dist[a][int(v[a])] += w
     if not n:
-        return {"n": 0, "means": None, "dist": dist, "share": {a: [0] * 6 for a in AXES},
+        return {"n": 0, "signed_in": 0, "means": None, "dist": dist, "share": {a: [0] * 6 for a in AXES},
                 "mode": None, "composite": None, "composites": [], "consensus": None}
-    means = {a: round(sum(v[a] for v in votes) / n, 2) for a in AXES}
+    total = sum(weights)
+    means = {a: round(sum(w * v[a] for v, w in zip(votes, weights)) / total, 2) for a in AXES}
     composites = [composite_of({a: v[a] for a in AXES}) for v in votes]
+    centre = sum(w * c for c, w in zip(composites, weights)) / total
     return {
         "n": n,
+        "signed_in": sum(signed_in(v) for v in votes),
         "means": means,
         "dist": dist,
         "share": {a: largest_remainder(dist[a]) for a in AXES},
@@ -43,7 +71,8 @@ def crowd(votes: list) -> dict:
         "mode": {a: max(range(6), key=lambda b: (dist[a][b], -abs(b - means[a]))) for a in AXES},
         "composite": composite_of(means),
         "composites": composites,
-        "consensus": round(statistics.pstdev(composites), 2) if n > 1 else 0.0,
+        "consensus": round(math.sqrt(sum(w * (c - centre) ** 2 for c, w in zip(composites, weights)) / total), 2)
+        if n > 1 else 0.0,
     }
 
 

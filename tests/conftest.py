@@ -8,6 +8,9 @@ from app import config
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "test.db"))
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "secret")
+    # Tests don't depend on a local .env; the test-account test sets its own.
+    monkeypatch.setattr(config, "TEST_USERNAME", "")
+    monkeypatch.setattr(config, "TEST_PASSWORD", "")
     from app.main import app
     with TestClient(app) as c:
         yield c
