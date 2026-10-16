@@ -49,8 +49,9 @@ Unlike Krillion, whose tiers are hand-assigned, our tiers are **measured** from 
 
 - The player side is a **game**; the host side is an **intelligence tool**. The game is the *data-collection
   instrument*, not the deliverable. The host dashboard (divergence + ranked next actions) is the payoff.
-- It must be **self-hosted** on a Proxmox/LXC Linux box (Docker), reachable on LAN and over the web,
-  playable on **phones with zero friction** (QR → URL → tap → submit → reveal). No install, no account.
+- **Now:** runs on **localhost with no Docker** (plain Python venv, see §10.1). **Later:** self-hosted on a
+  Proxmox/LXC Linux box (Docker), reachable on LAN and over the web. Nothing in the code may assume Docker.
+- It must be playable on **phones with zero friction** (QR → URL → tap → submit → reveal). No install, no account.
 - The event demo is a **live multiplayer round**: audience scans QR, plays on phones, a wall/projector
   screen shows crowd opinion colliding with engine scores in real time.
 - The **core game must never depend on live web crawling** (event wi-fi is unreliable). Crawling is an
@@ -471,19 +472,58 @@ This is the screen the judges see; the ranking + gap flags are the "decision-rea
 ## 10. Stack (locked)
 
 - **Backend:** Python 3.12 + FastAPI + uvicorn.
-- **DB:** SQLite (stdlib `sqlite3`), WAL mode, single file on a Docker volume.
+- **DB:** SQLite (stdlib `sqlite3`), WAL mode, single file at `DB_PATH` (default `./data/pitchdle.db`;
+  a Docker volume later).
 - **Frontend:** static HTML + vanilla JS + one CSS file, mobile-first, served by FastAPI. No build step,
   no npm, no framework. CSS `transform: rotateX` for the tile flip.
 - **Live updates:** polling (2 s live state, 5 s dashboard). No websockets.
 - **QR:** `segno` (pure Python) at `/qr?path=/live`, renders `BASE_URL` from env.
-- **Deploy:** Docker + docker-compose, one service. LAN IP + optional reverse proxy for web access.
-- **Deliverable:** one directory, `docker compose up -d`, open URL → QR → play.
+- **Deploy (later, step 10):** Docker + docker-compose on Proxmox, one service. LAN IP + optional
+  reverse proxy for web access. Docker only wraps the same command used locally; no Docker-only code paths.
+- **Deliverable now:** one directory, one command (`./run.sh`), open `http://localhost:8000` → play.
+
+### 10.1 Running locally (no Docker)
+
+Requirements: Python 3.12+ only. No Node, no database server, no Docker.
+
+```bash
+./run.sh
+```
+
+`run.sh` creates `.venv` if missing, installs `requirements.txt`, and starts
+`uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`. Equivalent by hand:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/uvicorn app.main:app --reload --port 8000
+```
+
+- **First run is zero-setup:** on startup the app creates `./data/`, the schema, and loads the seed
+  (companies, opportunities, dives) if the DB is empty. `python -m app.seed --reset` wipes and reseeds.
+- **Config** via environment variables, optionally from a git-ignored `.env`; every one has a dev default
+  so nothing is required locally:
+
+  | Var | Default | Notes |
+  |---|---|---|
+  | `DB_PATH` | `./data/pitchdle.db` | |
+  | `ADMIN_PASSWORD` | `admin` | Logs a warning at startup when left at the default |
+  | `BASE_URL` | derived from the request | Used for the QR code and share text |
+  | `HOST` / `PORT` | `127.0.0.1` / `8000` | |
+
+- **Testing on your phone before Proxmox:** `HOST=0.0.0.0 ./run.sh`, then open
+  `http://<your-mac's-LAN-IP>:8000` on a phone on the same wi-fi (macOS may ask to allow incoming
+  connections). Without `BASE_URL` set, the QR uses the URL the wall page was opened with, so open
+  `/wall` via the LAN IP, not `localhost`, when testing QR joins.
+- **Pages:** `/play` (solo), `/live` (join live room), `/wall`, `/host`, `/host/live`, `/admin`.
+- **Tests:** `.venv/bin/pytest` (engine + scoring + API), no network needed.
+- Ship a `.env.example` listing the vars above.
 
 ---
 
 ## 11. Build order (do in this sequence)
 
-1. **Scaffold**: FastAPI + schema + static shell + compose. `docker compose up` serves `/play`.
+1. **Scaffold**: FastAPI + schema + static shell + `requirements.txt` + `run.sh` + `.env.example`.
+   `./run.sh` on a clean checkout serves `/play` at `http://localhost:8000`.
 2. **Engine + seed**: evidence → per-axis values + composite + coverage; seed companies, opportunities,
    dives; engine unit tests including the two demo cases.
 3. **Solo flow**: dive → card → tap buttons → submit → tile flip reveal → room sheet → second look
@@ -497,9 +537,13 @@ This is the screen the judges see; the ranking + gap flags are the "decision-rea
 8. **Crawler (optional)**: website / RSS adapter, cache, failure path, wired to recrawl.
 9. **Demo polish**: demo-seed votes (flagged `is_seed`) so the wall looks alive with 2 players; a
    written demo script; README for the team.
+10. **Proxmox deploy (later)**: `Dockerfile` (python:3.12-slim, same uvicorn command without
+    `--reload`, `HOST=0.0.0.0`), `docker-compose.yml` with a volume for `DB_PATH`, `BASE_URL` set to the
+    public URL, optional reverse proxy. Not needed for local development.
 
 ### Definition of done (verify each before moving on)
-- `docker compose up -d` → reachable from a phone on the LAN; `/wall` shows a working QR.
+- On a clean checkout, `./run.sh` → `http://localhost:8000/play` works with no other setup and no Docker.
+- With `HOST=0.0.0.0`, a phone on the same wi-fi can play, and the QR on `/wall` points at a URL it can open.
 - A player completes a full 5-card Dive (guess → tiles → second look → share grid) with **no outbound network**.
 - `/reveal` returns nothing useful before the caller has voted.
 - A live round with 3+ phones stays in sync through lock → reveal → depth chart → final top 5.
