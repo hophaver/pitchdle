@@ -1,4 +1,4 @@
-# Pitchdle — Build Plan (v2)
+# Pitchdle — Build Plan (v3)
 
 **Event:** JunctionX Turku, Redstone x A'Pelago blue-economy challenge
 **Product concept:** a daily-puzzle-style crowd game ("Wordle for startup pitches") where players guess how
@@ -25,6 +25,23 @@ the host-dashboard name if the team prefers it.
 | Data model | No table for next actions, no coverage column, no duplicate-vote guard | Adds `opportunities`, `expert_coverage`, device token + unique vote constraint |
 | Nickname | "3-char" and "≤12 chars" both stated | **3-letter arcade initials**, optional, default a random sea-creature emoji handle |
 | Undefined terms | "invert axes", "large gap" | Formulas and thresholds stated in §4 and §9 |
+
+### v3: Krillion-style "you vs the room" presentation
+
+Krillion (a daily trivia dive where rarer answers sink you deeper) does two things this game needs:
+it makes **your answer vs everyone else's** the centrepiece of the reveal, and it turns score into an
+**ocean depth**, which fits a blue-economy event perfectly. Applied here as:
+
+| Krillion | Pitchdle adaptation |
+|---|---|
+| Rare answers score more than popular ones | Rarity only pays when you're **also right**: being accurate on an axis where most of the room is wrong earns an *Against the Current* bonus (§1.3). Pure rarity would reward random contrarians and ruin the data |
+| Named rarity tiers per answer | A **read tier** per card (Surface → Trench), from how few people in the room read it as well as you did (§1.3) |
+| Points → metres → ocean zones | Dive score shown as **depth in metres**, through real ocean zones (Sunlight → Hadal), with a diver sinking as you play (§1.4) |
+| End-of-dive answer sheet grouped by tier | Per-card **room sheet**: every 0–5 bucket per axis with its % of the room, your bucket, the crowd's favourite and the engine's answer marked (§1.2, §1.4) |
+| Share your depth to the group chat | Share text leads with depth and zone, then the tile grid (§1.4) |
+| Daily leaders | Wall shows the **whole room as divers at their depth** in a live depth chart (§9) |
+
+Unlike Krillion, whose tiers are hand-assigned, our tiers are **measured** from the room's actual votes.
 
 ---
 
@@ -54,13 +71,14 @@ The genre works because of a few repeatable mechanics. Each one below maps to a 
 | **Wordle** | One shared puzzle per day, so everyone plays the same thing and can compare | Fixed 5-card **Dive** per day / per event session (§1.3) |
 | **Wordle** | Colored tiles flip one at a time; the reveal *is* the dopamine | Per-axis tiles flip left-to-right after submit (§1.2) |
 | **Wordle** | Spoiler-free emoji grid you can paste anywhere | Share grid: `Pitchdle #3 🌊 3870` + one tile row per card (§1.4) |
-| **Wordle** | End screen with guess-distribution histogram + streak | Score histogram for the room, "your rank", streak (localStorage) |
+| **Wordle** | End screen with guess-distribution histogram + streak | Room depth chart (replaces the histogram), "your rank", streak (localStorage) |
 | **Loldle / Poeltl** | Guess against several attributes at once; each column goes green / orange / red with ↑↓ arrows for numeric ones | 4 axes, each tile is green / yellow / grey with an arrow saying whether the engine is higher or lower |
 | **Costcodle / Higher-Lower** | Guess a hidden number; feedback is "higher" or "lower" | The arrows on each tile; the hidden number is the engine's axis value |
 | **Worldle / Globle** | Feedback tells you *how far* off, not just right/wrong | Tile color bands come from absolute error, and points decay smoothly with distance |
 | **GeoGuessr** | Points decay continuously with distance; max per round, fixed number of rounds | 0–1000 points per card with exponential decay (§1.3) |
 | **Heardle / Framed** | Clues revealed progressively; using fewer clues is worth more | Second look reveals facts; round-2 points are worth half (§1.1) |
 | **Kahoot** | Host-paced room, everyone answers the same question on their phones, big screen shows results and a podium | Live room mode + wall view (§2, §9) |
+| **Krillion** | Same daily set for all; your answer is graded against what everyone else answered; rare answers sink you deeper; score is an ocean depth | Room sheet per card, read tiers, Against the Current bonus, depth-in-metres score and zones, depth-chart wall (§1.2–§1.4, §9) |
 
 Things we deliberately **don't** borrow: multiple guesses per card (one guess + one revision is enough
 signal and keeps a card under ~30 s), hard mode, and accounts for cross-device streaks.
@@ -107,6 +125,27 @@ After round-1 submit, four tiles flip one at a time (~250 ms apart):
      diverges: *"84% of the room scored this 4+. The engine says 2.0: this pitch reads better than its
      fundamentals."* The callout only appears once a card has ≥ 5 votes.
 
+**Room sheet (Krillion-style, you vs everyone).** Under the tiles, each axis expands into a row of six
+buckets (0–5) showing what the room answered:
+
+```
+ PLAUSIBLE                                    you ● crowd ◆ engine ▼
+  0      1      2      3      4      5
+  ░2%   ░4%   ▓9%   ▓18%  █41%  ▓26%
+                ▼            ◆●
+  "41% of the room said 4, like you. Only 9% said 2, the engine's read."
+```
+
+- Bar height / shade = share of the room in that bucket (round-1 votes for this card, this dive).
+- Markers: your bucket ●, the crowd's most common bucket ◆, the engine's value ▼ (engine values are
+  fractional; ▼ sits between buckets).
+- One generated sentence per axis, picked from templates: *with the crowd and right*, *with the crowd
+  and wrong*, *against the crowd and right* (the Against the Current case, highlighted), *against the
+  crowd and wrong*.
+- Collapsed to the single most interesting axis by default (largest crowd-vs-engine gap); tap to see all four.
+- Hidden until the card has ≥ 5 votes; below that it says "You're one of the first divers. Check back
+  at the end." (solo mode) and the end screen re-renders the sheet with the latest numbers.
+
 The engine number is labelled **"Engine read"**, not "Expert", in the UI. It is a model, and naming it
 honestly matters when real startups are on screen (see §7).
 
@@ -120,28 +159,67 @@ honestly matters when real startups are on screen (see §7).
   Round 1 counts in full; any improvement in round 2 counts at half value:
   `card_points = r1 + 0.5 · max(0, r2 − r1)`. Revising toward the engine earns a bonus; revising away
   costs nothing. (Heardle-style: using the clue is worth less than knowing without it.)
-- **Dive score** = sum over 5 cards, max 5000. Because every player gets the same cards, totals compare
-  fairly.
+- **Against the Current bonus** (Krillion's "rare answers score more", but only when correct): per axis,
+  if your round-1 error `e ≤ 0.5` *and* the crowd mean's error on that axis is `> 1.0`, add
+  `bonus = 250 · (1 − share_of_room_within_0.5_of_engine)`. Max +250 per axis, +1000 per card. Computed
+  at reveal against the room at that moment (live mode: after lock, so it's the same for everyone);
+  needs ≥ 5 votes, otherwise 0. Stored on the vote and not recomputed, so scores don't drift.
+- **Depth.** 1 point = 1 metre. Base max is 5,000 m per Dive; with bonuses a perfect contrarian Dive
+  reaches ~10,000 m, the Challenger Deep. Zones (real oceanography, the same bands everywhere in the UI):
+
+  | Zone | Depth |
+  |---|---|
+  | ☀️ Sunlight | 0–200 m |
+  | 🌗 Twilight | 200–1,000 m |
+  | 🌑 Midnight | 1,000–4,000 m |
+  | 🦑 Abyss | 4,000–6,000 m |
+  | 🕳️ Hadal | 6,000 m + |
+
+- **Read tier per card** (Krillion's named tiers, measured instead of hand-assigned). Rank your card
+  points against everyone's for that card in this dive; percentile → tier:
+
+  | Tier | You beat… | Label on card |
+  |---|---|---|
+  | 🫧 Surface | < 40% of the room | "Floating with the crowd" |
+  | 🐠 Reef | 40–70% | "Solid read" |
+  | 🐡 Twilight | 70–90% | "Sharper than most" |
+  | 🦑 Deep read | 90–99% | "Most divers never got this deep" |
+  | 🐋 One in the room | top 1, ≥ 20 votes | "Nobody read it better" |
+
+  Tier names are ours, in the same spirit; don't copy Krillion's tier names or branding. Tiers are
+  display-only and recomputed whenever shown (in solo mode a card's tier can rise or fall as more people
+  play); stored points and bonuses never change.
+- **Dive score** = sum over 5 cards, shown as depth. Because every player gets the same cards, depths
+  compare fairly.
 - **Leaderboards** (room / session scoped):
-  - **Sharpest read**: highest Dive score.
-  - **Boldest takes**: biggest round-1 deviation from the crowd mean *that turned out right* (Kahoot-podium
-    energy for contrarians who were correct).
+  - **Deepest dive**: highest Dive depth.
+  - **Against the Current**: most bonus metres (contrarians who were right; the most valuable signal for the host).
   - **Most moved**: biggest round-2 deltas (who changes their mind when shown facts).
 
 ### 1.4 End screen and share grid
 
+**During the Dive:** a slim depth gauge on the left edge of the phone screen. The background shades from
+light to deep blue as you sink, and a small diver drops to your running depth after each reveal, with
+the metres counting up. Zone names appear as you cross them ("Entering the Midnight zone").
+
 After card 5:
-- Total score, rank in room ("#7 of 63"), histogram of room scores with your bar highlighted.
+- **Final depth + zone** ("3,870 m · Midnight zone"), rank in room ("#7 of 63").
+- **Room depth chart**: a vertical ocean strip with every player in this dive as a dot at their depth,
+  yours highlighted (replaces the Wordle-style histogram; same information, on theme).
+- **Answer sheet** (Krillion's end-of-dive sheet): the 5 cards listed with your read tier, points, any
+  Against the Current bonus, and the room sheet for each one re-rendered with the final numbers. Cards
+  are grouped by tier, deepest first, so the best calls are at the top.
 - Streak / games played (localStorage only; nice-to-have).
-- **Share** button copies a spoiler-free grid (no company names, no numbers per axis):
+- **Share** button copies spoiler-free text (no company names, no per-axis numbers):
 
 ```
-Pitchdle #3 🌊 3870/5000
-🟩🟨⬛🟨
-🟩🟩🟩🟨
-⬛⬛🟨🟩
-🟨🟩🟩🟩
-🟩🟨🟨⬛
+Pitchdle #3 🤿 3,870 m · 🌑 Midnight
+🟩🟨⬛🟨 🐠
+🟩🟩🟩🟨 🦑
+⬛⬛🟨🟩 🫧
+🟨🟩🟩🟩 🐡
+🟩🟨🟨⬛ 🐠
+🌊 2× against the current
 pitchdle.example/play
 ```
 
@@ -163,11 +241,11 @@ Uses the Web Share API on phones, falls back to clipboard.
 | Pacing | Player moves through the 5 cards at their own pace | Host advances; all phones show the same card |
 | Timer | None | 25 s per card, shown on phone + wall; late votes are rejected |
 | Reveal | Right after the player submits | Phones show "locked in" until the host hits Reveal; then all phones and the wall flip together |
-| Wall | Shows aggregates only | Shows current card, live vote count, then the crowd-vs-engine reveal and a top-5 podium |
+| Wall | Shows aggregates only | Shows current card, live vote count, then the room sheet reveal, then the live depth chart, and at the end the 5 deepest divers |
 | Join | `/play` | `/live` (QR on the wall) |
 
 Live mode is a thin state machine on the server: `lobby → card(n) open → card(n) locked → card(n) revealed
-→ … → podium`. Phones and wall poll `/api/live/state` every 2 s (cheap: one small JSON row). The host
+→ … → final`. Phones and wall poll `/api/live/state` every 2 s (cheap: one small JSON row). The host
 drives it from `/host/live` with big Next / Reveal buttons.
 
 ---
@@ -189,7 +267,7 @@ QR ──► browser ──► static SPA (mobile-first)                       �
 │   ├─ GET  /api/company/{id}/reveal → only after caller has voted: │
 │   │                                  engine axes, crowd stats,    │
 │   │                                  tiles, points, facts         │
-│   ├─ GET  /api/leaderboard         → sharpest / boldest / moved   │
+│   ├─ GET  /api/leaderboard         → deepest / current / moved    │
 │   ├─ GET  /api/live/state          → live-room state machine      │
 │   ├─ POST /api/host/live/*         → next / lock / reveal         │
 │   ├─ GET  /api/host/*              → dashboard aggregates         │
@@ -264,7 +342,8 @@ votes
   round         INT              # 1 pitch-only, 2 after facts
   novel, useful, plausible, investable   INT 0–5
   stuck         INT              # round 2: 1 if player tapped Stick
-  points        INT              # computed at insert
+  points        INT              # accuracy points, computed at insert
+  bonus         INT              # Against the Current metres, set once at reveal (round 1 only)
   is_seed       INT              # 1 = demo seed vote (excluded from exports, wiped by reset)
   created_at    TEXT
   UNIQUE(player_id, dive_id, company_id, round)
@@ -364,8 +443,10 @@ and let admin hide `is_real` companies with one toggle if a team on the floor ob
 ## 9. Host dashboard (the payoff)
 
 1. **Live wall** (`/wall`, projector): big type, high contrast. Lobby with QR and joined count → current
-   card + 25 s timer + vote count ticking → reveal: crowd distribution per axis vs engine marker, gap
-   callout → top-5 podium at the end.
+   card + 25 s timer + vote count ticking → reveal: the **room sheet** for all 4 axes at once (bucket
+   bars, crowd ◆, engine ▼ dropping in last for drama), gap callout, and a count of "N divers went
+   against the current" → **depth chart**: the whole room as divers at their running depth on a dark
+   ocean gradient with zone lines; they sink in an animation after each card → the 5 deepest at the end.
 2. **Companies table**: crowd means (4 axes), engine axes, composite, coverage, **perception gap**
    (red when |gap| ≥ 1.0, amber ≥ 0.5), **sensitivity**, consensus, vote count.
 3. **Perception-vs-reality flags**, auto-labelled with the numbers behind them:
@@ -378,7 +459,10 @@ and let admin hide `is_real` companies with one toggle if a team on the floor ob
 4. **Ranked next actions** per company from `opportunities`, ranked by `fit`, re-ordered by the flags
    (e.g. *story > substance* puts "get a pilot customer" partners above investors), each with its
    one-line "why this one next."
-5. **Leaderboards**: sharpest read, boldest takes, most moved.
+5. **Leaderboards**: deepest dive, against the current, most moved.
+6. **Contrarian signal** (comes free from the bonus): per company, who was right against the crowd and
+   on which axis. If the room overrates a startup's Plausible but 10% called it correctly, those 10%
+   are the people worth asking why.
 
 This is the screen the judges see; the ranking + gap flags are the "decision-ready" proof.
 
@@ -402,10 +486,12 @@ This is the screen the judges see; the ranking + gap flags are the "decision-rea
 1. **Scaffold**: FastAPI + schema + static shell + compose. `docker compose up` serves `/play`.
 2. **Engine + seed**: evidence → per-axis values + composite + coverage; seed companies, opportunities,
    dives; engine unit tests including the two demo cases.
-3. **Solo flow**: dive → card → tap buttons → submit → tile flip reveal → second look (Stick / revise) →
-   next → end screen with score, histogram, share grid. Test on a real phone.
-4. **Points + leaderboards**: per-card points at insert; sharpest / boldest / most moved.
-5. **Live room**: state machine, host controls, timer, phones synced, wall view + podium.
+3. **Solo flow**: dive → card → tap buttons → submit → tile flip reveal → room sheet → second look
+   (Stick / revise) → next → end screen with depth, room depth chart, answer sheet, share text. Depth
+   gauge during play. Test on a real phone.
+4. **Points + depth + leaderboards**: accuracy points at insert; Against the Current bonus at reveal;
+   read tiers; deepest / against the current / most moved.
+5. **Live room**: state machine, host controls, timer, phones synced, wall room sheet + depth chart.
 6. **Host dashboard**: table, flags, ranked next actions.
 7. **Admin**: CRUD, evidence form → rescore, dives, resets, export.
 8. **Crawler (optional)**: website / RSS adapter, cache, failure path, wired to recrawl.
@@ -416,7 +502,9 @@ This is the screen the judges see; the ranking + gap flags are the "decision-rea
 - `docker compose up -d` → reachable from a phone on the LAN; `/wall` shows a working QR.
 - A player completes a full 5-card Dive (guess → tiles → second look → share grid) with **no outbound network**.
 - `/reveal` returns nothing useful before the caller has voted.
-- A live round with 3+ phones stays in sync through lock → reveal → podium.
+- A live round with 3+ phones stays in sync through lock → reveal → depth chart → final top 5.
+- The room sheet's percentages for each card add up to 100%, and its ◆ / ▼ markers match the dashboard numbers.
+- A scripted seed scenario (room wrong, one player right) awards that player the bonus and puts them top of Against the Current.
 - Admin adds a new company, it scores on save and can be put in a dive, no code change.
 - Dashboard shows crowd vs engine, a perception gap, a sensitivity delta, flags and ranked next actions.
 - Seed includes both demo cases and they produce the intended flags with the seeded votes.
@@ -441,7 +529,9 @@ This is the screen the judges see; the ranking + gap flags are the "decision-rea
 - Demo beat: open with the polished-pitch card in live mode → the room overshoots → wall flips → gap
   flag lights up on the dashboard → ranked next actions for that company. Then the diamond card, where
   the second look visibly moves the room.
-- End on the share grid on the wall: it's instantly recognisable and gets a laugh.
+- The ocean-depth theme isn't decoration: it's a blue-economy challenge, and "the crowd stays at the
+  surface, the sharp reads go deep" is the product thesis in one image.
+- End on the depth chart on the wall, then the share text: it's instantly recognisable and gets a laugh.
 
 ---
 
