@@ -149,6 +149,15 @@ MIGRATIONS = [
     ("companies", "pulse", "TEXT"),
     ("dives", "pool", "TEXT DEFAULT 'demo'"),
     ("companies", "origin", "TEXT DEFAULT ''"),  # 'discovery-auto' for startups the live-mode autofill found  # which companies a set draws on: demo (sample) or live (real)
+    # Sign-up review. Accounts from before it count as approved; new sign-ups are inserted as 'pending'.
+    ("users", "status", "TEXT DEFAULT 'approved'"),  # pending | approved | rejected
+    ("users", "profile", "TEXT DEFAULT '{}'"),  # what they told moderators when signing up
+    ("users", "reviewed_by", "TEXT"),
+    ("users", "reviewed_at", "TEXT"),
+    ("users", "badge", "TEXT DEFAULT ''"),  # '' | high | low | muted: how much their answers count
+    ("users", "badge_by", "TEXT"),
+    ("users", "badge_at", "TEXT"),
+    ("users", "is_moderator", "INTEGER DEFAULT 0"),  # set by an admin on /moderate
 ]
 
 

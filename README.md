@@ -25,9 +25,11 @@ Open http://localhost:8000/play. The first run creates `.venv`, installs `requir
 | `/host` | Dashboard: crowd vs engine, flags, next actions | admin |
 | `/host/live` | Run the live room (open, lock, reveal, next) | admin |
 | `/admin` | Companies, evidence, opportunities, dives, resets, export | admin |
+| `/moderate` | Review sign-ups, set member badges, delete accounts, make moderators | moderator account or admin |
 
 Host and admin pages use a browser login prompt. Any username works; the password is
-`ADMIN_PASSWORD` (default `admin`).
+`ADMIN_PASSWORD` (default `admin`). `/moderate` takes the admin password too, and moderators sign in with their
+own account: already logged in on `/play`, or with their username and password at the prompt.
 
 ### Play on your phone before it's on Proxmox
 
@@ -47,6 +49,7 @@ Copy `.env.example` to `.env` to override any of these:
 |---|---|---|
 | `DB_PATH` | `./data/pitchdle.db` | |
 | `ADMIN_PASSWORD` | `admin` | A warning is logged while it's the default |
+| `TEST_MODERATOR_USERNAME` / `TEST_MODERATOR_PASSWORD` | empty | A moderator account made on startup, for testing. Keep it off public deployments |
 | `BASE_URL` | from the request | Used for the QR code |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | |
 | `LIVE_SECONDS` | `25` | Live-round timer |
@@ -70,16 +73,36 @@ and adds what it finds to the dashboard, inactive. Players see a "check back soo
 
 Engine weights are in `weights.json`. After editing them, run `.venv/bin/python -m app.seed --rescore`.
 
-## Accounts and guests
+## Accounts, sign-up review and badges
 
-Everyone plays as a guest (a device cookie) until they sign up or log in with a username and password.
-Guests get today's set only; an account keeps history, stats and streaks, and opens earlier daily sets.
-Logging in moves whatever the device played as a guest onto the account. Players delete their account from
-the menu under their username; the host can list and delete accounts in `/admin` → Users.
+Everyone plays as a guest (a device cookie) until they log in. Signing up asks for a username and password plus
+what a moderator needs to judge the person: full name, email, what they do, optionally organisation, location
+and expertise, at least one link (LinkedIn, GitHub, portfolio, CV or another), and why they want to join. Every
+sign-up waits on `/moderate` until a moderator approves it. Until then it can't log in, and the person plays on
+as a guest; the first login after approval moves whatever that device played onto the account. Guests get
+today's set only; an account keeps history, stats and streaks, and opens earlier daily sets. Players delete
+their own account from the menu under their username; moderators can delete any member's account.
 
-To blunt bot farms, crowd scores (player results, host dashboard, exports) weigh guests down: each guest
-answer counts `GUEST_WEIGHT` (0.5) of a signed-in one, and once anyone signed in has answered a card, all
-guests together make up at most `GUEST_MAX_SHARE` (40%) of its score. The live wall counts the room evenly.
+Moderators are members an admin has promoted: on `/moderate` → Members, open a row → **Make moderator**. Each
+review and badge records who did it (the admin login shows as "admin"). Only admins make or remove moderators or
+change a moderator's account (badge, deletion), a moderator's own included. A moderator's account menu on
+`/play` links to the moderation page.
+
+Members carry a badge a moderator sets, when approving or later. The Members tab shows how each one plays:
+answers, how far their reads sit from the engine's on average, and how often they give all four calls the same
+number. Badges are only shown to moderators.
+
+| Badge | A member's answer counts | |
+|---|---|---|
+| High priority | `HIGH_PRIORITY_WEIGHT` (2) | |
+| none | 1 | |
+| Low priority | `LOW_PRIORITY_WEIGHT` (0.5) | |
+| Muted | 0 | Left out everywhere, the live room included |
+
+To blunt bot farms, each guest answer counts `GUEST_WEIGHT` (0.5), and once members have answered a card, all
+guests together make up at most `GUEST_MAX_SHARE` (40%) of its score. These weights apply to player results,
+the host dashboard and exports. The live room counts the people in it alike, except muted members. Accounts from
+before sign-up review count as approved members with no badge.
 
 ## Rehearsing the live demo
 
@@ -107,8 +130,8 @@ write the pitch as one concrete line (show, don't tell): what it is or does, not
 ```
 
 They cover the engine (including both demo cases), crowd maths, a full solo set with results locked until
-the last card, final answers, a 3-phone live round, the timer lock, admin add-and-score, and the demo-vote
-flags. No network needed.
+the last card, final answers, a 3-phone live round, the timer lock, admin add-and-score, the demo-vote
+flags, and sign-up review with moderator access and badge weights. No network needed.
 
 ## Layout
 
@@ -117,7 +140,9 @@ app/
   main.py        routes: pages, player API, live room, host, admin, QR
   service.py     player results (you vs crowd), wall callout, host overview
   engine.py      evidence → per-axis engine read + coverage (weights.json)
-  scoring.py     crowd stats and lean (higher / with / lower)
+  scoring.py     crowd stats, vote weights (guests, badges) and lean (higher / with / lower)
+  accounts.py    sign-up, login, sessions, guests' answers moving onto an account
+  moderation.py  sign-up review, member badges, how each member plays
   live.py        live-room state machine
   seed.py        seed / reset / rescore CLI and demo votes
   seed_data.py   the fictional seed companies and sets

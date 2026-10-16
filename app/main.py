@@ -6,7 +6,7 @@ import re
 import secrets
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 import segno
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -15,9 +15,9 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import accounts, autofill, config, live, scoring, seed, service
+from . import accounts, autofill, config, live, moderation, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, now
 from .engine import AXES
 
@@ -30,11 +30,14 @@ async def lifespan(_app: FastAPI):
     init_db(db)
     if seed.seed_if_empty(db):
         log.warning("Pitchdle: empty database, loaded seed data into %s", config.DB_PATH)
-    accounts.ensure_test_account(db)
+    accounts.ensure_test_accounts(db)
     autofill.maybe_start(db)  # live mode tops itself up in the background; demo mode does nothing
     db.close()
     if config.ADMIN_PASSWORD == "admin":
         log.warning("Pitchdle: ADMIN_PASSWORD is the default 'admin'. Set it before exposing this beyond localhost.")
+    if config.TEST_MODERATOR_USERNAME and config.TEST_MODERATOR_PASSWORD:
+        log.warning("Pitchdle: test moderator '%s' is set up from .env. Before exposing this beyond localhost, unset "
+                    "TEST_MODERATOR_* and delete the account on /moderate.", config.TEST_MODERATOR_USERNAME)
     yield
 
 
@@ -67,6 +70,23 @@ YEAR = 365 * 24 * 3600
 
 def current_user(request: Request, db=Depends(get_db)):
     return accounts.user_for_session(db, request.cookies.get(SESSION_COOKIE))
+
+
+mod_basic = HTTPBasic(realm="Moderation", auto_error=False)
+
+
+def require_moderator(creds: HTTPBasicCredentials | None = Depends(mod_basic), user=Depends(current_user),
+                      db=Depends(get_db)) -> moderation.Staff:
+    """The admin password at the browser prompt, or a moderator's own account: already logged in on /play, or their
+    username and password at the prompt. Returns who's acting, which goes on each review and badge."""
+    if creds and secrets.compare_digest(creds.password.encode(), config.ADMIN_PASSWORD.encode()):
+        return moderation.Staff("admin", admin=True)
+    if not (user and user["is_moderator"]) and creds:
+        user = accounts.moderator_login(db, creds.username, creds.password)
+    if user and user["is_moderator"]:
+        return moderation.Staff(user["username"])
+    raise HTTPException(401, "Log in with a moderator account or the admin password.",
+                        headers={"WWW-Authenticate": 'Basic realm="Moderation"'})
 
 
 def get_player(request: Request, response: Response, db=Depends(get_db), user=Depends(current_user)):
@@ -130,6 +150,11 @@ def admin_page():
     return page("admin.html")
 
 
+@app.get("/moderate", include_in_schema=False, dependencies=[Depends(require_moderator)])
+def moderate_page():
+    return page("moderate.html")
+
+
 @app.get("/qr", include_in_schema=False)
 def qr(request: Request, path: str = "/live"):
     if not path.startswith("/"):
@@ -148,12 +173,114 @@ def me(player=Depends(get_player), user=Depends(current_user)):
     return {"ok": True, "user": accounts.public_user(user) if user else None}
 
 
+# --- text from players ----------------------------------------------------------------------------
+
+def clean_text(value: str) -> str:
+    """One line of plain text: no control characters, single spaces."""
+    return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", value)).strip()
+
+
+def clean_paragraph(value: str) -> str:
+    """Plain text that keeps its line breaks, with at most one blank line in a row."""
+    lines = [clean_text(line) for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def web_link(value: str, label: str = "link") -> str:
+    """A plain http(s) address, with https:// added when it's left off."""
+    value = value.strip()
+    if value and "://" not in value:
+        value = "https://" + value
+    parts = urlsplit(value)
+    host = parts.hostname or ""
+    if (len(value) > 200 or parts.scheme not in ("http", "https") or "." not in host
+            or parts.username or parts.password or re.search(r"\s", value)):
+        raise ValueError(f"{label} must be a web address like https://example.com")
+    return value
+
+
 # --- accounts --------------------------------------------------------------------------------------
-# Everyone starts as a guest. Logging in (or signing up) moves the guest's answers onto the account.
+# Everyone starts as a guest. A sign-up waits for a moderator on /moderate; logging in once it's approved
+# moves the guest's answers onto the account.
 
 class Credentials(BaseModel):
     username: str = Field(max_length=40)
     password: str = Field(max_length=200)
+
+
+# What a sign-up tells the moderators. Mirrored by SIGNUP_SECTIONS in play.js, and ROLES by PD.ROLES.
+SIGNUP_TEXT = {  # field: (name in messages, min, max)
+    "full_name": ("name", 2, 80), "organisation": ("organisation", 0, 80), "location": ("location", 0, 80),
+    "expertise": ("what you know well", 0, 160), "motivation": ("why you want to join", 20, 600),
+}
+ROLES = ("founder", "investor", "industry", "research", "engineer", "public", "student", "other")
+# Profile links, and the site each one has to be on (None: anywhere). At least one is needed.
+LINKS = {"linkedin": "linkedin.com", "github": "github.com", "portfolio": None, "cv": None, "other": None}
+LINK_NAMES = {"linkedin": "LinkedIn", "github": "GitHub", "cv": "CV"}
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+MAX_PENDING_SIGNUPS = 500
+
+
+class SignUp(Credentials):
+    full_name: str
+    email: str
+    role: str
+    organisation: str = ""
+    location: str = ""
+    expertise: str = ""
+    motivation: str
+    linkedin: str = ""
+    github: str = ""
+    portfolio: str = ""
+    cv: str = ""
+    other: str = ""
+
+    @field_validator(*SIGNUP_TEXT)
+    @classmethod
+    def plain_text(cls, value: str, info) -> str:
+        value = clean_paragraph(value) if info.field_name == "motivation" else clean_text(value)
+        label, lo, hi = SIGNUP_TEXT[info.field_name]
+        if not lo <= len(value) <= hi:
+            raise ValueError(f"{label} must be {lo}-{hi} characters" if lo else f"{label} must be at most {hi} characters")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def email_shape(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) > 120 or not EMAIL_RE.match(value):
+            raise ValueError("email must look like name@example.com")
+        return value
+
+    @field_validator("role")
+    @classmethod
+    def known_role(cls, value: str) -> str:
+        if value not in ROLES:
+            raise ValueError("pick what you do from the list")
+        return value
+
+    @field_validator(*LINKS)
+    @classmethod
+    def profile_link(cls, value: str, info) -> str:
+        if not value.strip():
+            return ""
+        name = LINK_NAMES.get(info.field_name, info.field_name)
+        value = web_link(value, f"{name} link")
+        site, host = LINKS[info.field_name], urlsplit(value).hostname
+        if site and host != site and not host.endswith("." + site):
+            raise ValueError(f"{name} link must be on {site}")
+        return value
+
+    @model_validator(mode="after")
+    def has_a_link(self):
+        if not any(getattr(self, key) for key in LINKS):
+            raise ValueError("add at least one link so a moderator can see who you are")
+        return self
+
+    def profile(self) -> dict:
+        """What moderators see: everything but the credentials, with only the links that were given."""
+        out = self.model_dump(exclude={"username", "password", *LINKS})
+        return out | {"links": {key: getattr(self, key) for key in LINKS if getattr(self, key)}}
 
 
 def sign_in(request: Request, response: Response, db, user) -> dict:
@@ -163,18 +290,23 @@ def sign_in(request: Request, response: Response, db, user) -> dict:
 
 
 @app.post("/api/account/register")
-def register(body: Credentials, request: Request, response: Response, db=Depends(get_db)):
+def register(body: SignUp, db=Depends(get_db)):
+    """The sign-up waits for a moderator and doesn't log in: until it's approved, the player plays on as a guest."""
+    if db.execute("SELECT COUNT(*) FROM users WHERE status = 'pending'").fetchone()[0] >= MAX_PENDING_SIGNUPS:
+        raise HTTPException(503, "Sign-ups are paused while the moderators catch up. Try again later.")
     try:
-        user = accounts.register(db, body.username, body.password)
+        accounts.register(db, body.username, body.password, body.profile())
     except accounts.AccountError as e:
         raise HTTPException(400, str(e))
-    return sign_in(request, response, db, user)
+    return {"status": "pending"}
 
 
 @app.post("/api/account/login")
 def login(body: Credentials, request: Request, response: Response, db=Depends(get_db)):
     try:
         user = accounts.authenticate(db, body.username, body.password)
+    except accounts.NotApproved as e:
+        raise HTTPException(403, str(e))
     except accounts.AccountError as e:
         raise HTTPException(401, str(e))
     return sign_in(request, response, db, user)
@@ -305,11 +437,6 @@ MAX_PENDING_PER_DEVICE = 3
 MAX_PENDING_TOTAL = 200
 
 
-def clean_text(value: str) -> str:
-    """One line of plain text: no control characters, single spaces."""
-    return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", value)).strip()
-
-
 class SubmissionIn(BaseModel):
     name: str
     sector: str
@@ -332,15 +459,7 @@ class SubmissionIn(BaseModel):
     @field_validator("website")
     @classmethod
     def plain_web_link(cls, value: str) -> str:
-        value = value.strip()
-        if value and "://" not in value:
-            value = "https://" + value
-        parts = urlsplit(value)
-        host = parts.hostname or ""
-        if (len(value) > 200 or parts.scheme not in ("http", "https") or "." not in host
-                or parts.username or parts.password or re.search(r"\s", value)):
-            raise ValueError("link must be a web address like https://example.com")
-        return value
+        return web_link(value)
 
 
 @app.post("/api/submit")
@@ -457,6 +576,78 @@ def host_dives(db=Depends(get_db)):
             for d in rows]
 
 
+# --- moderation ------------------------------------------------------------------------------------
+# Sign-ups wait on /moderate until a moderator lets them in. A member's badge sets how much their answers count.
+
+BADGE_PATTERN = f"^({'|'.join(moderation.BADGES)})$"
+
+
+def mod_user(db, uid: int):
+    user = moderation.get_user(db, uid)
+    if not user:
+        raise HTTPException(404, "No such user.")
+    return user
+
+
+@contextmanager
+def refusals():
+    """A moderation action's refusals as HTTP errors: admins only (403), or not possible as things stand (409)."""
+    try:
+        yield
+    except moderation.NotAllowed as e:
+        raise HTTPException(403, str(e))
+    except moderation.ModerationError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.get("/api/mod/users")
+def mod_users(staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    return moderation.overview(db) | {"viewer": {"name": staff.name, "admin": staff.admin}}
+
+
+class ReviewIn(BaseModel):
+    status: str = Field(pattern="^(approved|rejected)$")
+    badge: str = Field("", pattern=BADGE_PATTERN)
+
+
+@app.post("/api/mod/users/{uid}/review")
+def mod_review(uid: int, body: ReviewIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    with refusals():
+        moderation.review(db, mod_user(db, uid), body.status, body.badge, staff)
+    return moderation.member(db, uid)
+
+
+class BadgeIn(BaseModel):
+    badge: str = Field(pattern=BADGE_PATTERN)
+
+
+@app.put("/api/mod/users/{uid}/badge")
+def mod_badge(uid: int, body: BadgeIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    with refusals():
+        moderation.set_badge(db, mod_user(db, uid), body.badge, staff)
+    return moderation.member(db, uid)
+
+
+class ModeratorIn(BaseModel):
+    moderator: bool
+
+
+@app.put("/api/mod/users/{uid}/moderator")
+def mod_moderator(uid: int, body: ModeratorIn, staff: moderation.Staff = Depends(require_moderator),
+                  db=Depends(get_db)):
+    with refusals():
+        moderation.set_moderator(db, mod_user(db, uid), body.moderator, staff)
+    return moderation.member(db, uid)
+
+
+@app.delete("/api/mod/users/{uid}")
+def mod_delete_user(uid: int, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    with refusals():
+        moderation.check_manageable(mod_user(db, uid), staff)
+    accounts.delete_user(db, uid)
+    return {"ok": True}
+
+
 # --- admin -----------------------------------------------------------------------------------------
 
 class Fact(BaseModel):
@@ -557,18 +748,6 @@ def admin_approve_submission(sid: int, db=Depends(get_db)):
 def admin_reject_submission(sid: int, db=Depends(get_db)):
     db.execute("DELETE FROM submissions WHERE id = ?", (sid,))
     db.commit()
-    return {"ok": True}
-
-
-@app.get("/api/admin/users", dependencies=[Depends(require_admin)])
-def admin_users(db=Depends(get_db)):
-    return {"users": accounts.list_users(db), "guests": accounts.guest_count(db)}
-
-
-@app.delete("/api/admin/users/{uid}", dependencies=[Depends(require_admin)])
-def admin_delete_user(uid: int, db=Depends(get_db)):
-    if not accounts.delete_user(db, uid):
-        raise HTTPException(404, "No such user.")
     return {"ok": True}
 
 
@@ -792,6 +971,7 @@ class ResetIn(BaseModel):
 def admin_reset(body: ResetIn, db=Depends(get_db)):
     if body.scope == "everything":
         seed.reset(db)
+        accounts.ensure_test_accounts(db)  # the test account and test moderator from .env come straight back
         return {"ok": True}
     if body.scope in ("seed", "all"):
         db.execute("DELETE FROM votes WHERE is_seed = 1")

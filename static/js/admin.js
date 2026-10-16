@@ -4,7 +4,6 @@ const $app = document.getElementById("app");
 let companies = [];
 let dives = [];
 let submissions = [];
-let users = { users: [], guests: 0 };
 let candidates = [];
 let modeInfo = null;
 let autofillPoll = null;
@@ -32,10 +31,9 @@ function textToOpps(text) {
 
 async function load() {
   const qs = new URLSearchParams(Object.entries(discoverFilter).filter(([, v]) => v)).toString();
-  [companies, dives, factors, submissions, users, candidates, modeInfo] = await Promise.all([
+  [companies, dives, factors, submissions, candidates, modeInfo] = await Promise.all([
     api("/api/admin/companies"), api("/api/host/dives"), factors ? factors : api("/api/admin/factors"),
-    api("/api/admin/submissions"), api("/api/admin/users"), api(`/api/admin/discover${qs ? `?${qs}` : ""}`),
-    api("/api/admin/mode")]);
+    api("/api/admin/submissions"), api(`/api/admin/discover${qs ? `?${qs}` : ""}`), api("/api/admin/mode")]);
   // Keep polling while a background discovery run is going, so its results show up on their own.
   clearTimeout(autofillPoll);
   if (modeInfo.autofill.running) autofillPoll = setTimeout(refresh, 3000);
@@ -409,33 +407,6 @@ function diveSection() {
     h("div", { class: "btns" }, h("button", { class: "btn primary", onclick: create }, "Create set")));
 }
 
-// Player accounts. Deleting one removes its answers from every crowd score.
-function userSection() {
-  async function del(u) {
-    if (!confirm(`Delete ${u.username} and all ${u.answers} of their answers? This can't be undone.`)) return;
-    try {
-      await post(`/api/admin/users/${u.id}`, undefined, "DELETE");
-      PD.toast(`${u.username} deleted`);
-      await refresh();
-    } catch (e) { PD.toast(e.message); }
-  }
-  const list = users.users;
-  return h("section", { class: "panel" },
-    h("div", { class: "row" }, h("h2", { style: { margin: 0 } }, `Users (${list.length})`), h("span", { class: "spacer" }),
-      h("span", { class: "chip" }, `${users.guests} guest device${users.guests === 1 ? "" : "s"}`)),
-    h("p", { class: "muted small" }, "Signed-in answers count fully in crowd scores; guest answers count for less and are capped as a group."),
-    list.length ? h("div", { class: "table-wrap" }, h("table", { class: "data" },
-      h("thead", {}, h("tr", {}, ["Username", "Joined", "Sets", "Answers", "Last played", ""].map((t) => h("th", {}, t)))),
-      h("tbody", {}, list.map((u) => h("tr", {},
-        h("td", {}, h("b", {}, u.username)),
-        h("td", {}, (u.created_at || "").slice(0, 10)),
-        h("td", {}, u.sets),
-        h("td", {}, u.answers),
-        h("td", {}, u.last_played ? u.last_played.slice(0, 10) : "–"),
-        h("td", {}, h("button", { class: "btn small danger", onclick: () => del(u) }, "Delete")))))))
-      : h("p", { class: "muted" }, "No accounts yet."));
-}
-
 function sessionSection() {
   const reset = (scope, text) => h("button", { class: `btn${scope === "everything" ? " danger" : ""}`, onclick: async () => {
     if (!confirm(text)) return;
@@ -461,14 +432,14 @@ function render() {
   // replaceChildren (unlike h) would print a skipped section as the text "null".
   $app.replaceChildren(...[
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Admin"),
-      h("p", {}, "Companies and evidence, discovery, sets, players and session controls."))),
+      h("p", {}, "Companies and evidence, discovery, sets and session controls. Players and sign-ups are on ",
+        h("a", { href: "/moderate" }, "Moderation"), "."))),
     modeSection(),
     editing ? editor() : null,
     discoverSection(),
     submissionSection(),
     companyTable(),
     diveSection(),
-    userSection(),
     sessionSection()].filter(Boolean));
 }
 

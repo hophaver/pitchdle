@@ -335,7 +335,8 @@ function submitForm(wrap) {
 
 // --- account ----------------------------------------------------------------------------------------
 // Everyone plays as a guest until they log in. Guests get today's set; an account keeps history and stats
-// across devices, opens earlier sets, and counts for more in the crowd score.
+// across devices, opens earlier sets, and counts for more in the crowd score. A moderator approves every
+// sign-up before it can log in.
 
 // Back to whatever the player was doing, after an account screen.
 function resume() {
@@ -412,6 +413,8 @@ function accountMenu() {
   }
   const items = () => [
     item("Your history", () => { closeMenu(); showHistory(); }),
+    // Moderators' login opens the moderation page too, so this needs no second sign-in.
+    S.user.is_moderator ? item("Moderation ↗", () => { closeMenu(); window.open("/moderate", "_blank", "noopener"); }) : null,
     // Test account only (TEST_USERNAME in .env): start the game over without making a new account.
     S.user.is_test ? item("Reset my data", resetData) : null,
     item("Log out", logout),
@@ -437,45 +440,172 @@ function paperCard(title, ...kids) {
 }
 
 function showAuth(mode = "login") {
+  if (mode === "signup") return showSignup();
   closeMenu();
   S.overlay = true;
-  const signup = mode === "signup";
   const username = h("input", { name: "username", type: "text", required: true, minlength: 3, maxlength: 20,
     autocomplete: "username", autocapitalize: "none", spellcheck: "false", placeholder: "seaotter" });
   const password = h("input", { name: "password", type: "password", required: true, minlength: 4, maxlength: 200,
-    autocomplete: signup ? "new-password" : "current-password", placeholder: signup ? "at least 4 characters" : "" });
-  const send = h("button", { class: "pill block", type: "submit" }, signup ? "Create account" : "Log in");
+    autocomplete: "current-password" });
+  const send = h("button", { class: "pill block", type: "submit" }, "Log in");
+  // The right password on a sign-up that isn't approved (yet) is explained here, not in a passing toast.
+  const note = h("p", { class: "auth-note hidden", role: "status" });
   const field = (label, el) => h("label", { class: "submit-field" }, h("span", { class: "caps" }, label), el);
 
   const form = h("form", { novalidate: true },
     field("Username", username),
     field("Password", password),
+    note,
     h("div", { class: "actions" }, send));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (username.value.trim().length < 3) { username.focus(); return PD.toast("Username: at least 3 characters"); }
     if (password.value.length < 4) { password.focus(); return PD.toast("Password: at least 4 characters"); }
     send.disabled = true;
+    note.classList.add("hidden");
     try {
-      const r = await post(signup ? "/api/account/register" : "/api/account/login",
-        { username: username.value.trim(), password: password.value });
+      const r = await post("/api/account/login", { username: username.value.trim(), password: password.value });
       S.user = r.user;
       PD.toast(r.claimed ? `Hi ${r.user.username}! ${r.claimed} answer${r.claimed === 1 ? "" : "s"} saved` : `Hi ${r.user.username}!`);
       resume();
     } catch (err) {
-      PD.toast(err.message);
+      if (err.status === 403) {
+        note.textContent = err.message;
+        note.classList.remove("hidden");
+      } else {
+        PD.toast(err.message);
+      }
       send.disabled = false;
     }
   });
 
-  show(paperCard(signup ? "Sign up" : "Log in",
-    h("h1", { class: "account-head" }, signup ? "Keep your " : "Welcome ", h("span", { class: "hand" }, signup ? "streak" : "back")),
-    signup ? h("p", { class: "submit-intro" },
-      "Save your answers and stats, play earlier sets, and count for more in the crowd score. Whatever you played here as a guest comes with you.") : null,
+  show(paperCard("Log in",
+    h("h1", { class: "account-head" }, "Welcome ", h("span", { class: "hand" }, "back")),
     form,
-    h("button", { class: "switch-link", type: "button", onclick: () => showAuth(signup ? "login" : "signup") },
-      signup ? "Have an account? " : "New here? ", h("b", {}, signup ? "Log in" : "Create one"))));
+    h("button", { class: "switch-link", type: "button", onclick: showSignup }, "New here? ", h("b", {}, "Sign up"))));
   setTimeout(() => username.focus(), 50);
+}
+
+// What a sign-up tells the moderators. Mirrors SignUp in app/main.py, which checks all of it again.
+const LINK_KEYS = ["linkedin", "github", "portfolio", "cv", "other"];
+const SIGNUP_SECTIONS = [
+  { title: "Your account", fields: [
+    { key: "username", label: "Username", min: 3, max: 20, autocomplete: "username", placeholder: "seaotter",
+      attrs: { autocapitalize: "none", spellcheck: "false" } },
+    { key: "password", label: "Password", type: "password", min: 4, max: 200, autocomplete: "new-password",
+      placeholder: "at least 4 characters" },
+  ] },
+  { title: "About you", fields: [
+    { key: "full_name", label: "Full name", min: 2, max: 80, autocomplete: "name", placeholder: "Maija Virtanen" },
+    { key: "email", label: "Email", type: "email", max: 120, autocomplete: "email", placeholder: "maija@example.com" },
+    { key: "role", label: "What do you do?", options: PD.ROLES },
+    { key: "organisation", label: "Organisation", optional: true, max: 80, autocomplete: "organization",
+      placeholder: "company, fund or university" },
+    { key: "location", label: "Based in", optional: true, max: 80, placeholder: "Turku, Finland" },
+    { key: "expertise", label: "What you know well", optional: true, max: 160,
+      placeholder: "aquaculture, ship design, impact investing" },
+  ] },
+  { title: "Your links", note: "At least one, so a moderator can see who you are.", fields: [
+    { key: "linkedin", label: "LinkedIn", type: "url", max: 200, placeholder: "linkedin.com/in/…" },
+    { key: "github", label: "GitHub", type: "url", max: 200, placeholder: "github.com/…" },
+    { key: "portfolio", label: "Portfolio or website", type: "url", max: 200, placeholder: "yourname.com" },
+    { key: "cv", label: "CV", type: "url", max: 200, placeholder: "a link, e.g. Google Drive or Dropbox" },
+    { key: "other", label: "Anything else", type: "url", max: 200, placeholder: "Google Scholar, X, Wellfound…" },
+  ] },
+  { title: "Why join?", fields: [
+    { key: "motivation", label: "What would you bring?", short: "Why join", area: true, min: 20, max: 600,
+      placeholder: "A sentence or two is plenty." },
+  ] },
+];
+const SIGNUP_FIELDS = SIGNUP_SECTIONS.flatMap((sec) => sec.fields);
+
+// [field, message] for the first thing to fix before sending, or null.
+function signupProblem(body) {
+  for (const f of SIGNUP_FIELDS) {
+    const name = f.short || f.label;
+    if (f.options && !body[f.key]) return [f.key, `${name} Pick one.`];
+    if (f.min && body[f.key].length < f.min) return [f.key, `${name}: at least ${f.min} characters`];
+  }
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.email)) return ["email", "Email: that doesn't look like an address"];
+  if (!LINK_KEYS.some((k) => body[k])) return ["linkedin", "Add at least one link"];
+  return null;
+}
+
+function showSignup() {
+  closeMenu();
+  S.overlay = true;
+  const inputs = {};
+  const clean = (v) => v.replace(/\s+/g, " ").trim();
+  const send = h("button", { class: "pill block", type: "submit" }, "Send for review");
+
+  const fieldRow = (f) => {
+    const el = f.options
+      ? h("select", { name: f.key, required: true },
+        h("option", { value: "" }, "Choose one"), Object.entries(f.options).map(([v, t]) => h("option", { value: v }, t)))
+      : h(f.area ? "textarea" : "input", {
+        name: f.key, type: f.area ? null : (f.type || "text"), rows: f.area ? 4 : null,
+        required: !f.optional && f.type !== "url", maxlength: f.max, placeholder: f.placeholder,
+        autocomplete: f.autocomplete || "off", inputmode: f.type === "url" ? "url" : null, ...f.attrs });
+    const count = f.area ? h("span", { class: "count" }) : null;
+    if (count) {
+      const tally = () => { count.textContent = `${el.value.trim().length}/${f.max}`; };
+      el.addEventListener("input", tally);
+      tally();
+    }
+    inputs[f.key] = el;
+    return h("label", { class: "submit-field" },
+      h("span", { class: "row" }, h("span", { class: "caps" }, f.label),
+        f.optional ? h("span", { class: "optional" }, "optional") : null, h("span", { class: "spacer" }), count),
+      el);
+  };
+
+  const form = h("form", { novalidate: true },
+    SIGNUP_SECTIONS.map((sec) => h("fieldset", { class: "form-section" },
+      h("legend", { class: "hand" }, sec.title),
+      sec.note ? h("p", { class: "section-note" }, sec.note) : null,
+      sec.fields.map(fieldRow))),
+    h("p", { class: "section-note privacy" }, "Only moderators see these details. Deleting your account deletes them too."),
+    h("div", { class: "actions" }, send));
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    // The password as typed and the motivation with its line breaks; everything else as one tidy line.
+    const body = Object.fromEntries(SIGNUP_FIELDS.map((f) => {
+      const v = inputs[f.key].value;
+      return [f.key, f.type === "password" ? v : f.area ? v.trim() : clean(v)];
+    }));
+    const problem = signupProblem(body);
+    if (problem) {
+      inputs[problem[0]].focus();
+      return PD.toast(problem[1]);
+    }
+    send.disabled = true;
+    try {
+      await post("/api/account/register", body);
+      showApplied(body.full_name);
+    } catch (err) {
+      PD.toast(err.message, 5000);
+      send.disabled = false;
+    }
+  });
+
+  show(paperCard("Sign up",
+    h("h1", { class: "account-head" }, "Keep your ", h("span", { class: "hand" }, "streak")),
+    h("p", { class: "submit-intro" },
+      "A moderator reviews every sign-up. Once you're in, your answers and stats are saved, earlier sets open up, and your reads count for more in the crowd score. Whatever you play here as a guest comes with you."),
+    form,
+    h("button", { class: "switch-link", type: "button", onclick: () => showAuth("login") }, "Have an account? ", h("b", {}, "Log in"))));
+  setTimeout(() => inputs.username.focus(), 50);
+}
+
+function showApplied(fullName) {
+  document.querySelector(".toast")?.classList.add("hidden"); // an error fixed a moment ago shouldn't linger here
+  show(paperCard("Sign up",
+    h("div", { class: "big-mark" }, "✓"),
+    h("div", { class: "wait-title" }, `Thanks, ${fullName.split(" ")[0]}!`),
+    h("p", { class: "submit-intro applied" },
+      "A moderator will look at your sign-up, and you can log in once it's approved. Until then, keep playing as a guest: what you play on this device comes with you the first time you log in here."),
+    h("div", { class: "actions" }, pill("Back to the game →", resume))));
 }
 
 const dayLabel = (iso) => (iso ? new Date(`${iso}T00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "");

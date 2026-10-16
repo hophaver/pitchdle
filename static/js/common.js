@@ -5,6 +5,12 @@ const PD = (() => {
   // One bold colour per card, in order.
   const COLORS = ["var(--orange)", "var(--blue)", "var(--green)", "var(--navy)", "var(--plum)"];
   const colorFor = (i) => COLORS[((i % COLORS.length) + COLORS.length) % COLORS.length];
+  // "What do you do?" on the sign-up form. The keys mirror ROLES in app/main.py.
+  const ROLES = {
+    founder: "Founder or startup team", investor: "Investor", industry: "Industry or corporate",
+    research: "Researcher or academic", engineer: "Engineer or developer", public: "Public sector or NGO",
+    student: "Student", other: "Something else",
+  };
 
   async function api(path, opts = {}) {
     const init = { credentials: "same-origin", method: opts.method || "GET", headers: {} };
@@ -19,7 +25,7 @@ const PD = (() => {
     if (!r.ok) {
       const detail = data && data.detail;
       const msg = typeof detail === "string" ? detail
-        : Array.isArray(detail) ? detail.map((d) => d.msg).join("; ") : r.statusText;
+        : Array.isArray(detail) ? detail.map((d) => d.msg.replace(/^Value error, /, "")).join("; ") : r.statusText;
       const err = new Error(msg || `Request failed (${r.status})`);
       err.status = r.status;
       throw err;
@@ -73,5 +79,5 @@ const PD = (() => {
       h("div", { class: "bars-x" }, share.map((pct, b) => h("span", { class: b === you ? "you" : "" }, b))));
   }
 
-  return { AXES, AXIS, colorFor, api, post, h, fmt1, toast, bars };
+  return { AXES, AXIS, ROLES, colorFor, api, post, h, fmt1, toast, bars };
 })();

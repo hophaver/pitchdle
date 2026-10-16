@@ -115,8 +115,9 @@ def scores_of(vote) -> dict:
     return {a: vote[a] for a in AXES}
 
 
-# Votes with the voter's user_id alongside, so crowd scores can weigh guests and signed-in players apart.
-VOTES_WITH_USER = "SELECT v.*, p.user_id FROM votes v LEFT JOIN players p ON p.id = v.player_id"
+# Votes with the voter's user_id and badge alongside, so crowd scores can weigh guests and members apart.
+VOTES_WITH_USER = ("SELECT v.*, p.user_id, u.badge FROM votes v LEFT JOIN players p ON p.id = v.player_id "
+                   "LEFT JOIN users u ON u.id = p.user_id")
 
 
 def card_votes(db, dive_id: int, cid: int) -> list:

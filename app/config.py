@@ -28,13 +28,20 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or "admin"
 BASE_URL = (os.environ.get("BASE_URL") or "").rstrip("/")
 LIVE_SECONDS = int(os.environ.get("LIVE_SECONDS") or 25)
 MIN_VOTES = int(os.environ.get("MIN_VOTES") or 5)
-# How much a guest's answer counts next to a signed-in player's (1.0), and the most of any card's crowd
-# score guests together can make up once signed-in players have answered it. See scoring.vote_weights.
 # Optional test account, created (or its password reset) on startup. Only it gets "Reset my data".
 TEST_USERNAME = (os.environ.get("TEST_USERNAME") or "").strip()
 TEST_PASSWORD = os.environ.get("TEST_PASSWORD") or ""
+# Optional test moderator, created (or its password reset) on startup like the test account. Keep it off
+# anything public: moderators see every sign-up's details.
+TEST_MODERATOR_USERNAME = (os.environ.get("TEST_MODERATOR_USERNAME") or "").strip()
+TEST_MODERATOR_PASSWORD = os.environ.get("TEST_MODERATOR_PASSWORD") or ""
+# How much a guest's answer counts next to a signed-in player's (1.0), and the most of any card's crowd
+# score guests together can make up once signed-in players have answered it. See scoring.vote_weights.
 GUEST_WEIGHT = float(os.environ.get("GUEST_WEIGHT") or 0.5)
 GUEST_MAX_SHARE = float(os.environ.get("GUEST_MAX_SHARE") or 0.4)
+# How much a member's answer counts with a high- or low-priority badge (no badge is 1.0, muted is 0).
+HIGH_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("HIGH_PRIORITY_WEIGHT") or 2.0))
+LOW_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("LOW_PRIORITY_WEIGHT") or 0.5))
 WEIGHTS_PATH = ROOT / "weights.json"
 CRAWL_CACHE = ROOT / "data" / "crawl_cache"
 STATIC_DIR = ROOT / "static"
