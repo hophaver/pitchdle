@@ -1,0 +1,35 @@
+{
+  "_comment": "How evidence factors (0-5) feed the four player axes. Each entry is [factor, weight]. 'trl' comes from evidence.trl_stage, 'patents' from evidence.patents. Edit freely; scores refresh when a company is saved or `python -m app.seed --rescore` runs.",
+  "axes": {
+    "novel": [
+      ["redstone.competition", 1],
+      ["redstone.tech", 1],
+      ["patents", 0.5]
+    ],
+    "useful": [
+      ["impact.problem_pressure", 1],
+      ["impact.solution_potential", 1],
+      ["brl.value_prop", 1],
+      ["brl.market", 1]
+    ],
+    "plausible": [
+      ["trl", 1.5],
+      ["redstone.team", 1],
+      ["brl.business_model", 1]
+    ],
+    "investable": [
+      ["redstone.market", 1.5],
+      ["redstone.product", 1],
+      ["redstone.team", 1],
+      ["redstone.business_model", 1],
+      ["redstone.competition", 1],
+      ["redstone.marketing", 1],
+      ["redstone.financials", 1.5],
+      ["redstone.tech", 1],
+      ["redstone.deal_dynamics", 1.5],
+      ["redstone.impact", 1]
+    ]
+  },
+  "composite": {"novel": 1, "useful": 1, "plausible": 1, "investable": 1},
+  "unknown_axis_default": 2.0
+}

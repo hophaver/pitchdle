@@ -7,7 +7,8 @@ readiness score and produces decision-ready venture intelligence (perception gap
 investors/grants/partners, next steps).
 **Working name:** *Pitchdle* (repo name). The earlier draft called it *Ocean Opportunity Radar*; keep that as
 the host-dashboard name if the team prefers it.
-**Status:** PLAN ONLY. No code written yet. This doc is the handoff for a coding agent.
+**Status:** Steps 1–9 built and running locally (`./run.sh`, see README). Step 10 (Docker on Proxmox) not started.
+Seed companies are all fictional for now; real ones are added through `/admin`.
 
 ---
 
