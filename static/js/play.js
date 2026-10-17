@@ -1,18 +1,18 @@
-// Player flow for /play (today's set, self-paced) and /live (host-paced room).
+// Player flow for /play: today's set, self-paced.
 // Answer every card first; you vs the crowd is shown only at the end.
 const { h, api, post, AXES, AXIS, colorFor, safeLink, hostOf, plural } = PD;
 
 const $app = document.getElementById("app");
 const S = {
-  mode: location.pathname.startsWith("/live") ? "live" : "solo",
   set: null,
   cards: [],
   answered: new Set(),
-  liveKey: null,
-  deadline: null,
-  user: null,      // { username } when signed in
-  overlay: false,  // an account screen is up; live polling holds off re-rendering
+  user: null,      // { username, kind } when signed in
+  overlay: false,  // an account screen is up
 };
+
+// Investors rate the full card (facts, vision and what others make of it); players and guests the pitch alone.
+const isInvestor = () => !!S.user && S.user.kind === "investor";
 
 function show(...nodes) {
   $app.classList.remove("wide"); // only the card being rated takes the whole screen
@@ -32,7 +32,7 @@ function cardTop(index, total, right) {
     h("span", {}, right ?? setLabel()));
 }
 
-// "#3" reads as "No. 3"; named sets (like the live one) keep their name.
+// "#3" reads as "No. 3"; named sets keep their name.
 const setLabel = () => (!S.set ? "" : S.set.label.startsWith("#") ? `No. ${S.set.label.slice(1)}` : S.set.label);
 
 const pill = (label, onclick, attrs = {}) => h("button", { class: "pill", onclick, ...attrs }, label);
@@ -55,7 +55,7 @@ function showStart() {
 }
 
 // --- one card -------------------------------------------------------------------------------------
-// Everything there is to weigh, from the start: the pitch, the facts and the vision, and what A'Pelago, the AI models
+// A player's card is the pitch and the four calls. An investor's has everything there is to weigh, from the start: the pitch, the facts and the vision, and what A'Pelago, the AI models
 // and social media make of it. On a wide screen the facts, vision and your four calls sit left and the opinions
 // right; on a phone they stack in that order, opinions before the calls. The crowd's read waits for the results.
 
@@ -107,7 +107,7 @@ function cardOpinions(c) {
         : social.length ? null : empty("Not read yet."));
 }
 
-function showCard(c, index, total, { live = false } = {}) {
+function showCard(c, index, total) {
   const values = {};
   const lock = pill("Lock it in ↵", null, { disabled: true, class: "pill ghost block" });
   const rows = AXES.map((axis) => {
@@ -124,9 +124,39 @@ function showCard(c, index, total, { live = false } = {}) {
     return h("div", {}, h("div", { class: "caps axis-label" }, AXIS[axis]), h("div", { class: "taps" }, buttons));
   });
 
+  const el = isInvestor() ? fullCard(c, index, total, rows, lock)
+    : card(colorFor(index),
+      cardTop(index, total),
+      h("div", { class: "pitch-head" },
+        h("div", {}, h("div", { class: "caps sector" }, c.sector), h("p", { class: "pitch-line" }, c.one_liner)),
+        c.emoji ? h("div", { class: "art", "aria-hidden": "true" }, c.emoji) : null),
+      h("p", { class: "ask" }, c.claim_ask),
+      h("div", { class: "who" }, `— ${c.name}`),
+      // Leads into the four calls: "Is this… novel? useful? …"
+      h("div", { class: "is-this" }, "Is this…"),
+      h("div", { class: "axes" }, rows),
+      h("div", { class: "actions" }, lock));
+
+  lock.addEventListener("click", async () => {
+    lock.disabled = true;
+    try {
+      await post("/api/vote", { dive_id: S.set.id, company_id: c.id, scores: values });
+      S.answered.add(c.id);
+      el.classList.add("out");
+      setTimeout(nextCard, 230);
+    } catch (e) {
+      PD.toast(e.message);
+      lock.disabled = false;
+    }
+  });
+  show(el);
+  if (isInvestor()) $app.classList.add("wide");
+}
+
+function fullCard(c, index, total, rows, lock) {
   const site = safeLink(c.website);
   const el = card(colorFor(index),
-    cardTop(index, total, live ? h("span", { class: "timer", dataset: { timer: "1" } }, "") : null),
+    cardTop(index, total),
     h("div", { class: "pitch-head" },
       h("div", {}, h("div", { class: "caps sector" }, c.sector),
         h("p", { class: "pitch-line" }, c.one_liner || (c.vision || "").split(/(?<=[.!?])\s/)[0])),
@@ -144,22 +174,7 @@ function showCard(c, index, total, { live = false } = {}) {
         h("div", { class: "axes" }, rows),
         h("div", { class: "actions" }, lock))));
   el.classList.add("full");
-
-  lock.addEventListener("click", async () => {
-    lock.disabled = true;
-    try {
-      await post("/api/vote", { dive_id: S.set.id, company_id: c.id, scores: values });
-      S.answered.add(c.id);
-      el.classList.add("out");
-      setTimeout(() => (live ? showLocked(index, total) : nextCard()), 230);
-    } catch (e) {
-      PD.toast(e.message);
-      lock.disabled = false;
-    }
-  });
-  show(el);
-  $app.classList.add("wide");
-  tickTimers();
+  return el;
 }
 
 function nextCard() {
@@ -168,28 +183,12 @@ function nextCard() {
   return showCard(S.cards[i], i, S.cards.length);
 }
 
-// --- live waiting states ----------------------------------------------------------------------------
-
-const dots = () => h("div", { class: "dots" }, h("i"), h("i"), h("i"));
+// --- waiting ---------------------------------------------------------------------------------------
 
 function waitCard(color, index, total, mark, title, sub, ...extra) {
   return card(color, cardTop(index, total), h("div", { class: "big-mark" }, mark),
     h("div", { class: "wait-title" }, title), sub ? h("div", { class: "wait-sub" }, sub) : null, ...extra);
 }
-
-function showLocked(index, total) {
-  show(waitCard(colorFor(index), index, total, "✓", "Locked in", "next one soon", dots()));
-}
-
-function tickTimers() {
-  if (!S.deadline) return;
-  const left = Math.max(0, Math.round((S.deadline - Date.now()) / 1000));
-  document.querySelectorAll("[data-timer]").forEach((el) => {
-    el.textContent = `${left}s`;
-    el.classList.toggle("low", left <= 5);
-  });
-}
-setInterval(tickTimers, 250);
 
 // --- results ----------------------------------------------------------------------------------------
 
@@ -242,12 +241,22 @@ function opinionDetails(tiles) {
     notes.length ? h("ul", { class: "op-notes" }, notes.map((t) => h("li", {}, h("b", {}, `${t.label}: `), t.note))) : null);
 }
 
+// A player sees their read next to everyone else's; an investor also sees A'Pelago's, the AI models' and social media's.
 function resultCard(r, i) {
-  return card(colorFor(i),
-    h("div", { class: "result-head" },
-      r.card.emoji ? h("div", { class: "art small", "aria-hidden": "true" }, r.card.emoji) : null,
-      h("div", {}, h("div", { class: "result-name" }, r.card.name), h("div", { class: "caps sector" }, r.card.sector),
-        companyLink(r))),
+  const head = h("div", { class: "result-head" },
+    r.card.emoji ? h("div", { class: "art small", "aria-hidden": "true" }, r.card.emoji) : null,
+    h("div", {}, h("div", { class: "result-name" }, r.card.name), h("div", { class: "caps sector" }, r.card.sector),
+      companyLink(r)));
+  if (!isInvestor()) {
+    const nums = (scores, fmt) => h("div", { class: "nums" },
+      AXES.map((a) => h("div", {}, h("b", {}, fmt(scores && scores[a])), h("small", {}, AXIS[a]))));
+    return card(colorFor(i), head,
+      h("div", { class: "block you" }, h("div", { class: "caps" }, "You said"), nums(r.you.scores, (v) => v)),
+      // Average of every other player's answer.
+      h("div", { class: "block crowd" }, h("div", { class: "caps" }, `Everyone · ${r.crowd.n}`),
+        nums(r.crowd.means, fmtAvg)));
+  }
+  return card(colorFor(i), head,
     OPINION_GROUPS.map(([group, title]) => {
       const tiles = r.opinions.filter((t) => t.group === group);
       return tiles.length ? h("section", { class: "op-group" }, h("div", { class: "caps op-title" }, title),
@@ -424,10 +433,6 @@ function submitForm(wrap) {
 // Back to whatever the player was doing, after an account screen.
 function resume() {
   S.overlay = false;
-  if (S.mode === "live") {
-    S.liveKey = null;
-    return livePoll();
-  }
   return startSolo();
 }
 
@@ -565,11 +570,12 @@ function showAuth(mode = "login") {
   show(paperCard("Log in",
     h("h1", { class: "account-head" }, "Welcome ", h("span", { class: "hand" }, "back")),
     form,
-    h("button", { class: "switch-link", type: "button", onclick: showSignup }, "New here? ", h("b", {}, "Sign up"))));
+    h("button", { class: "switch-link", type: "button", onclick: () => showSignup() }, "New here? ", h("b", {}, "Sign up"))));
   setTimeout(() => username.focus(), 50);
 }
 
-// What a sign-up tells the moderators. Mirrors SignUp in app/main.py, which checks all of it again.
+// A player signs up with the first section alone and is in at once. An investor fills in all of it, which is what a
+// moderator judges them on. Mirrors PlayerSignUp and SignUp in app/main.py, which check all of it again.
 const LINK_KEYS = ["linkedin", "github", "portfolio", "cv", "other"];
 const SIGNUP_SECTIONS = [
   { title: "Your account", fields: [
@@ -600,26 +606,38 @@ const SIGNUP_SECTIONS = [
       placeholder: "A sentence or two is plenty." },
   ] },
 ];
-const SIGNUP_FIELDS = SIGNUP_SECTIONS.flatMap((sec) => sec.fields);
+const sectionsFor = (kind) => (kind === "investor" ? SIGNUP_SECTIONS : SIGNUP_SECTIONS.slice(0, 1));
 
 // [field, message] for the first thing to fix before sending, or null.
-function signupProblem(body) {
-  for (const f of SIGNUP_FIELDS) {
+function signupProblem(body, kind) {
+  for (const f of sectionsFor(kind).flatMap((sec) => sec.fields)) {
     const name = f.short || f.label;
     if (f.options && !body[f.key]) return [f.key, `${name} Pick one.`];
     if (f.min && body[f.key].length < f.min) return [f.key, `${name}: at least ${f.min} characters`];
   }
+  if (kind !== "investor") return null;
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.email)) return ["email", "Email: that doesn't look like an address"];
   if (!LINK_KEYS.some((k) => body[k])) return ["linkedin", "Add at least one link"];
   return null;
 }
 
-function showSignup() {
+// `typed` carries what was already filled in across a switch between player and investor.
+function showSignup(kind = "player", typed = {}) {
   closeMenu();
   S.overlay = true;
+  const investor = kind === "investor";
+  const sections = sectionsFor(kind);
+  const fields = sections.flatMap((sec) => sec.fields);
   const inputs = {};
   const clean = (v) => v.replace(/\s+/g, " ").trim();
-  const send = h("button", { class: "pill block", type: "submit" }, "Send for review");
+  const send = h("button", { class: "pill block", type: "submit" }, investor ? "Send for review" : "Create account");
+  const switchTo = (next) => {
+    if (next === kind) return;
+    showSignup(next, { ...typed, ...Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value])) });
+  };
+  const kindSwitch = h("div", { class: "kind-switch", role: "group", "aria-label": "I'm signing up as" },
+    [["player", "Player"], ["investor", "Investor"]].map(([k, label]) => h("button", {
+      type: "button", "aria-pressed": String(k === kind), onclick: () => switchTo(k) }, label)));
 
   const fieldRow = (f) => {
     const el = f.options
@@ -635,6 +653,7 @@ function showSignup() {
       el.addEventListener("input", tally);
       tally();
     }
+    if (typed[f.key]) el.value = typed[f.key];
     inputs[f.key] = el;
     return h("label", { class: "submit-field" },
       h("span", { class: "row" }, h("span", { class: "caps" }, f.label),
@@ -643,28 +662,33 @@ function showSignup() {
   };
 
   const form = h("form", { novalidate: true },
-    SIGNUP_SECTIONS.map((sec) => h("fieldset", { class: "form-section" },
+    sections.map((sec) => h("fieldset", { class: "form-section" },
       h("legend", { class: "hand" }, sec.title),
       sec.note ? h("p", { class: "section-note" }, sec.note) : null,
       sec.fields.map(fieldRow))),
-    h("p", { class: "section-note privacy" }, "Only moderators see these details. Deleting your account deletes them too."),
+    investor ? h("p", { class: "section-note privacy" }, "Only moderators see these details. Deleting your account deletes them too.") : null,
     h("div", { class: "actions" }, send));
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     // The password as typed and the motivation with its line breaks; everything else as one tidy line.
-    const body = Object.fromEntries(SIGNUP_FIELDS.map((f) => {
+    const body = Object.fromEntries(fields.map((f) => {
       const v = inputs[f.key].value;
       return [f.key, f.type === "password" ? v : f.area ? v.trim() : clean(v)];
     }));
-    const problem = signupProblem(body);
+    const problem = signupProblem(body, kind);
     if (problem) {
       inputs[problem[0]].focus();
       return PD.toast(problem[1]);
     }
     send.disabled = true;
     try {
-      await post("/api/account/register", body);
+      const r = await post("/api/account/register", { ...body, kind });
+      if (!investor) {
+        S.user = r.user;
+        PD.toast(r.claimed ? `Welcome, ${r.user.username}! ${r.claimed} answer${r.claimed === 1 ? "" : "s"} saved` : `Welcome, ${r.user.username}!`);
+        return resume();
+      }
       showApplied(body.full_name);
     } catch (err) {
       PD.toast(err.message, 5000);
@@ -674,8 +698,11 @@ function showSignup() {
 
   show(paperCard("Sign up",
     h("h1", { class: "account-head" }, "Keep your ", h("span", { class: "hand" }, "streak")),
-    h("p", { class: "submit-intro" },
-      "A moderator reviews every sign-up. Once you're in, your answers and stats are saved, earlier sets open up, and your reads count for more in the crowd score. Whatever you play here as a guest comes with you."),
+    kindSwitch,
+    h("p", { class: "submit-intro" }, investor
+      ? "For investors and others who back startups. A moderator reviews every investor sign-up. Once you're in, you rate the full card (facts, vision, and what A'Pelago, AI models and social media make of it), and your reads count the most in the crowd score."
+      : "Save your answers and stats, play earlier sets, and count for more in the crowd score than a guest. You're in straight away."),
+    h("p", { class: "submit-intro" }, "Whatever you play here as a guest comes with you."),
     form,
     h("button", { class: "switch-link", type: "button", onclick: () => showAuth("login") }, "Have an account? ", h("b", {}, "Log in"))));
   setTimeout(() => inputs.username.focus(), 50);
@@ -768,63 +795,12 @@ async function startSolo() {
   return showStart();
 }
 
-// --- live -------------------------------------------------------------------------------------------
-
-async function livePoll() {
-  let st;
-  try {
-    st = await api("/api/live/state");
-  } catch {
-    return; // keep showing the last screen; the next poll retries
-  }
-  if (st.dive) S.set = st.dive;
-  S.deadline = st.remaining !== null ? Date.now() + st.remaining * 1000 : null;
-  document.querySelectorAll("[data-joined]").forEach((el) => { el.textContent = st.joined; });
-  if (S.overlay) return;
-  const key = `${st.key}:${st.voted ? "v" : ""}`;
-  if (key === S.liveKey) return;
-  S.liveKey = key;
-  renderLive(st);
-}
-
-function renderLive(st) {
-  const total = st.dive ? st.dive.total : 0;
-  const i = st.card_index;
-  switch (st.phase) {
-    case "idle":
-      return show(card(colorFor(0), cardTop(-1, 0, ""),
-        h("div", { class: "hero" }, h("h1", {}, "No live"), h("span", { class: "hand" }, "game"), h("h1", {}, "right now")),
-        st.notice ? h("p", { class: "wait-sub" }, st.notice) : null,
-        h("div", { class: "actions" }, h("a", { class: "pill", href: "/play" }, "Play today's →"))));
-    case "lobby":
-      return show(card(colorFor(0), cardTop(-1, 0, ""),
-        h("div", { class: "hero" }, h("h1", {}, "You're"), h("span", { class: "hand" }, "in"),
-          h("p", { class: "caps" }, h("span", { dataset: { joined: "1" } }, st.joined), " here")),
-        dots()));
-    case "open":
-      return st.voted ? showLocked(i, total) : showCard(st.card, i, total, { live: true });
-    case "locked":
-      return st.voted ? showLocked(i, total) : show(waitCard(colorFor(i), i, total, "✕", "Missed it", "next one soon", dots()));
-    case "revealed":
-      return show(waitCard(colorFor(i), i, total, "👀", "Eyes up", "on the big screen", dots()));
-    case "final":
-      return showResults();
-    default:
-      return null;
-  }
-}
-
 // --- boot -------------------------------------------------------------------------------------------
 
 (async function boot() {
   try {
     S.user = (await api("/api/me")).user; // also sets the device cookie before anything else
-    if (S.mode === "live") {
-      await livePoll();
-      setInterval(livePoll, 2000);
-    } else {
-      await startSolo();
-    }
+    await startSolo();
   } catch (e) {
     show(waitCard(colorFor(0), -1, 0, "!", "Something broke", e.message));
   }

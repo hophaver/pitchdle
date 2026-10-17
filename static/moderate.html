@@ -9,15 +9,17 @@
 </head>
 <body class="tool">
   <div class="tool-shell">
-    <nav>
-      <span class="brand"><i aria-hidden="true"></i>Pitchdle <small>Host</small></span>
-      <a href="/host" data-nav="/host">Dashboard</a>
-      <a href="/host/live" data-nav="/host/live">Live control</a>
-      <a href="/admin" data-nav="/admin">Admin</a>
-      <a href="/moderate" data-nav="/moderate">Moderation</a>
-      <a class="ext" href="/wall" target="_blank">Wall ↗</a>
+    <header class="topnav">
+      <a class="brand" href="/host">Pitchdle</a>
+      <nav class="pages" aria-label="Pages">
+        <a href="/host" data-nav="/host">Dashboard</a>
+        <a href="/game" data-nav="/game">Game</a>
+        <a href="/admin" data-nav="/admin">Admin</a>
+        <a href="/moderate" data-nav="/moderate">Moderation</a>
+      </nav>
+      <span class="spacer"></span>
       <a class="ext" href="/play" target="_blank">Play ↗</a>
-    </nav>
+    </header>
     <main id="app"><p class="muted">Loading…</p></main>
   </div>
   <script src="/static/js/common.js"></script>

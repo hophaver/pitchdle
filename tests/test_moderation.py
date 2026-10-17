@@ -204,24 +204,6 @@ def test_badges_set_how_much_a_member_counts(client, moderator):
     assert crowd()["means"]["novel"] == 3.0
 
 
-def test_the_live_room_counts_everyone_alike_except_muted_members(client, admin, moderator):
-    live_dive = next(d for d in client.get("/api/host/dives", auth=admin).json() if d["mode"] == "live")
-    host = lambda action: client.post("/api/host/live", json={"action": action, "dive_id": live_dive["id"]}, auth=admin)
-    muted, high, guest = new_player(client), new_player(client), new_player(client)
-    sign_up(muted, "troll")
-    sign_up(high, "expert")
-    set_badge(client, moderator, "troll", "muted")
-    set_badge(client, moderator, "expert", "high")
-    host("start")
-    cid = host("open").json()["card"]["id"]
-    answer(muted, live_dive["id"], cid, {**GUESS, "novel": 5})
-    answer(high, live_dive["id"], cid, {**GUESS, "novel": 1})
-    answer(guest, live_dive["id"], cid, {**GUESS, "novel": 3})
-    host("reveal")
-    room = client.get("/api/live/wall").json()["reveal"]["room"]
-    assert room["n"] == 2 and room["means"]["novel"] == 2.0  # expert and guest alike, troll left out
-
-
 def test_moderators_see_how_members_play(client, admin, moderator):
     data = today(client)
     member = new_player(client)

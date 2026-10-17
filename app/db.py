@@ -1,5 +1,6 @@
 """SQLite access: one connection per request, schema created on startup."""
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,14 +92,6 @@ CREATE TABLE IF NOT EXISTS submissions (
   website     TEXT,
   created_at  TEXT
 );
-CREATE TABLE IF NOT EXISTS live_state (
-  id               INTEGER PRIMARY KEY CHECK (id = 1),
-  dive_id          INTEGER,
-  card_index       INTEGER DEFAULT -1,
-  phase            TEXT DEFAULT 'idle',
-  phase_started_at REAL
-);
-INSERT OR IGNORE INTO live_state (id, phase) VALUES (1, 'idle');
 -- Startups found on the open web, waiting for the host. Kept apart from companies until approved.
 CREATE TABLE IF NOT EXISTS candidates (
   id            INTEGER PRIMARY KEY,
@@ -164,7 +157,18 @@ MIGRATIONS = [
     ("players", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"),
     ("companies", "pulse", "TEXT"),
     ("dives", "pool", "TEXT DEFAULT 'demo'"),
-    ("companies", "origin", "TEXT DEFAULT ''"),  # 'discovery-auto' for startups the live-mode autofill found  # which companies a set draws on: demo (sample) or live (real)
+    ("companies", "origin", "TEXT DEFAULT ''"),  # 'discovery-auto' (autofill) or 'discovery' (host-approved candidate)
+    ("companies", "name_key", "TEXT DEFAULT ''"),  # name_key(name): one real company per name
+    # Who stands behind the evidence: '' or 'confirmed' = the host; 'auto' = estimated from the crawl, host to
+    # confirm; 'pending' = found by discovery with nothing estimable yet, awaiting the host's review.
+    ("companies", "evidence_status", "TEXT DEFAULT ''"),
+    # Who wrote the game card: '' = the host (or seed data); 'ai' = written by the card writer, host to check;
+    # 'manual' = discovery filed it with only its headline as the pitch, so it needs a pass by hand.
+    ("companies", "card_status", "TEXT DEFAULT ''"),
+    ("companies", "country", "TEXT DEFAULT ''"),  # where it's based, from discovery's screen when known
+    ("candidates", "screen", "TEXT"),       # the relevance screen's verdict for the last search that saw it
+    ("candidates", "card", "TEXT"),         # the AI-written card, kept from the moment the host queues it
+    ("candidates", "card_error", "TEXT DEFAULT ''"),  # why there's no card: needs a manual pass
     # Sign-up review. Accounts from before it count as approved; new sign-ups are inserted as 'pending'.
     ("users", "status", "TEXT DEFAULT 'approved'"),  # pending | approved | rejected
     ("users", "profile", "TEXT DEFAULT '{}'"),  # what they told moderators when signing up
@@ -174,6 +178,9 @@ MIGRATIONS = [
     ("users", "badge_by", "TEXT"),
     ("users", "badge_at", "TEXT"),
     ("users", "is_moderator", "INTEGER DEFAULT 0"),  # set by an admin on /moderate
+    # player: signs up with a username and password, in at once, plays the simple cards. investor: signs up with
+    # the full profile, waits for a moderator, rates the full cards and counts INVESTOR_WEIGHT in crowd scores.
+    ("users", "kind", "TEXT DEFAULT 'player'"),
     # The startup's profile on its card. vision stays NULL until first saved, so seed profiles can fill it in.
     ("companies", "vision", "TEXT"),
     ("companies", "stages", "TEXT DEFAULT '[]'"),  # incubation programmes and rounds passed, in order
@@ -188,7 +195,47 @@ def init_db(conn: sqlite3.Connection) -> None:
         if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.execute("CREATE INDEX IF NOT EXISTS players_user ON players (user_id)")
+    for row in conn.execute("SELECT id, name FROM companies WHERE name_key IS NULL OR name_key = ''").fetchall():
+        conn.execute("UPDATE companies SET name_key = ? WHERE id = ?", (name_key(row["name"]), row["id"]))
+    merge_duplicate_companies(conn)
+    # Two real companies can't share a name (sample companies are a separate pool and aren't covered).
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS companies_real_name ON companies (name_key) "
+                 "WHERE is_real = 1 AND name_key != ''")
     conn.commit()
+
+
+def merge_duplicate_companies(conn: sqlite3.Connection) -> list[str]:
+    """Fold real companies that share a name into one. Earlier builds could add the same startup several times.
+
+    Keeps the active one, then the one with most answers, then the oldest, and moves the others' answers,
+    opportunities, candidate links and set places onto it. Returns the merged names.
+    """
+    merged = []
+    for group in conn.execute("SELECT name_key FROM companies WHERE is_real = 1 AND name_key != '' "
+                              "GROUP BY name_key HAVING COUNT(*) > 1").fetchall():
+        rows = conn.execute(
+            "SELECT c.id, c.name FROM companies c WHERE c.is_real = 1 AND c.name_key = ? ORDER BY c.active DESC, "
+            "(SELECT COUNT(*) FROM votes v WHERE v.company_id = c.id) DESC, c.id", (group["name_key"],)).fetchall()
+        keep, dups = rows[0]["id"], [r["id"] for r in rows[1:]]
+        for dup in dups:
+            conn.execute("UPDATE OR IGNORE votes SET company_id = ? WHERE company_id = ?", (keep, dup))
+            if conn.execute("SELECT 1 FROM opportunities WHERE company_id = ?", (keep,)).fetchone() is None:
+                conn.execute("UPDATE opportunities SET company_id = ? WHERE company_id = ?", (keep, dup))
+            conn.execute("UPDATE candidates SET company_id = ? WHERE company_id = ?", (keep, dup))
+        for dive in conn.execute("SELECT id, company_ids FROM dives").fetchall():
+            ids = j(dive["company_ids"], [])
+            folded = list(dict.fromkeys(keep if i in dups else i for i in ids))
+            if folded != ids:
+                conn.execute("UPDATE dives SET company_ids = ? WHERE id = ?", (dumps(folded), dive["id"]))
+        conn.execute(f"DELETE FROM companies WHERE id IN ({','.join('?' * len(dups))})", dups)  # their leftovers cascade
+        merged.append(rows[0]["name"])
+    conn.commit()
+    return merged
+
+
+def name_key(name: str) -> str:
+    """A company name reduced to lowercase letters and digits, so "Granarium" and "granarium." match."""
+    return re.sub(r"[^a-z0-9]+", "", (name or "").lower())
 
 
 def now() -> str:

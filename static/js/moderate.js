@@ -1,5 +1,5 @@
-// Moderation: every sign-up waits here until a moderator lets it in. Members carry a badge that sets how much
-// their answers count in crowd scores: high or low priority, or muted (not at all). Moderators sign in with their
+// Moderation: every investor sign-up waits here until a moderator lets it in (players are in at once). Members
+// carry a badge that scales how much their answers count in crowd scores: high or low priority, or muted (not at all). Moderators sign in with their
 // own account; admins (the admin password) also make and remove moderators and change moderators' accounts.
 // Both also give A'Pelago's own read of each startup, as its representatives.
 const { h, api, post, fmt1, ROLES, AXES, AXIS } = PD;
@@ -25,14 +25,17 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const day = (iso) => (iso ? iso.slice(0, 10) : "–");
 // Links are checked on the server; still, never render anything but plain http(s) as a link.
 const safeLink = (url) => (/^https?:\/\//i.test(url || "") ? url : null);
-const weight = (badge) => ({ "": 1, high: data.weights.high, low: data.weights.low, muted: 0 })[badge];
+const KIND = { player: "Player", investor: "Investor" };
+const badgeWeight = (badge) => ({ "": 1, high: data.weights.high, low: data.weights.low, muted: 0 })[badge];
+// A player counts 1 and an investor more, either one scaled by their badge.
+const weight = (u, badge = u.badge) => (u.kind === "investor" ? data.weights.investor : 1) * badgeWeight(badge);
 const times = (w) => `×${Number(w)}`;
 // Moderator accounts, the viewer's own included, are changed by admins only (the server checks this too).
 const locked = (u) => u.is_moderator && !data.viewer.admin;
 
 function badgeSelect(selected, label, onchange) {
   const sel = h("select", { class: `badge-select badge-${selected || "none"}`, "aria-label": label },
-    ["", "high", "low", "muted"].map((b) => h("option", { value: b, selected: b === selected }, `${BADGE[b]} ${times(weight(b))}`)));
+    ["", "high", "low", "muted"].map((b) => h("option", { value: b, selected: b === selected }, `${BADGE[b]} ${times(badgeWeight(b))}`)));
   sel.addEventListener("change", () => {
     sel.className = `badge-select badge-${sel.value || "none"}`;
     onchange(sel.value);
@@ -44,14 +47,17 @@ function who(u) {
   const p = u.profile;
   const meta = [ROLES[p.role], p.organisation, p.location].filter(Boolean).join(" · ");
   return h("div", {},
-    h("div", { class: "co-name" }, p.full_name || u.username, " ", h("span", { class: "handle" }, `@${u.username}`),
+    h("div", { class: "co-name" }, p.full_name ? [p.full_name, " ", h("span", { class: "handle" }, `@${u.username}`)] : u.username,
       u.is_moderator ? h("span", { class: "chip" }, "moderator") : null, u.is_test ? h("span", { class: "chip" }, "test account") : null),
     meta ? h("div", { class: "co-meta" }, meta) : null);
 }
 
 function profileBody(u) {
   const p = u.profile;
-  if (!p.full_name) return h("p", { class: "muted small" }, "No sign-up details: this account didn't come through the sign-up form.");
+  if (!p.full_name) {
+    return h("p", { class: "muted small" }, u.kind === "player" ? "A player: they sign up with a username and password only."
+      : "No sign-up details: this account didn't come through the sign-up form.");
+  }
   const links = Object.entries(p.links || {}).filter(([, url]) => safeLink(url));
   return h("div", { class: "profile" },
     links.length ? h("div", { class: "links" }, links.map(([key, url]) => h("a", { class: "chip", href: url, title: url,
@@ -85,6 +91,7 @@ function signupCard(u) {
 
 const COLUMNS = [
   { label: "Member", sort: "name" },
+  { label: "Kind", sort: "kind", title: "Players are in at once; investors are reviewed here and count for more." },
   { label: "Badge", sort: "badge" },
   { label: "Answers", sort: "answers", num: true },
   { label: "Sets", sort: "sets", num: true },
@@ -99,6 +106,7 @@ const COLUMNS = [
 
 const SORTERS = {
   name: (u) => (u.profile.full_name || u.username).toLowerCase(),
+  kind: (u) => u.kind,
   badge: (u) => BADGE_ORDER[u.badge],
   answers: (u) => u.answers,
   sets: (u) => u.sets,
@@ -122,7 +130,7 @@ function header() {
     const on = state.sort.key === col.sort;
     return h("th", { class: `sortable${col.num ? " num" : ""}`, title: col.title,
       "aria-sort": on ? (state.sort.dir > 0 ? "ascending" : "descending") : "none",
-      onclick: () => { state.sort = { key: col.sort, dir: on ? -state.sort.dir : (col.sort === "name" || col.sort === "badge" ? 1 : -1) }; render(); } },
+      onclick: () => { state.sort = { key: col.sort, dir: on ? -state.sort.dir : (["name", "kind", "badge"].includes(col.sort) ? 1 : -1) }; render(); } },
     col.label, h("span", { class: "dir" }, on ? (state.sort.dir > 0 ? "↑" : "↓") : ""));
   }));
 }
@@ -141,6 +149,7 @@ function memberRows(u) {
   } },
   h("td", {}, h("div", { class: "row", style: { gap: ".3rem", flexWrap: "nowrap", alignItems: "flex-start" } },
     h("span", { class: "caret", "aria-hidden": "true" }, "›"), who(u))),
+  h("td", {}, KIND[u.kind], h("div", { class: "co-meta" }, `counts ${times(weight(u))}`)),
   h("td", {}, sel, u.badge_by ? h("div", { class: "co-meta" }, `${u.badge_by} · ${day(u.badge_at)}`) : null),
   h("td", { class: "num" }, u.answers),
   h("td", { class: "num" }, u.sets),
@@ -166,9 +175,9 @@ function membersView(list) {
   const w = data.weights;
   return [
     h("p", { class: "muted small" },
-      `Badges set how much a member's answers count in crowd scores: high priority ${times(w.high)}, no badge ×1, `,
-      `low priority ${times(w.low)}, muted ×0. Guests count ${times(w.guest)}, and together at most `,
-      `${Math.round(w.guest_max_share * 100)}% of a card. The live room counts everyone alike, except muted members, who never count.`),
+      `In crowd scores a player's answer counts ×1 and an investor's ${times(w.investor)}. Badges scale that: high priority `,
+      `${times(w.high)}, no badge ×1, low priority ${times(w.low)}, muted ×0. Guests count ${times(w.guest)}, and together at most `,
+      `${Math.round(w.guest_max_share * 100)}% of a card.`),
     h("div", { class: "toolbar" }, search, badgeFilter, h("span", { class: "muted small" }, `${shown.length} of ${list.length}`)),
     h("div", { class: "table-wrap" }, h("table", { class: "data" },
       h("thead", {}, header()),
@@ -194,7 +203,7 @@ async function review(u, status, badge = "") {
 async function setBadge(u, badge) {
   try {
     await post(`/api/mod/users/${u.id}/badge`, { badge }, "PUT");
-    PD.toast(`${u.username}: ${BADGE[badge].toLowerCase()}, answers count ${times(weight(badge))}`);
+    PD.toast(`${u.username}: ${BADGE[badge].toLowerCase()}, answers count ${times(weight(u, badge))}`);
   } catch (e) { PD.toast(e.message); }
   await refresh();
 }
@@ -308,7 +317,7 @@ function render() {
   const scroll = window.scrollY;
   $app.replaceChildren(
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Moderation"),
-      h("p", {}, "Let sign-ups in, set how much each member's answers count, and give A'Pelago's own read of each startup.")),
+      h("p", {}, "Let investors in, set how much each member's answers count, and give A'Pelago's own read of each startup.")),
     h("span", { class: "spacer" }),
     h("span", { class: "chip" }, data.viewer.admin ? "Signed in as admin" : `Signed in as ${data.viewer.name}`)),
     h("div", { class: "seg view-switch", role: "group", "aria-label": "Moderate" },
@@ -330,7 +339,7 @@ function peopleView() {
   return [
     h("div", { class: "kpis" },
       kpi("Waiting", by.pending.length, by.pending.length ? `sign-up${by.pending.length === 1 ? "" : "s"} to review` : "all caught up"),
-      kpi("Members", members.length, `${badged("high")} high · ${badged("low")} low · ${badged("muted")} muted`),
+      kpi("Members", members.length, `${members.filter((u) => u.kind === "investor").length} investors · ${badged("high")} high · ${badged("low")} low · ${badged("muted")} muted`),
       kpi("Guests", data.guests, "devices playing without an account")),
     h("section", { class: "panel" },
       h("div", { class: "panel-head" },
@@ -339,7 +348,7 @@ function peopleView() {
       state.tab === "approved" ? membersView(members)
         : list.length ? h("div", { class: "signups" }, list.map(signupCard))
           : h("p", { class: "muted", style: { margin: 0 } },
-            state.tab === "pending" ? "No sign-ups waiting. New ones show up here." : "No rejected sign-ups.")),
+            state.tab === "pending" ? "No investor sign-ups waiting. New ones show up here." : "No rejected sign-ups.")),
   ];
 }
 

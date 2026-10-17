@@ -1,342 +1,397 @@
-// Host dashboard: crowd vs engine vs web pulse per company, what needs attention, ranked next actions.
-const { h, api, post, AXES, AXIS, fmt1 } = PD;
+// Dashboard: the opportunity radar. Every tracked company and every new discovery as a card with a call
+// (back / watch / avoid), a lens on why (thesis, readiness, the game's crowd, the web), and its next move.
+// Details opens the full read: readiness levels, thesis fit, ranked investors, grants, partners and clients, and
+// everything an investor's game card shows: the profile and what A'Pelago, the AI models and social media make of it.
+const { h, api, post, fmt1, AXES, AXIS } = PD;
 const $app = document.getElementById("app");
-const state = { realOnly: false, open: new Set(), sort: { key: "name", dir: 1 }, verdict: "", pulsing: new Set(), runningAll: false };
+
+const LENSES = [["thesis", "Thesis"], ["readiness", "Readiness"], ["game", "Game"], ["opinions", "Opinions"], ["web", "Web"]];
+const OPINION_GROUPS = [["people", "People"], ["ai", "AI models"], ["social", "Social media"]];
+const COUNT_WORD = { crowd: "answer", apelago: "reviewer" }; // social media counts posts
+const FILTERS = [["all", "All"], ["back", "Back"], ["watch", "Watch"], ["avoid", "Avoid"], ["evidence", "Needs evidence"], ["new", "New"]];
+const SORTS = [["redstone", "Redstone fit"], ["apelago", "A'Pelago fit"], ["readiness", "Readiness"], ["gap", "Crowd gap"]];
+const KIND_LABEL = { investor: "Investors", grant: "Grants", partner: "Partners", client: "Clients" };
+const LEVELS = [["ocean_impact", "Ocean impact"], ["business", "Business"], ["tech", "Technology"], ["investment", "Investment"]];
+const DEFS = {
+  readiness: "Ocean impact: how proven the ocean benefit is (Ocean Impact Navigator). Business: market, value proposition and "
+    + "business model validation (KTH BRL). Technology: TRL 1–9 from evidence such as pilots and deployments, never a self-claim. "
+    + "Investment: market, product, team, model, competition, distribution, financials, tech, deal, impact. Scores 0–5.",
+  thesis: "Redstone: early-stage blue-economy venture lens (market, product, team, model, financials, deal). "
+    + "A'Pelago: accelerator lens (ocean impact, business readiness, team). 0–5, from evidence alone.",
+};
+
+const state = {
+  lens: localStorageGet("pd.lens") || "thesis", filter: "all", sort: "redstone", realOnly: false,
+  open: null, busy: new Set(), searching: false,
+};
 let data = null;
 let lastSig = null;
 
-// Kept across renders so typing and choosing aren't interrupted by the background refresh.
-const search = h("input", { type: "search", placeholder: "Filter by name or sector", "aria-label": "Filter companies", oninput: () => render() });
-const verdictSel = h("select", { "aria-label": "Filter by verdict", onchange: (e) => { state.verdict = e.target.value; render(); } },
-  h("option", { value: "" }, "All verdicts"), h("option", { value: "divergent" }, "Divergent"),
-  h("option", { value: "convergent" }, "Convergent"), h("option", { value: "unknown" }, "Unknown"));
+function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } }
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-const VERDICT = {
-  convergent: { icon: "✓", label: "Convergent" },
-  divergent: { icon: "⚠", label: "Divergent" },
-  unknown: { icon: "?", label: "Unknown" },
-};
-const VERDICT_ORDER = { divergent: 0, unknown: 1, convergent: 2 };
-const LEAN_SHORT = { positive: "pos", negative: "neg", mixed: "mixed", neutral: "neutral", silent: "silent" };
+// --- small pieces -----------------------------------------------------------------------------------
 
-const gapClass = (g) => (g === null ? "" : Math.abs(g) >= 1 ? "gap-hi" : Math.abs(g) >= 0.5 ? "gap-mid" : "");
-const signed = (n) => (n === null || n === undefined ? "–" : `${n > 0 ? "+" : ""}${Number(n).toFixed(1)}`);
-const unevidenced = (v) => v === null || v === undefined;
-const fitClass = (score) => (unevidenced(score) ? "muted" : score >= 3.5 ? "fit-hi" : score <= 2.0 ? "fit-lo" : "");
-const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-
-function verdictBadge(c) {
-  const v = VERDICT[c.verdict] || VERDICT.unknown;
-  return h("span", { class: `badge ${c.verdict}`, title: c.verdict_reason }, h("span", { "aria-hidden": "true" }, v.icon), v.label);
+function nameLink(name, url) {
+  return url ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, name) : name;
 }
 
-function leanBadge(lean) {
-  return h("span", { class: `badge ${lean}` }, LEAN_SHORT[lean] || lean);
+function callChip(c) {
+  return c.kind === "cand" ? h("span", { class: "call new" }, "New") : h("span", { class: `call ${c.call.key}` }, c.call.label);
 }
 
-// Crowd and engine composites on one 0–5 line, so the gap reads at a glance.
+function bar(label, score, extra = "") {
+  const none = score === null || score === undefined;
+  const cls = none ? "none" : score >= 3.5 ? "hi" : score < 2.5 ? "lo" : "";
+  return h("div", { class: `bar ${cls}` }, h("span", { class: "k" }, label),
+    h("span", { class: "t" }, h("i", { style: { width: none ? "0" : `${(score / 5) * 100}%` } })),
+    h("span", { class: "v" }, none ? "–" : `${extra}${fmt1(score)}`));
+}
+
 function track(c) {
   const pct = (v) => `${(v / 5) * 100}%`;
   const crowd = c.crowd.n ? c.crowd.composite : null;
   const engine = c.engine.composite;
   const lo = crowd === null ? engine : Math.min(crowd, engine);
   const hi = crowd === null ? engine : Math.max(crowd, engine);
-  const title = `Crowd ${crowd === null ? "no answers yet" : fmt1(crowd)} · Engine ${fmt1(engine)}`;
-  return h("div", { class: "row", style: { gap: ".6rem", flexWrap: "nowrap" }, title },
-    h("div", { class: "track", role: "img", "aria-label": title },
-      [0, 1, 2, 3, 4, 5].map((t) => h("i", { class: "tick", style: { left: pct(t) } })),
-      h("i", { class: "span", style: { left: pct(lo), width: `${((hi - lo) / 5) * 100}%` } }),
-      h("i", { class: "dot engine", style: { left: pct(engine) } }),
-      crowd === null ? null : h("i", { class: "dot crowd", style: { left: pct(crowd) } })),
-    h("span", { class: "num small" }, `${fmt1(crowd)} / ${fmt1(engine)}`));
+  return h("div", { class: "track", role: "img", "aria-label": `Crowd ${fmt1(crowd)}, engine ${fmt1(engine)}` },
+    [0, 1, 2, 3, 4, 5].map((t) => h("i", { class: "tick", style: { left: pct(t) } })),
+    h("i", { class: "span", style: { left: pct(lo), width: `${((hi - lo) / 5) * 100}%` } }),
+    h("i", { class: "dot engine", style: { left: pct(engine) } }),
+    crowd === null ? null : h("i", { class: "dot crowd", style: { left: pct(crowd) } }));
 }
 
-async function runPulse(c, ev) {
-  ev.stopPropagation();
-  if (state.pulsing.has(c.id)) return;
-  state.pulsing.add(c.id);
-  render();
-  try {
-    const p = await post(`/api/admin/pulse/run/${c.id}`, {});
-    PD.toast(`${c.name}: ${plural(p.items_total, "web hit")}${p.errors.length ? ` (${p.errors.length} feed${p.errors.length === 1 ? "" : "s"} failed)` : ""}`);
-  } catch (e) { PD.toast(e.message); }
-  state.pulsing.delete(c.id);
-  refresh();
+function lean(p) {
+  return h("span", { class: `lean ${p.lean}` }, h("i"), `${p.lean} · ${plural(p.items_total, "hit")}`);
 }
 
-async function runAll() {
-  if (state.runningAll) return;
-  state.runningAll = true;
-  render();
-  try {
-    const r = await post("/api/admin/pulse/run-all", { active_only: true });
-    PD.toast(`Web pulse ran for ${plural(r.ran, "company")}${r.errors.length ? ` · ${r.errors.length} with feed errors` : ""}`, 4500);
-  } catch (e) { PD.toast(e.message); }
-  state.runningAll = false;
-  refresh();
+// --- the startup's profile and outside opinions (what an investor's game card shows) ----------------
+
+// The average of an opinion's four calls, for one bar per source.
+const meanOf = (scores) => AXES.reduce((sum, a) => sum + scores[a], 0) / AXES.length;
+const groupMean = (tiles) => (tiles.length ? tiles.reduce((sum, t) => sum + meanOf(t.scores), 0) / tiles.length : null);
+
+// "€650k raised · Seed round · 3 investors": the card's facts on one line.
+function factLine(c) {
+  const invested = c.investors.filter((i) => i.status === "invested").length;
+  const facts = [
+    c.raised_eur === null || c.raised_eur === undefined ? null : `${PD.money(c.raised_eur)} raised`,
+    c.stages.length ? c.stages[c.stages.length - 1] : null,
+    invested ? plural(invested, "investor") : null,
+  ].filter(Boolean);
+  return facts.length ? h("div", { class: "facts-line" }, facts.map((f) => h("span", {}, f))) : null;
 }
 
-function pulseCell(c) {
-  if (state.pulsing.has(c.id) || state.runningAll && c.active) return h("span", { class: "muted small" }, "Running…");
-  const p = c.pulse;
-  return h("button", { class: "pulse-cell", type: "button", onclick: (e) => runPulse(c, e),
-    title: p ? `Fetched ${p.fetched_at.slice(0, 16).replace("T", " ")} · click to refresh` : "Click to run web pulse" },
-  p ? [h("span", { class: "n" }, `${p.items_total} hits`), leanBadge(p.lean)] : h("span", { class: "n muted" }, "Run"));
+// One bar each for A'Pelago, the AI models and social media: the average of their four calls.
+function opinionBars(c) {
+  const of = (g) => c.opinions.filter((t) => t.group === g);
+  const ap = c.opinions.find((t) => t.key === "apelago");
+  const ai = of("ai");
+  const social = of("social");
+  if (!ap && !ai.length && !social.length) return [h("span", { class: "muted" }, "No outside opinions yet")];
+  return [
+    bar("A'Pelago", ap ? meanOf(ap.scores) : null),
+    bar("AI models", groupMean(ai)),
+    bar("Social", groupMean(social)),
+    h("span", { class: "muted" }, [ap ? plural(ap.count, "reviewer") : null, ai.length ? `${ai.map((t) => t.label).join(", ")}` : null,
+      social.length ? social.map((t) => t.label).join(", ") : null].filter(Boolean).join(" · ")),
+  ];
 }
 
-// --- expanded row ----------------------------------------------------------------------------------
-
-function crowdRead(c) {
-  const m = c.crowd.means || {};
-  return h("div", { class: "read crowd" },
-    h("h4", {}, h("span", {}, h("i", { class: "key crowd" }), "Crowd"), h("b", {}, fmt1(c.crowd.n ? c.crowd.composite : null))),
-    h("dl", {}, AXES.map((a) => [h("dt", {}, AXIS[a]), h("dd", {}, fmt1(m[a]))]),
-      h("dt", {}, "Answers"), h("dd", {}, `${c.crowd.n}${c.crowd.signed_in ? ` (${c.crowd.signed_in} signed in)` : ""}`),
-      h("dt", {}, "Split (std-dev)"), h("dd", {}, c.crowd.consensus === null ? "–" : fmt1(c.crowd.consensus))));
+function profileSection(c) {
+  const invested = c.investors.filter((i) => i.status === "invested");
+  const box = (label, value) => h("div", { class: "fact-cell" }, h("small", {}, label), h("b", {}, value));
+  return [
+    h("h3", {}, "Profile"),
+    h("div", { class: "fact-cells" },
+      box("Raised", c.raised_eur === null || c.raised_eur === undefined ? "Not disclosed" : PD.money(c.raised_eur)),
+      box("Investors", invested.length ? String(invested.length) : "None yet"),
+      box("Stage", c.stages.length ? c.stages[c.stages.length - 1] : "Not given")),
+    c.vision ? h("div", { class: "vision small" }, c.vision.split(/\n{2,}/).map((para) => h("p", {}, para))) : null,
+    c.stages.length ? [h("div", { class: "sub-head" }, "Stages passed"),
+      h("ol", { class: "small" }, c.stages.map((s) => h("li", {}, s)))] : null,
+    c.investors.length ? [h("div", { class: "sub-head" }, "Investors"),
+      h("ul", { class: "small" }, c.investors.map((i) => h("li", {}, h("b", {}, i.name), " ",
+        i.status === "interested" ? h("span", { class: "muted" }, "interested")
+          : i.amount_eur ? PD.money(i.amount_eur) : "invested")))] : null,
+  ];
 }
 
-function engineRead(c) {
-  const unknown = c.coverage.unknown || [];
-  return h("div", { class: "read engine" },
-    h("h4", {}, h("span", {}, h("i", { class: "key engine" }), "Engine"), h("b", {}, fmt1(c.engine.composite))),
-    h("dl", {}, AXES.map((a) => [h("dt", {}, AXIS[a]), h("dd", {}, fmt1(c.engine.axes[a]))]),
-      h("dt", {}, "Evidence coverage"), h("dd", {}, `${c.coverage.assessed}/${c.coverage.total} factors`)),
-    unknown.length ? h("p", { class: "note" }, `Unknown: ${unknown.slice(0, 6).join(", ")}${unknown.length > 6 ? ` +${unknown.length - 6} more` : ""}`) : null);
+// The same rows an investor's game card shows: who, their four calls on 0–5, and why.
+function opinionsSection(c) {
+  const row = (t) => h("div", { class: "op-row" },
+    h("div", { class: "op-who" }, h("b", {}, t.label), t.count ? h("small", {}, plural(t.count, COUNT_WORD[t.key] || "post")) : null),
+    PD.opinionChart(t.scores, { labelled: true }),
+    t.note ? h("p", { class: "op-note" }, t.note) : null);
+  const social = c.opinions.filter((t) => t.group === "social");
+  return [
+    h("h3", {}, "What others make of it"),
+    OPINION_GROUPS.map(([g, title]) => {
+      const tiles = c.opinions.filter((t) => t.group === g);
+      return tiles.length ? [h("div", { class: "sub-head" }, title), tiles.map(row)] : null;
+    }),
+    !c.opinions.length ? h("p", { class: "muted small" }, "No opinions yet.") : null,
+    !c.is_real && !social.length ? h("p", { class: "muted small" }, "No social media: this startup is made up.")
+      : c.quiet.length ? h("p", { class: "muted small" }, `No posts found on ${c.quiet.join(", ")}.`) : null,
+  ];
 }
 
-function webRead(c) {
-  const p = c.pulse;
-  if (!p) {
-    return h("div", { class: "read web" },
-      h("h4", {}, "Web pulse"),
-      h("p", { class: "note" }, "Not run yet. Pulls public news and Hacker News coverage; a hint for you, never part of the score."),
-      h("button", { class: "btn small", onclick: (e) => runPulse(c, e) }, "Run web pulse"));
-  }
-  return h("div", { class: "read web" },
-    h("h4", {}, "Web pulse", leanBadge(p.lean)),
-    h("dl", {},
-      h("dt", {}, "Items found"), h("dd", {}, p.items_total),
-      h("dt", {}, "Last 30 days"), h("dd", {}, p.items_recent),
-      h("dt", {}, "Positive / risk"), h("dd", {}, `${p.good_count} / ${p.risk_count}`),
-      h("dt", {}, "Coverage"), h("dd", {}, p.coverage)),
-    p.top_hits.length ? h("ul", {}, p.top_hits.slice(0, 5).map((t) => h("li", {},
-      h("a", { href: t.link, target: "_blank", rel: "noopener noreferrer" }, t.title),
-      h("span", { class: "muted" }, ` · ${t.source}${t.published ? ` · ${t.published}` : ""}`)))) : null,
-    h("p", { class: "note" }, `Fetched ${p.fetched_at.slice(0, 10)} from ${p.sources.join(", ") || "no sources"}.`,
-      p.errors.length ? h("span", { class: "thin" }, ` ${p.errors.join(" · ")}`) : null, " ",
-      h("a", { href: "#", onclick: (e) => { e.preventDefault(); runPulse(c, e); } }, "Refresh")));
-}
-
-function detailRow(c, colspan) {
-  const rd = c.readiness || {};
-  const levels = ["ocean_impact", "business", "tech", "investment"].filter((k) => rd[k]).map((k) => {
-    const l = rd[k];
-    return [h("dt", {}, l.label || k),
-      h("dd", {}, unevidenced(l.score) ? h("span", { class: "muted" }, "unevidenced") : `${fmt1(l.score)}${l.trl ? ` · TRL ${l.trl}` : ""}`,
-        l.coverage ? h("span", { class: "muted" }, ` (${l.coverage.assessed}/${l.coverage.total})`) : null)];
-  });
-  const theses = Object.values(c.theses || {});
-  return h("tr", { class: "detail" }, h("td", { colspan },
-    h("div", { class: "verdict-bar" }, verdictBadge(c), h("span", {}, c.verdict_reason)),
-    c.crowd.n ? null : h("p", { class: "muted small" }, "No crowd answers yet — showing evidence-based assessment."),
-    h("div", { class: "reads" }, crowdRead(c), engineRead(c), webRead(c)),
-    h("div", { class: "detail-grid" },
-      h("div", {},
-        h("h3", {}, "Ranked next actions"),
-        c.actions.length ? h("ol", {}, c.actions.map((a) => h("li", {},
-          h("b", {}, a.name), h("span", { class: "muted small" }, ` · ${a.kind}${a.stage_fit ? ` · ${a.stage_fit}` : ""} · score ${a.score}`),
-          h("div", { class: "small" }, a.why),
-          a.boosted.length ? h("div", { class: "boost" }, `↑ ${a.boosted.join("; ")}`) : null)))
-          : h("p", { class: "muted small" }, "No opportunities yet. Add them in Admin."),
-        h("h3", {}, "Flags"),
-        c.flags.length ? c.flags.map((f) => h("p", { class: "small", style: { margin: ".2rem 0" } }, h("span", { class: `flag ${f.key}` }, f.label), " ", f.detail))
-          : h("p", { class: "muted small" }, c.crowd.n < 5 ? "Flags need 5+ answers." : "Crowd and engine broadly agree.")),
-      h("div", {},
-        levels.length ? [h("h3", {}, "Readiness levels"), h("div", { class: "read" }, h("dl", {}, levels))] : null,
-        theses.length ? [h("h3", {}, "Thesis fit"), theses.map((t) => h("p", { class: "small", style: { margin: "0 0 .5rem" } },
-          h("b", {}, t.label), " · ", h("span", { class: fitClass(t.score) }, unevidenced(t.score) ? "unevidenced" : `fit ${fmt1(t.score)}`),
-          h("div", { class: "muted" }, t.why || t.description || "")))] : null)),
-    c.factors && c.factors.length ? [h("h3", {}, "Evidence behind these numbers"),
-      h("div", { class: "factor-trail" }, c.factors.map((f) => h("span", { class: "chip" }, `${f.label}: ${fmt1(f.value)}`)))] : null,
-    c.evidence_note ? h("p", { class: "small muted" }, h("b", {}, "Sources: "), c.evidence_note) : null));
-}
-
-// --- table ----------------------------------------------------------------------------------------
-
-const COLUMNS = [
-  { label: "Company", sort: "name" },
-  { label: "Answers", sort: "answers", num: true },
-  { label: "Crowd / engine", sort: "crowd" },
-  { label: "Gap", sort: "gap", num: true },
-  { label: "Split", num: true },
-  { label: "Coverage", num: true },
-  { label: "Web pulse", sort: "web" },
-  { label: "Verdict", sort: "verdict" },
-  { label: "Flags" },
-];
-
-const SORTERS = {
-  name: (c) => c.name.toLowerCase(),
-  answers: (c) => c.crowd.n,
-  crowd: (c) => (c.crowd.n ? c.crowd.composite : -1),
-  gap: (c) => (c.gap === null ? -99 : c.gap),
-  web: (c) => (c.pulse ? c.pulse.items_total : -1),
-  verdict: (c) => VERDICT_ORDER[c.verdict] ?? 9,
+const short = (label) => label.replace(/\s*\(.*\)\s*/, "").toLowerCase();
+const known = (c) => c.coverage && c.coverage.assessed > 0;
+const extremes = (c) => {
+  const f = [...(c.factors || [])].sort((a, b) => b.value - a.value);
+  return f.length >= 2 ? [f[0], f[f.length - 1]] : [];
 };
 
-function sorted(list) {
-  const key = SORTERS[state.sort.key];
-  return [...list].sort((a, b) => {
-    const x = key(a), y = key(b);
-    return (x < y ? -1 : x > y ? 1 : 0) * state.sort.dir || a.name.localeCompare(b.name);
-  });
+// --- the lens on a card -----------------------------------------------------------------------------
+
+function lensBody(c) {
+  if (c.kind === "cand") return h("span", { class: "muted" }, "Not assessed yet");
+  if (state.lens === "thesis") {
+    const [top, low] = extremes(c);
+    return [bar("Redstone", c.theses.redstone.score), bar("A'Pelago", c.theses.apelago.score),
+      top ? h("span", { class: "muted" }, `+ ${short(top.label)} ${fmt1(top.value)}   − ${short(low.label)} ${fmt1(low.value)}`) : null];
+  }
+  if (state.lens === "readiness") {
+    return LEVELS.map(([k, label]) => {
+      const lv = c.readiness[k];
+      return k === "tech" && lv.trl ? bar(label, lv.score, `TRL ${lv.trl} · `) : bar(label, lv.score);
+    });
+  }
+  if (state.lens === "game") {
+    if (!c.crowd.n) return h("span", { class: "muted" }, "Not played yet");
+    return [track(c), h("span", { class: "muted" },
+      h("span", {}, h("i", { class: "key crowd" }), `crowd ${fmt1(c.crowd.composite)}`), "  ",
+      h("span", {}, h("i", { class: "key engine" }), `engine ${known(c) ? fmt1(c.engine.composite) : "–"}`),
+      ` · ${plural(c.crowd.n, "answer")}`),
+    c.flags.length ? h("span", {}, c.flags.map((f) => f.label).join(" · ")) : null];
+  }
+  if (state.lens === "opinions") return opinionBars(c);
+  const p = c.pulse;
+  if (!p) return h("span", { class: "muted" }, "Not checked");
+  const top = p.top_hits[0];
+  return [lean(p), top ? h("a", { href: top.link, target: "_blank", rel: "noopener noreferrer", class: "muted" }, top.title) : null];
 }
 
-function header() {
-  return h("tr", {}, COLUMNS.map((col) => {
-    if (!col.sort) return h("th", { class: col.num ? "num" : "" }, col.label);
-    const on = state.sort.key === col.sort;
-    return h("th", { class: `sortable${col.num ? " num" : ""}`, "aria-sort": on ? (state.sort.dir > 0 ? "ascending" : "descending") : "none",
-      onclick: () => { state.sort = { key: col.sort, dir: on ? -state.sort.dir : (col.sort === "name" || col.sort === "verdict" ? 1 : -1) }; render(); } },
-    col.label, h("span", { class: "dir" }, on ? (state.sort.dir > 0 ? "↑" : "↓") : ""));
-  }));
+// --- cards ------------------------------------------------------------------------------------------
+
+function card(c) {
+  if (c.kind === "cand") {
+    const sc = c.screen || {};
+    const where = sc.verdict === "kept" && (sc.based_in || c.country_tag) ? sc.based_in || c.country_tag : "";
+    const busy = state.busy.has(`c${c.id}`);
+    return h("article", { class: "rc new" },
+      h("div", { class: "top" }, h("div", { class: "name" }, nameLink(c.name, c.url)), callChip(c)),
+      h("div", { class: "meta" }, [c.card?.sector || c.sector_query, where].filter(Boolean).join(" · ") || " "),
+      h("div", { class: "what" }, c.card?.one_liner || c.snippet),
+      c.card?.claim_ask ? h("div", { class: "ask" }, c.card.claim_ask) : null,
+      h("div", { class: "foot" },
+        h("button", { class: `btn primary${busy ? " busy" : ""}`, disabled: busy, onclick: () => track_(c) }, busy ? "Tracking…" : "Track"),
+        h("button", { class: "btn link", disabled: busy, onclick: () => dismiss(c) }, "Dismiss")));
+  }
+  const n = c.next;
+  return h("article", { class: "rc" },
+    h("div", { class: "top" }, h("div", { class: "name" }, nameLink(c.name, c.website)), callChip(c)),
+    h("div", { class: "meta" }, [c.sector, c.country].filter(Boolean).join(" · ") || " "),
+    h("div", { class: "what" }, c.one_liner),
+    c.claim_ask ? h("div", { class: "ask" }, c.claim_ask) : null,
+    factLine(c),
+    h("div", { class: "lens" }, lensBody(c)),
+    n && n.with ? h("div", { class: "next" }, h("b", {}, "Next: "), `${n.text} with `, nameLink(n.with, n.url)) : null,
+    h("div", { class: "foot" }, h("button", { class: "btn", onclick: () => openDrawer(c.id) }, "Details")));
 }
 
-function companyRows(c) {
-  const open = state.open.has(c.id);
-  const row = h("tr", { class: `clickable${open ? " open" : ""}`, "aria-expanded": String(open), onclick: () => {
-    open ? state.open.delete(c.id) : state.open.add(c.id);
-    render();
-  } },
-  h("td", {}, h("div", { class: "row", style: { gap: ".3rem", flexWrap: "nowrap", alignItems: "flex-start" } },
-    h("span", { class: "caret", "aria-hidden": "true" }, "›"),
-    h("div", {}, h("div", { class: "co-name" }, c.name),
-      h("div", { class: "co-meta" }, [c.sector, c.active ? null : (c.is_real ? "not in game yet" : "inactive")].filter(Boolean).join(" · "))))),
-  h("td", { class: "num" }, c.crowd.n),
-  h("td", {}, track(c)),
-  h("td", { class: `num ${gapClass(c.gap)}` }, signed(c.gap)),
-  h("td", { class: "num" }, c.crowd.consensus === null ? "–" : fmt1(c.crowd.consensus)),
-  h("td", { class: "num" }, `${c.coverage.assessed}/${c.coverage.total}`),
-  h("td", {}, pulseCell(c)),
-  h("td", {}, verdictBadge(c)),
-  h("td", {}, c.flags.map((f) => h("span", { class: `flag ${f.key}`, title: f.detail }, f.label))));
-  return open ? [row, detailRow(c, COLUMNS.length)] : row;
+async function track_(c) {
+  state.busy.add(`c${c.id}`);
+  render();
+  try {
+    await post(`/api/admin/discover/${c.id}/approve`, {});
+    PD.toast(`${c.name} tracked`);
+  } catch (e) { PD.toast(e.message); }
+  state.busy.delete(`c${c.id}`);
+  refresh(true);
 }
 
-// --- page -----------------------------------------------------------------------------------------
-
-function kpi(label, value, sub) {
-  return h("div", { class: "kpi" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), sub ? h("div", { class: "sub" }, sub) : null);
+async function dismiss(c) {
+  try { await post(`/api/admin/discover/${c.id}`, undefined, "DELETE"); } catch (e) { PD.toast(e.message); }
+  refresh(true);
 }
 
-function needsAttention(list) {
-  const items = list.filter((c) => c.verdict === "divergent" || c.flags.length)
-    .sort((a, b) => (VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict]) || Math.abs(b.gap || 0) - Math.abs(a.gap || 0));
-  return h("section", { class: "panel" },
-    h("div", { class: "panel-head" }, h("h2", {}, "Needs attention"), h("span", { class: "muted small" }, "Divergent or flagged, biggest gap first")),
-    items.length ? h("ul", { class: "attention" }, items.map((c) => h("li", {},
-      h("div", {}, h("div", { class: "co-name" }, c.name), h("div", { class: "row", style: { gap: ".3rem", marginTop: ".25rem" } },
-        verdictBadge(c), c.flags.map((f) => h("span", { class: `flag ${f.key}`, title: f.detail }, f.label)))),
-      h("div", {}, h("div", { class: "why" }, c.verdict_reason),
-        c.actions[0] ? h("div", { class: "next" }, `Next: ${c.actions[0].name}. ${c.actions[0].why}`) : null))))
-      : h("p", { class: "muted small", style: { margin: 0 } },
-        "Nothing yet. Verdicts and flags need 5+ answers on a company; Admin → “Load demo votes” fills a set for rehearsal."));
+// --- details drawer ---------------------------------------------------------------------------------
+
+// "#co-12" opens company 12's details, so a read can be linked to.
+function openDrawer(id) {
+  state.open = id;
+  history.replaceState(null, "", `#co-${id}`);
+  renderDrawer();
 }
 
-function thesisPanel(list) {
-  // Evidence-only ranking: works with zero players. Unscored companies sink to the bottom.
-  const ranked = [...list].filter((c) => c.theses)
-    .sort((x, y) => (y.theses.redstone?.score ?? -1) - (x.theses.redstone?.score ?? -1));
-  if (!ranked.length) return null;
-  return h("section", { class: "panel" },
-    h("div", { class: "panel-head" }, h("h2", {}, "Thesis read (no crowd needed)"),
-      h("span", { class: "muted small" }, "Evidence-based view — plays work as soon as anyone votes.")),
-    h("div", { class: "thesis-cards" }, ranked.slice(0, 4).map((c) => h("div", { class: "read thesis-card" },
-      h("h4", {}, h("span", {}, h("span", { class: "co-name" }, c.name), h("span", { class: "co-meta" }, c.sector)),
-        h("b", { title: "Engine composite" }, fmt1(c.engine.composite))),
-      h("dl", {}, Object.values(c.theses).map((t) => [h("dt", {}, t.label),
-        h("dd", { class: fitClass(t.score) }, unevidenced(t.score) ? "–" : fmt1(t.score))])),
-      h("p", { class: "note" }, c.theses.redstone?.why || "")))));
+function closeDrawer() {
+  state.open = null;
+  history.replaceState(null, "", location.pathname);
+  renderDrawer();
 }
 
-// Live mode before discovery has found anything (or before it's run).
-function emptyLive() {
-  const af = data.autofill || {};
-  return h("section", { class: "panel" }, h("p", { class: "callout", style: { margin: 0 } },
-    data.mode === "live" && af.started_at && !af.finished_at ? "Discovery is running… real startups will appear here as they're found."
-      : data.mode === "live" ? h("span", {}, "No real startups yet. Run discovery in ", h("a", { href: "/admin" }, "Admin"), ".")
-        : "No sample companies. Reset in Admin to reload them."));
+async function runPulse(c, btn) {
+  btn.disabled = true;
+  btn.classList.add("busy");
+  try { await post(`/api/admin/pulse/run/${c.id}`, {}); } catch (e) { PD.toast(e.message); }
+  await refresh(true);
+}
+
+function renderDrawer() {
+  document.querySelectorAll(".drawer, .scrim").forEach((el) => el.remove());
+  const c = state.open && data && data.companies.find((x) => x.id === state.open);
+  if (!c) return;
+  const groups = Object.keys(KIND_LABEL).map((k) => [k, c.actions.filter((a) => a.kind === k)]).filter(([, list]) => list.length);
+  const n = c.next;
+  const p = c.pulse;
+  const drawer = h("aside", { class: "drawer", role: "dialog", "aria-label": c.name },
+    h("button", { class: "btn link close", "aria-label": "Close", onclick: closeDrawer }, "Close"),
+    h("h2", {}, nameLink(c.name, c.website)),
+    h("div", { class: "muted small" }, [c.sector, c.country].filter(Boolean).join(" · ")),
+    h("p", { class: "small", style: { margin: ".5rem 0 0" } }, c.one_liner, c.claim_ask ? h("span", { class: "muted" }, ` — ${c.claim_ask}`) : null),
+
+    profileSection(c),
+
+    h("h3", {}, "Call"),
+    h("div", { class: "row" }, callChip(c)),
+    h("ul", { class: "small", style: { marginTop: ".4rem" } }, c.call.reasons.map((r) => h("li", {}, r))),
+    n ? h("div", { class: "move small" }, h("b", {}, n.text), n.with ? [" with ", nameLink(n.with, n.url)] : null,
+      h("div", { class: "muted" }, `Gap: ${n.gap_label} ${n.gap_score === null ? "unknown" : fmt1(n.gap_score)}`)) : null,
+
+    h("h3", {}, "Readiness", Tool.tip(DEFS.readiness)),
+    h("div", { style: { display: "grid", gap: ".3rem" } }, LEVELS.map(([k, label]) => {
+      const lv = c.readiness[k];
+      return h("div", {}, k === "tech" && lv.trl ? bar(label, lv.score, `TRL ${lv.trl} · `) : bar(label, lv.score),
+        lv.coverage ? h("div", { class: "muted", style: { fontSize: ".7rem", marginLeft: "104px" } },
+          `${lv.coverage.assessed}/${lv.coverage.total} factors known`) : null);
+    })),
+
+    h("h3", {}, "Thesis fit", Tool.tip(DEFS.thesis)),
+    Object.values(c.theses).map((t) => h("div", { style: { marginBottom: ".45rem" } }, bar(t.label.split(" ")[0], t.score),
+      t.why ? h("div", { class: "muted small" }, t.why) : null)),
+
+    h("h3", {}, "Next steps, ranked"),
+    groups.length ? groups.map(([k, list]) => [h("div", { class: "small", style: { fontWeight: 700, margin: ".5rem 0 .3rem" } }, KIND_LABEL[k]),
+      h("div", { class: "steps" }, list.map((a, i) => h("div", { class: "step small" },
+        h("span", { class: "n" }, nameLink(a.name, a.url)), h("span", { class: "fit" }, `#${i + 1}`),
+        h("span", { class: "w" }, [a.why, ...(a.reasons || [])].filter(Boolean).join(" · ")))))])
+      : h("p", { class: "muted small" }, "No matches."),
+
+    h("h3", {}, "Crowd vs engine"),
+    c.crowd.n ? [track(c), h("div", { class: "muted small", style: { marginTop: ".3rem" } },
+      `Crowd ${fmt1(c.crowd.composite)} · engine ${fmt1(c.engine.composite)} · ${plural(c.crowd.n, "answer")}`),
+    c.flags.map((f) => h("div", { class: "small" }, `${f.label}: ${f.detail}`))]
+      : h("p", { class: "muted small" }, "Not played yet."),
+
+    opinionsSection(c),
+
+    h("h3", {}, "Web"),
+    p ? [lean(p), h("ul", { class: "small", style: { marginTop: ".35rem" } }, p.top_hits.slice(0, 5).map((t) =>
+      h("li", {}, h("a", { href: t.link, target: "_blank", rel: "noopener noreferrer" }, t.title))))] : null,
+    h("button", { class: "btn", style: { marginTop: ".5rem" }, onclick: (e) => runPulse(c, e.currentTarget) }, p ? "Refresh" : "Check the web"),
+
+    c.evidence_note ? [h("h3", {}, "Sources"), h("p", { class: "muted small" }, c.evidence_note)] : null);
+  document.body.append(h("div", { class: "scrim", onclick: closeDrawer }), drawer);
+}
+
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.open) closeDrawer(); });
+
+// --- page -------------------------------------------------------------------------------------------
+
+function items() {
+  const cos = data.companies.map((c) => ({ ...c, kind: "co" }));
+  const cands = data.candidates.map((c) => ({ ...c, kind: "cand" }));
+  return { cos, cands };
+}
+
+function readinessMean(c) {
+  const s = Object.values(c.readiness).map((l) => l.score).filter((v) => v !== null);
+  return s.length ? s.reduce((a, b) => a + b, 0) / s.length : -1;
+}
+
+const SORT = {
+  redstone: (c) => c.theses.redstone.score ?? -1,
+  apelago: (c) => c.theses.apelago.score ?? -1,
+  readiness: readinessMean,
+  gap: (c) => (c.gap === null ? -1 : Math.abs(c.gap)),
+};
+
+function searchRow() {
+  const country = h("input", { type: "text", placeholder: "Country", maxlength: 40, "aria-label": "Country" });
+  const field = h("input", { type: "text", placeholder: "Field (optional)", maxlength: 60, "aria-label": "Field" });
+  async function find() {
+    if (country.value.trim().length < 2 && field.value.trim().length < 2) return country.focus();
+    state.searching = true;
+    btn.disabled = true;
+    btn.textContent = "Finding…";
+    try {
+      const found = await post("/api/admin/discover/search", { sector: field.value.trim(), country: country.value.trim(), limit: 8 });
+      PD.toast(found.length ? `${plural(found.length, "startup")} found` : "Nothing found");
+      state.filter = "new";
+    } catch (e) { PD.toast(e.message); }
+    state.searching = false;
+    refresh(true);
+  }
+  const btn = h("button", { class: "btn primary", disabled: state.searching, onclick: find }, state.searching ? "Finding…" : "Find startups");
+  [country, field].forEach((el) => el.addEventListener("keydown", (e) => { if (e.key === "Enter") find(); }));
+  return data.mode === "live" ? h("div", { class: "row" }, country, field, btn) : null;
 }
 
 function render() {
   if (!data) return;
-  const all = data.companies;
-  const q = search.value.trim().toLowerCase();
-  const shown = sorted(all.filter((c) => (!q || `${c.name} ${c.sector}`.toLowerCase().includes(q))
-    && (!state.verdict || c.verdict === state.verdict)));
-  const active = all.filter((c) => c.active);
-  const answers = all.reduce((s, c) => s + (c.crowd.n || 0), 0);
-  const signedIn = all.reduce((s, c) => s + (c.crowd.signed_in || 0), 0);
-  const pulsed = active.filter((c) => c.pulse).length;
-  const scroll = window.scrollY;
+  const { cos, cands } = items();
+  const count = { all: cos.length + cands.length, new: cands.length };
+  for (const c of cos) count[c.call.key] = (count[c.call.key] || 0) + 1;
+  const sorted = (arr) => [...arr].sort((a, b) => SORT[state.sort](b) - SORT[state.sort](a) || a.name.localeCompare(b.name));
+  const list = state.filter === "new" ? cands
+    : state.filter === "all" ? [...sorted(cos), ...cands]
+      : sorted(cos.filter((c) => c.call.key === state.filter));
 
-  // replaceChildren (unlike h) would print a skipped section as the text "null".
+  const seg = (opts, cur, pick) => h("div", { class: "seg", role: "group" }, opts.map(([k, label]) =>
+    h("button", { type: "button", "aria-pressed": String(cur === k), onclick: () => pick(k) }, label)));
+
   $app.replaceChildren(...[
-    h("div", { class: "page-head" },
-      h("div", {}, h("h1", {}, "Perception vs reality ",
-        h("span", { class: `badge ${data.mode === "live" ? "positive" : "neutral"}`, style: { verticalAlign: "middle" } },
-          data.mode === "live" ? "Live: real startups" : "Demo data")),
-        h("p", {}, "How the room reads each startup, what the evidence says, and what the open web shows.")),
+    h("div", { class: "head" }, h("h1", {}, "Dashboard"), h("span", { class: "spacer" }), searchRow()),
+    h("div", { class: "toolbar" },
+      h("div", { class: "chips", role: "group", "aria-label": "Show" }, FILTERS.filter(([k]) => k === "all" || count[k]).map(([k, label]) =>
+        h("button", { "aria-pressed": String(state.filter === k), onclick: () => { state.filter = k; render(); } }, label, h("b", {}, count[k] || 0)))),
       h("span", { class: "spacer" }),
-      h("label", { class: "check" },
-        h("input", { type: "checkbox", checked: state.realOnly, onchange: (e) => { state.realOnly = e.target.checked; refresh(); } }),
-        "Real answers only"),
-      h("button", { class: `btn${state.runningAll ? " busy" : ""}`, disabled: state.runningAll, onclick: runAll,
-        title: "Fetch public coverage for every active company. Never changes scores." },
-      state.runningAll ? "Running web pulse…" : "Run web pulse for all"),
-      h("a", { class: "btn", href: "/api/admin/export.csv" }, "Export CSV"),
-      h("a", { class: "btn", href: "/api/admin/export.json" }, "JSON")),
-    h("div", { class: "kpis" },
-      kpi("Active companies", active.length, `${all.length} in total`),
-      kpi(state.realOnly ? "Real answers" : "Answers", answers, `${signedIn} from signed-in players`),
-      kpi("Flagged", all.filter((c) => c.flags.length).length, "story, substance or split"),
-      kpi("Divergent", all.filter((c) => c.verdict === "divergent").length,
-        `${all.filter((c) => c.verdict === "convergent").length} convergent`),
-      kpi("Web pulse", h("span", {}, pulsed, h("small", {}, ` / ${active.length}`)), "active companies checked")),
-    !all.length ? emptyLive() : null,
-    thesisPanel(all),
-    needsAttention(all),
-    h("section", { class: "panel" },
-      h("div", { class: "panel-head" }, h("h2", {}, "Companies"), h("span", { class: "spacer" }),
-        h("div", { class: "legend" },
-          h("span", {}, h("i", { class: "key crowd" }), "Crowd"), h("span", {}, h("i", { class: "key engine" }), "Engine"),
-          h("span", {}, "Gap = crowd − engine"))),
-      h("div", { class: "toolbar" }, search, verdictSel,
-        h("span", { class: "muted small" }, `${shown.length} of ${all.length}`)),
-      h("div", { class: "table-wrap" }, h("table", { class: "data" },
-        h("thead", {}, header()),
-        h("tbody", {}, shown.length ? shown.map(companyRows)
-          : h("tr", {}, h("td", { colspan: COLUMNS.length, class: "muted" }, "No companies match."))))),
-      h("p", { class: "muted small", style: { margin: ".7rem 0 0" } },
-        "Split is how much the crowd disagrees with itself. Coverage is how many evidence factors the engine knows. Click a row for the full triangulation."))].filter(Boolean));
-  window.scrollTo({ top: scroll });
+      seg(LENSES, state.lens, (k) => { state.lens = k; localStorageSet("pd.lens", k); render(); }),
+      h("select", { "aria-label": "Sort", onchange: (e) => { state.sort = e.target.value; render(); } },
+        SORTS.map(([k, label]) => h("option", { value: k, selected: state.sort === k }, label))),
+      state.lens === "game" ? h("label", { class: "check" }, h("input", { type: "checkbox", checked: state.realOnly,
+        onchange: (e) => { state.realOnly = e.target.checked; refresh(true); } }), "Real answers only") : null),
+    list.length ? h("div", { class: "grid" }, list.map(card))
+      : h("p", { class: "empty" }, data.mode === "live" ? "No startups yet. Find some above." : "No companies."),
+  ].filter(Boolean));
 }
 
-async function refresh(force = true) {
+async function refresh(force = false) {
   let fresh;
   try {
-    fresh = await api(`/api/host/overview?real_only=${state.realOnly}`);
+    fresh = await api(`/api/host/radar?real_only=${state.realOnly}`);
   } catch (e) {
     $app.replaceChildren(h("p", { class: "callout" }, e.message));
     return;
   }
-  // Background refreshes skip the rebuild when nothing changed (keeps scroll and open rows steady).
   const sig = JSON.stringify(fresh);
   if (!force && sig === lastSig) return;
   lastSig = sig;
+  // Whatever comes back, only the current mode's pool is drawn.
+  fresh.companies = fresh.companies.filter((c) => c.is_real === (fresh.mode === "live"));
   data = fresh;
   render();
+  if (state.open) renderDrawer();
 }
 
-refresh();
-setInterval(() => { if (!document.hidden && !state.runningAll) refresh(false); }, 5000);
+state.open = Number((location.hash.match(/^#co-(\d+)$/) || [])[1]) || null;
+Tool.onMode(() => { state.open = null; state.filter = "all"; renderDrawer(); refresh(true); });
+refresh(true);
+// Quietly pick up autofill finds and new answers, never while the host is reading details or typing.
+setInterval(() => {
+  const typing = document.activeElement && ["INPUT", "SELECT"].includes(document.activeElement.tagName);
+  if (!document.hidden && !state.open && !typing && !state.searching) refresh();
+}, 15000);

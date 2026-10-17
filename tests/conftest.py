@@ -21,9 +21,20 @@ def client(tmp_path, monkeypatch):
     # Same for the demo/live settings: start in demo, and never crawl in the background during tests.
     monkeypatch.setattr(config, "APP_MODE", "demo")
     monkeypatch.setattr(config, "DISCOVER_AUTO", False)
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")  # no AI calls unless a test stubs them
     from app.main import app
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def no_openrouter(monkeypatch):
+    """No test reaches OpenRouter: a call a test didn't stub fails like a dead network would."""
+    from app.crawler import pitch
+
+    def offline(*_args, **_kwargs):
+        raise OSError("no network in tests")
+    monkeypatch.setattr(pitch, "_post", offline)
 
 
 @pytest.fixture
@@ -58,8 +69,9 @@ def staff():
 
 
 def apply(c, username="maija", password="pass1234", **profile):
-    """Send a sign-up. It waits for a moderator and doesn't log in."""
-    return c.post("/api/account/register", json={"username": username, "password": password, **PROFILE, **profile})
+    """Send an investor's sign-up. It waits for a moderator and doesn't log in."""
+    return c.post("/api/account/register",
+                  json={"username": username, "password": password, "kind": "investor", **PROFILE, **profile})
 
 
 def user_id(c, username):
@@ -67,8 +79,14 @@ def user_id(c, username):
     return next(u["id"] for u in users if u["username"].lower() == username.lower())
 
 
+def join(c, username="pia", password="pass1234"):
+    """Sign up as a player: no review, logged in at once."""
+    return c.post("/api/account/register", json={"username": username, "password": password, "kind": "player"})
+
+
 def sign_up(c, username="maija", password="pass1234"):
-    """Sign up, have a moderator approve it, then log in. Returns the first response that failed, or the login."""
+    """Sign up as an investor, have a moderator approve it, then log in. Returns the first response that failed, or
+    the login."""
     r = apply(c, username, password)
     if r.status_code != 200:
         return r

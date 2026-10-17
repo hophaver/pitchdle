@@ -1,8 +1,9 @@
 """Player accounts: username + password, cookie sessions, and folding a guest's answers into an account.
 
 Deliberately light (no reset, nothing emailed). Accounts exist so a crowd score can trust signed-in players
-more than anonymous devices, and so players keep their history across days and devices. Every sign-up waits
-for a moderator (see moderation.py) and can't log in until one approves it.
+more than anonymous devices, and so players keep their history across days and devices. There are two kinds:
+a player signs up with a username and password and is in at once; an investor gives the full profile and waits
+for a moderator (see moderation.py), can't log in until one approves it, and then counts for more.
 """
 import hashlib
 import hmac
@@ -15,6 +16,9 @@ from .db import dumps, now
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,20}$")
 PASSWORD_MIN = 4
 _ITERATIONS = 100_000
+
+
+KINDS = ("player", "investor")
 
 
 class AccountError(ValueError):
@@ -49,7 +53,7 @@ def is_test(user) -> bool:
 
 def public_user(user) -> dict:
     return {"id": user["id"], "username": user["username"], "created_at": user["created_at"], "is_test": is_test(user),
-            "is_moderator": bool(user["is_moderator"])}
+            "is_moderator": bool(user["is_moderator"]), "kind": user["kind"] or "player"}
 
 
 def ensure_test_accounts(db) -> None:
@@ -87,8 +91,9 @@ def player_for(db, user):
     return row
 
 
-def register(db, username: str, password: str, profile: dict | None = None, status: str = "pending"):
-    """A new account. Sign-ups wait for a moderator; only the test account starts out approved."""
+def register(db, username: str, password: str, profile: dict | None = None, status: str = "pending",
+             kind: str = "player"):
+    """A new account. Investor sign-ups wait for a moderator; players and the test accounts start out approved."""
     username = username.strip()
     if not USERNAME_RE.match(username):
         raise AccountError("Username: 3-20 letters, numbers, dots, dashes or underscores.")
@@ -96,8 +101,11 @@ def register(db, username: str, password: str, profile: dict | None = None, stat
         raise AccountError(f"Password: at least {PASSWORD_MIN} characters.")
     if db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
         raise AccountError("That username is taken.")
-    uid = db.execute("INSERT INTO users (username, password_hash, status, profile, created_at) VALUES (?, ?, ?, ?, ?)",
-                     (username, hash_password(password), status, dumps(profile or {}), now())).lastrowid
+    if kind not in KINDS:
+        raise AccountError("Pick player or investor.")
+    uid = db.execute("INSERT INTO users (username, password_hash, status, profile, kind, created_at) "
+                     "VALUES (?, ?, ?, ?, ?, ?)",
+                     (username, hash_password(password), status, dumps(profile or {}), kind, now())).lastrowid
     db.commit()
     return db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
 
@@ -175,6 +183,19 @@ def delete_user(db, uid: int) -> bool:
     db.execute("DELETE FROM users WHERE id = ?", (uid,))
     db.commit()
     return True
+
+
+def list_users(db) -> list[dict]:
+    """Every account with how much it has played, for the host's Players tab."""
+    return [dict(r) for r in db.execute("""
+        SELECT u.id, u.username, u.created_at, u.kind, u.status,
+               COUNT(v.id) AS answers,
+               COUNT(DISTINCT v.dive_id) AS sets,
+               MAX(v.created_at) AS last_played
+        FROM users u
+        LEFT JOIN players p ON p.user_id = u.id
+        LEFT JOIN votes v ON v.player_id = p.id
+        GROUP BY u.id ORDER BY u.created_at DESC, u.id DESC""")]
 
 
 def guest_count(db) -> int:

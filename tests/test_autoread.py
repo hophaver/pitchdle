@@ -3,6 +3,7 @@ startup for cards from before. The reads are faked here; tests/test_reads.py cov
 import pytest
 
 from app import autoread, config, reads
+from tests.conftest import new_player, sign_up
 from tests.test_api import GUESS, today
 
 AI_READ = {"scores": {**GUESS, "novel": 4.0}, "note": "Solid.", "meta": {"model": "test"}}
@@ -36,7 +37,9 @@ def test_cards_from_before_get_their_ai_ratings(client, admin, calls):
     sample = [name for name, kind, _ in calls]
     assert len(sample) == 12 and {kind for _, kind, _ in calls} == {"ai"}  # made-up startups: no social search
     assert all(only == ("claude", "gpt", "grok") for _, _, only in calls)
-    card = today(client)["cards"][0]
+    investor = new_player(client)
+    sign_up(investor)
+    card = today(investor)["cards"][0]
     assert [t["key"] for t in card["opinions"]] == ["claude", "gpt", "grok"]
     st = client.get("/api/admin/mode", auth=admin).json()["reads"]["auto"]
     assert len(st["read"]) == 12 and st["finished_at"] and st["running"] is False
@@ -51,8 +54,11 @@ def test_a_new_card_is_read_when_its_added(client, admin, calls):
     comp = client.post("/api/admin/companies", json=REAL, auth=admin).json()
     assert calls == [("Kelp Co", "ai", ("claude", "gpt", "grok")),
                      ("Kelp Co", "social", ("x", "threads", "linkedin", "reddit", "bluesky"))]
+    client.post("/api/admin/mode", json={"mode": "live"}, auth=admin)  # a real startup plays in live mode
     dive = client.post("/api/admin/dives", json={"label": "one", "company_ids": [comp["id"]]}, auth=admin).json()
-    card = client.get(f"/api/dive/{dive['id']}").json()["cards"][0]
+    investor = new_player(client)
+    sign_up(investor)
+    card = investor.get(f"/api/dive/{dive['id']}").json()["cards"][0]
     assert [t["key"] for t in card["opinions"]] == ["claude", "gpt", "grok", "x"]
     assert card["quiet"] == ["Threads", "LinkedIn", "Reddit", "Bluesky"]  # searched, nothing found
 

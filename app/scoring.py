@@ -42,14 +42,31 @@ def badge_weight(badge: str) -> float:
     return {"high": config.HIGH_PRIORITY_WEIGHT, "low": config.LOW_PRIORITY_WEIGHT, "muted": 0.0}.get(badge, 1.0)
 
 
-def vote_weights(votes: list) -> list[float]:
-    """How much each vote counts towards a crowd score: members by their badge, guests weighed down to blunt bot farms.
+def kind_of(vote) -> str:
+    """The voter's account kind: player or investor ('' for guests)."""
+    try:
+        return vote["kind"] or ""
+    except (KeyError, IndexError):
+        return ""
 
-    Members count 1, scaled by the badge a moderator gave them (high or low priority; muted is 0). Guests count
-    GUEST_WEIGHT each, shrinking further as guests pile up so that together they never make up more than
-    GUEST_MAX_SHARE of the total. With no member weight to weigh them against, guests count 1 each.
+
+def kind_weight(kind: str) -> float:
+    return config.INVESTOR_WEIGHT if kind == "investor" else 1.0
+
+
+def member_weight(vote) -> float:
+    return kind_weight(kind_of(vote)) * badge_weight(badge_of(vote))
+
+
+def vote_weights(votes: list) -> list[float]:
+    """How much each vote counts towards a crowd score: guests least, players 1, investors most.
+
+    A player counts 1 and an investor INVESTOR_WEIGHT, either scaled by the badge a moderator gave them (high or
+    low priority; muted is 0). Guests count GUEST_WEIGHT each, shrinking further as guests pile up so that together
+    they never make up more than GUEST_MAX_SHARE of the total. With no member weight to weigh them against, guests
+    count 1 each.
     """
-    members = [badge_weight(badge_of(v)) if signed_in(v) else None for v in votes]
+    members = [member_weight(v) if signed_in(v) else None for v in votes]
     member_total = sum(w for w in members if w is not None)
     guests = members.count(None)
     if not guests or not member_total:
@@ -62,7 +79,7 @@ def vote_weights(votes: list) -> list[float]:
 def crowd(votes: list, weighted: bool = True) -> dict:
     """Aggregate votes (rows or dicts with the four axis columns).
 
-    Weighted, guests count for less and members by their badge; unweighted counts everyone alike, as a live
+    Weighted, guests count for less, investors for more, and members by their badge; unweighted counts everyone alike, as a live
     room does. Either way a muted member's answers are left out entirely, from the counts too.
     """
     weights = vote_weights(votes) if weighted else [0.0 if badge_of(v) == "muted" else 1.0 for v in votes]

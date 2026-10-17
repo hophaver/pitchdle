@@ -1,5 +1,5 @@
-"""Moderation: every sign-up waits for a moderator, and approved members carry a badge that sets how much
-their answers count in crowd scores (scoring.vote_weights does the counting).
+"""Moderation: every investor sign-up waits for a moderator (players are in at once), and members carry a badge
+that scales how much their answers count in crowd scores (scoring.vote_weights does the counting).
 
 Moderators are members an admin has promoted, and sign in with their own account; admins get in with the
 admin password. Whoever acts is recorded on each review and badge.
@@ -105,7 +105,7 @@ NO_ACTIVITY = {"answers": 0, "sets": 0, "last_played": None, "engine_gap": None,
 def user_payload(user, played: dict | None) -> dict:
     return {
         "id": user["id"], "username": user["username"], "created_at": user["created_at"],
-        "status": user["status"], "profile": j(user["profile"], {}),
+        "status": user["status"], "kind": user["kind"] or "player", "profile": j(user["profile"], {}),
         "reviewed_by": user["reviewed_by"], "reviewed_at": user["reviewed_at"],
         "badge": user["badge"] or "", "badge_by": user["badge_by"], "badge_at": user["badge_at"],
         "is_moderator": bool(user["is_moderator"]), "is_test": accounts.is_test(user),
@@ -125,5 +125,6 @@ def overview(db) -> dict:
         "users": [user_payload(u, played.get(u["id"])) for u in users],
         "guests": accounts.guest_count(db),
         "weights": {"high": config.HIGH_PRIORITY_WEIGHT, "low": config.LOW_PRIORITY_WEIGHT,
+                    "investor": config.INVESTOR_WEIGHT,
                     "guest": config.GUEST_WEIGHT, "guest_max_share": config.GUEST_MAX_SHARE},
     }

@@ -8,7 +8,7 @@ import urllib.parse
 
 from . import news, signals, website
 from .. import engine
-from ..db import now
+from ..db import name_key, now
 from .pulse import get_json
 
 HN_SEARCH = "https://hn.algolia.com/api/v1/search?query={q}&tags=story&hitsPerPage={n}"
@@ -31,10 +31,6 @@ STAGE_WORDS = [
     ("pilot", r"\bpilot(s|ed|ing)?\b"),
     ("prototype", r"\bprototypes?\b"),
 ]
-
-
-def name_key(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", name.lower())
 
 
 def name_from(title: str, source: str) -> str | None:
@@ -84,6 +80,46 @@ def _google(q: str, limit: int) -> list[dict]:
 
 FEEDS = {"hackernews": _hn, "news.google": _google}
 
+# Headlines name a startup's country by adjective far more often than by name ("Finnish startup X raises"),
+# so a country search also runs under its demonym. Countries not listed search by name alone.
+DEMONYMS = {
+    "finland": "Finnish", "sweden": "Swedish", "norway": "Norwegian", "denmark": "Danish", "iceland": "Icelandic",
+    "estonia": "Estonian", "latvia": "Latvian", "lithuania": "Lithuanian", "poland": "Polish", "germany": "German",
+    "netherlands": "Dutch", "belgium": "Belgian", "france": "French", "spain": "Spanish", "portugal": "Portuguese",
+    "italy": "Italian", "greece": "Greek", "ireland": "Irish", "united kingdom": "British", "uk": "British",
+    "scotland": "Scottish", "switzerland": "Swiss", "austria": "Austrian", "czechia": "Czech",
+    "czech republic": "Czech", "hungary": "Hungarian", "romania": "Romanian", "croatia": "Croatian",
+    "united states": "American", "usa": "American", "us": "American", "canada": "Canadian", "mexico": "Mexican",
+    "brazil": "Brazilian", "chile": "Chilean", "australia": "Australian", "new zealand": "New Zealand",
+    "japan": "Japanese", "south korea": "Korean", "korea": "Korean", "china": "Chinese", "india": "Indian",
+    "singapore": "Singaporean", "israel": "Israeli", "turkey": "Turkish", "egypt": "Egyptian",
+    "kenya": "Kenyan", "nigeria": "Nigerian", "south africa": "South African",
+}
+
+
+def demonym(country: str) -> str:
+    return DEMONYMS.get((country or "").strip().lower(), "")
+
+
+def queries(sector: str, country: str) -> list[str]:
+    """The feed queries for a search: sector and country as typed, then with the country's demonym."""
+    base = " ".join(x for x in (sector, country) if x).strip()
+    out = [base] if base else []
+    if (adj := demonym(country)) and adj.lower() != (country or "").strip().lower():
+        out.append(" ".join(x for x in (sector, adj) if x))
+    return out
+
+
+def mentions_country(country: str, texts: list[str]) -> str | None:
+    """The word ("Finland" or "Finnish") that places a company in the country, or None. The fallback when no AI
+    is set up to infer it, so it errs on the side of leaving a hit out. Whole words only."""
+    words = [w for w in (country, demonym(country)) if w]
+    for text in texts:
+        for w in words:
+            if text and re.search(rf"\b{re.escape(w)}\b", text, re.I):
+                return w
+    return None
+
 
 def search_candidates(q: str, limit: int = 10) -> list[dict]:
     """Deduped candidates from every reachable feed. A failing feed is skipped, never raised."""
@@ -108,10 +144,20 @@ def search_candidates(q: str, limit: int = 10) -> list[dict]:
 
 
 def primed_evidence(text: str) -> dict:
+    return stage_evidence([("text", text)])[0]
+
+
+def stage_evidence(sources: list[tuple[str, str]]) -> tuple[dict, str]:
+    """The strongest tech stage any source states outright, and where it was read, as (evidence, basis).
+
+    The only factor plain text can show without guessing; everything else stays unknown. ({}, "") if no
+    source names a stage.
+    """
     for stage, pattern in STAGE_WORDS:
-        if re.search(pattern, text, re.I):
-            return {"trl_stage": stage}
-    return {}
+        for label, text in sources:
+            if text and (m := re.search(pattern, text, re.I)):
+                return {"trl_stage": stage}, f'{label} says "{m.group(0)}"'
+    return {}, ""
 
 
 def expand_candidate(c: dict) -> dict:
