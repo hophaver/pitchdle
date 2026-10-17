@@ -3,7 +3,7 @@ import random
 import sqlite3
 from datetime import date, datetime, time, timedelta
 
-from . import config, scoring
+from . import config, opinions, scoring
 from .db import dumps, j, now
 from .engine import AXES, composite_of, full_score as engine_full
 
@@ -56,10 +56,12 @@ def get_company(db: sqlite3.Connection, cid: int):
 
 
 def public_card(row) -> dict:
-    """What a player sees: the pitch, nothing about scores."""
+    """What a player sees: the pitch and the startup's profile, nothing about anyone's scores."""
     return {
         "id": row["id"], "name": row["name"], "emoji": row["emoji"] or "", "sector": row["sector"],
         "one_liner": row["one_liner"], "claim_ask": row["claim_ask"], "is_real": bool(row["is_real"]),
+        "vision": row["vision"] or "", "website": row["website"] or "", "stages": j(row["stages"], []),
+        "raised_eur": row["raised_eur"], "investors": j(row["investors"], []),
     }
 
 
@@ -153,11 +155,11 @@ def results(db, dive, pid: int) -> dict:
             leans[lean] += 1
         cards.append({
             "card": public_card(comp),
-            # Only shown after answering, so the link can't give the pitch away mid-game.
-            "website": comp["website"] or "",
             "you": {"scores": you, "composite": you_composite},
             "crowd": {"n": others["n"], "means": others["means"], "composite": others["composite"]},
             "lean": lean,
+            # A'Pelago's, the AI models' and social media's reads, only now that the player has given theirs.
+            "opinions": opinions.for_card(db, comp["id"], you, others),
         })
     return {
         "dive": dive_payload(dive),

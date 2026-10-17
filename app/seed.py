@@ -11,7 +11,7 @@ from datetime import date, timedelta
 from . import engine, service
 from .db import connect, dumps, init_db, j, now
 from .engine import AXES
-from .seed_data import COMPANIES, DEMO_BIAS, DIVES
+from .seed_data import COMPANIES, DEMO_BIAS, DIVES, PROFILES
 
 
 def score_company(db, cid: int) -> None:
@@ -24,11 +24,12 @@ def score_company(db, cid: int) -> None:
 def seed(db) -> None:
     ids = {}
     for c in COMPANIES:
+        p = PROFILES[c["name"]]
         cur = db.execute(
             "INSERT INTO companies (name, emoji, sector, one_liner, claim_ask, facts, evidence, evidence_note, is_real, "
-            "active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)",
+            "active, vision, stages, raised_eur, investors, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?, ?)",
             (c["name"], c["emoji"], c["sector"], c["one_liner"], c["claim_ask"], dumps(c["facts"]), dumps(c["evidence"]),
-             c["evidence_note"], now()))
+             c["evidence_note"], p["vision"], dumps(p["stages"]), p["raised_eur"], dumps(p["investors"]), now()))
         ids[c["name"]] = cur.lastrowid
         score_company(db, cur.lastrowid)
         for o in c["opportunities"]:
@@ -42,6 +43,19 @@ def seed(db) -> None:
     db.commit()
 
 
+def fill_profiles(db) -> int:
+    """Give sample companies from before card profiles existed their profile. Only fills ones never saved since
+    (vision still NULL), so nothing an admin wrote is overwritten. Returns how many were filled."""
+    filled = 0
+    for name, p in PROFILES.items():
+        filled += db.execute(
+            "UPDATE companies SET vision = ?, stages = ?, raised_eur = ?, investors = ? "
+            "WHERE name = ? AND is_real = 0 AND vision IS NULL",
+            (p["vision"], dumps(p["stages"]), p["raised_eur"], dumps(p["investors"]), name)).rowcount
+    db.commit()
+    return filled
+
+
 def seed_if_empty(db) -> bool:
     if db.execute("SELECT COUNT(*) FROM companies").fetchone()[0]:
         return False
@@ -50,8 +64,8 @@ def seed_if_empty(db) -> bool:
 
 
 def reset(db) -> None:
-    for table in ("votes", "sessions", "players", "users", "opportunities", "dives", "candidates", "companies",
-                  "settings"):
+    for table in ("votes", "sessions", "players", "users", "opportunities", "opinions", "dives", "candidates",
+                  "companies", "settings"):
         db.execute(f"DELETE FROM {table}")
     db.execute("UPDATE live_state SET dive_id = NULL, card_index = -1, phase = 'idle'")
     db.commit()

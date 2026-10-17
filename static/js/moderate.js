@@ -1,10 +1,13 @@
 // Moderation: every sign-up waits here until a moderator lets it in. Members carry a badge that sets how much
 // their answers count in crowd scores: high or low priority, or muted (not at all). Moderators sign in with their
 // own account; admins (the admin password) also make and remove moderators and change moderators' accounts.
-const { h, api, post, fmt1, ROLES } = PD;
+// Both also give A'Pelago's own read of each startup, as its representatives.
+const { h, api, post, fmt1, ROLES, AXES, AXIS } = PD;
 const $app = document.getElementById("app");
-const state = { tab: null, open: new Set(), sort: { key: "joined", dir: -1 }, badge: "all", picks: {} };
-let data = null;
+const state = { view: "people", tab: null, open: new Set(), sort: { key: "joined", dir: -1 }, badge: "all", picks: {},
+  drafts: {} }; // drafts: evaluations being filled in, by company id, so a refresh never loses them
+let data = null; // people: /api/mod/users
+let startups = null; // /api/mod/evaluations
 let lastSig = null;
 
 const LINKS = { linkedin: "LinkedIn", github: "GitHub", portfolio: "Portfolio", cv: "CV", other: "Other link" };
@@ -53,7 +56,7 @@ function profileBody(u) {
   return h("div", { class: "profile" },
     links.length ? h("div", { class: "links" }, links.map(([key, url]) => h("a", { class: "chip", href: url, title: url,
       target: "_blank", rel: "noopener noreferrer nofollow" }, `${LINKS[key] || key} ↗`))) : null,
-    h("dl", { class: "facts" },
+    h("dl", { class: "profile-facts" },
       h("dt", {}, "Email"), h("dd", {}, p.email),
       p.expertise ? [h("dt", {}, "Knows"), h("dd", {}, p.expertise)] : null),
     h("blockquote", { class: "motivation" }, p.motivation));
@@ -214,6 +217,75 @@ async function remove(u) {
   await refresh();
 }
 
+// --- A'Pelago's read of each startup -----------------------------------------------------------------------
+
+function draftOf(c) {
+  return (state.drafts[c.id] ||= { scores: { ...(c.mine ? c.mine.scores : {}) }, note: c.mine ? c.mine.note : "" });
+}
+
+async function saveEvaluation(c) {
+  const d = draftOf(c);
+  try {
+    await post(`/api/mod/evaluations/${c.id}`, d, "PUT");
+    delete state.drafts[c.id];
+    PD.toast(`${c.name}: evaluation saved`);
+  } catch (e) { PD.toast(e.message); }
+  await refresh();
+}
+
+async function withdrawEvaluation(c) {
+  try {
+    await api(`/api/mod/evaluations/${c.id}`, { method: "DELETE" });
+    delete state.drafts[c.id];
+    PD.toast(`${c.name}: evaluation withdrawn`);
+  } catch (e) { PD.toast(e.message); }
+  await refresh();
+}
+
+function evaluationCard(c) {
+  const d = draftOf(c);
+  const complete = AXES.every((a) => d.scores[a] !== undefined);
+  const rows = AXES.map((a) => h("div", { class: "eval-row" },
+    h("span", { class: "eval-axis" }, AXIS[a]),
+    h("div", { class: "seg", role: "group", "aria-label": AXIS[a] }, [0, 1, 2, 3, 4, 5].map((n) => h("button", {
+      class: `btn small${d.scores[a] === n ? " primary" : ""}`, "aria-pressed": String(d.scores[a] === n),
+      onclick: () => { d.scores[a] = n; render(); } }, n)))));
+  const note = h("textarea", { rows: 2, maxlength: 600, placeholder: "A comment for the team (players don't see it)",
+    oninput: (e) => { d.note = e.target.value; } });
+  note.value = d.note;
+  const ap = c.apelago;
+  return h("article", { class: "signup evaluation" },
+    h("div", { class: "signup-head" },
+      h("div", {}, h("div", { class: "co-name" }, c.emoji ? `${c.emoji} ` : "", c.name,
+        c.active ? null : h("span", { class: "chip" }, "not in the game")),
+      h("div", { class: "co-meta" }, [c.sector, c.one_liner].filter(Boolean).join(" · "))),
+      h("span", { class: "spacer" }),
+      h("span", { class: "co-meta" }, c.mine ? `You rated it ${day(c.mine.updated_at)}` : "Not rated by you yet")),
+    PD.profile(c),
+    h("div", { class: "eval-grid" }, rows),
+    note,
+    h("div", { class: "signup-actions" },
+      ap ? h("figure", { class: "op" },
+        h("figcaption", {}, h("b", {}, "A'Pelago"), h("small", {}, `${plural(ap.n, "reviewer")}: ${ap.reps.join(", ")}`)),
+        PD.opinionChart(ap.means, { labelled: true })) : null,
+      h("span", { class: "spacer" }),
+      c.mine ? h("button", { class: "btn danger", onclick: () => withdrawEvaluation(c) }, "Withdraw") : null,
+      h("button", { class: "btn primary", disabled: !complete, onclick: () => saveEvaluation(c),
+        title: complete ? null : "Give all four calls first" }, c.mine ? "Update" : "Save evaluation")));
+}
+
+function startupsView() {
+  const list = [...startups.companies].sort((a, b) => !!a.mine - !!b.mine); // yours to do first
+  return h("section", { class: "panel" },
+    h("div", { class: "panel-head" }, h("h2", {}, "A'Pelago's read"), h("span", { class: "spacer" }),
+      h("span", { class: "chip" }, startups.mode === "live" ? "Real startups" : "Sample startups (demo mode)")),
+    h("p", { class: "muted small", style: { marginTop: 0 } },
+      "Rate each startup as an A'Pelago representative, not as a player. Players see the average of every ",
+      "representative's read next to their own, after answering; you see it once you've given yours. Comments stay with the team."),
+    list.length ? h("div", { class: "signups" }, list.map(evaluationCard))
+      : h("p", { class: "muted", style: { margin: 0 } }, "No startups in this mode yet."));
+}
+
 // --- page -----------------------------------------------------------------------------------------------
 
 function kpi(label, value, sub) {
@@ -228,8 +300,24 @@ function trimNav() {
 }
 
 function render() {
-  if (!data) return;
+  if (!data || !startups) return;
   trimNav();
+  const toRate = startups.companies.filter((c) => !c.mine).length;
+  const view = (key, label) => h("button", { class: `btn${state.view === key ? " primary" : ""}`,
+    "aria-pressed": String(state.view === key), onclick: () => { state.view = key; render(); } }, label);
+  const scroll = window.scrollY;
+  $app.replaceChildren(
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Moderation"),
+      h("p", {}, "Let sign-ups in, set how much each member's answers count, and give A'Pelago's own read of each startup.")),
+    h("span", { class: "spacer" }),
+    h("span", { class: "chip" }, data.viewer.admin ? "Signed in as admin" : `Signed in as ${data.viewer.name}`)),
+    h("div", { class: "seg view-switch", role: "group", "aria-label": "Moderate" },
+      view("people", "People"), view("startups", toRate ? `Startups (${toRate} to rate)` : "Startups")),
+    ...(state.view === "people" ? peopleView() : [startupsView()]));
+  window.scrollTo({ top: scroll });
+}
+
+function peopleView() {
   const by = { pending: [], approved: [], rejected: [] };
   for (const u of data.users) (by[u.status] || by.pending).push(u);
   by.pending.reverse(); // oldest first: first come, first reviewed
@@ -239,13 +327,7 @@ function render() {
   const tab = (key, label) => h("button", { class: `btn${state.tab === key ? " primary" : ""}`, "aria-pressed": String(state.tab === key),
     onclick: () => { state.tab = key; render(); } }, `${label} (${by[key].length})`);
   const list = by[state.tab];
-  const scroll = window.scrollY;
-
-  $app.replaceChildren(
-    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Moderation"),
-      h("p", {}, "Let sign-ups in, and set how much each member's answers count.")),
-      h("span", { class: "spacer" }),
-      h("span", { class: "chip" }, data.viewer.admin ? "Signed in as admin" : `Signed in as ${data.viewer.name}`)),
+  return [
     h("div", { class: "kpis" },
       kpi("Waiting", by.pending.length, by.pending.length ? `sign-up${by.pending.length === 1 ? "" : "s"} to review` : "all caught up"),
       kpi("Members", members.length, `${badged("high")} high · ${badged("low")} low · ${badged("muted")} muted`),
@@ -257,14 +339,15 @@ function render() {
       state.tab === "approved" ? membersView(members)
         : list.length ? h("div", { class: "signups" }, list.map(signupCard))
           : h("p", { class: "muted", style: { margin: 0 } },
-            state.tab === "pending" ? "No sign-ups waiting. New ones show up here." : "No rejected sign-ups.")));
-  window.scrollTo({ top: scroll });
+            state.tab === "pending" ? "No sign-ups waiting. New ones show up here." : "No rejected sign-ups.")),
+  ];
 }
 
 async function refresh(force = true) {
   let fresh;
   try {
-    fresh = await api("/api/mod/users");
+    const [users, evaluations] = await Promise.all([api("/api/mod/users"), api("/api/mod/evaluations")]);
+    fresh = { users, evaluations };
   } catch (e) {
     $app.replaceChildren(h("p", { class: "callout" }, e.message));
     return;
@@ -273,7 +356,8 @@ async function refresh(force = true) {
   const sig = JSON.stringify(fresh);
   if (!force && sig === lastSig) return;
   lastSig = sig;
-  data = fresh;
+  data = fresh.users;
+  startups = fresh.evaluations;
   render();
 }
 

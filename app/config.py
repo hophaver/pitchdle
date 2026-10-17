@@ -42,6 +42,14 @@ GUEST_MAX_SHARE = float(os.environ.get("GUEST_MAX_SHARE") or 0.4)
 # How much a member's answer counts with a high- or low-priority badge (no badge is 1.0, muted is 0).
 HIGH_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("HIGH_PRIORITY_WEIGHT") or 2.0))
 LOW_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("LOW_PRIORITY_WEIGHT") or 0.5))
+# Outside reads, run from Admin and never on the game's path: AI models rate each startup, and AI searches
+# read what people say about it on social media. A model without its key is skipped.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or ""
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or ""
+XAI_API_KEY = os.environ.get("XAI_API_KEY") or ""
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL") or "claude-opus-5-5"
+GPT_MODEL = os.environ.get("GPT_MODEL") or "gpt-6-astra"
+GROK_MODEL = os.environ.get("GROK_MODEL") or "grok-4.7"
 WEIGHTS_PATH = ROOT / "weights.json"
 CRAWL_CACHE = ROOT / "data" / "crawl_cache"
 STATIC_DIR = ROOT / "static"

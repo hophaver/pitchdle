@@ -16,9 +16,10 @@ def answer(c, dive_id, cid, scores=GUESS):
     return c.post("/api/vote", json={"dive_id": dive_id, "company_id": cid, "scores": scores})
 
 
-def test_cards_show_only_the_pitch(client):
+def test_cards_show_the_pitch_and_profile_but_no_scores(client):
     card = today(client)["cards"][0]
-    assert set(card) == {"id", "name", "emoji", "sector", "one_liner", "claim_ask", "is_real"}
+    assert set(card) == {"id", "name", "emoji", "sector", "one_liner", "claim_ask", "is_real",
+                         "vision", "website", "stages", "raised_eur", "investors"}
 
 
 def test_results_only_after_every_card(client):
@@ -33,8 +34,8 @@ def test_results_only_after_every_card(client):
     first = r["cards"][0]
     # "Everyone" leaves out the player's own answer, so a lone player has no one to compare with.
     assert first["crowd"]["n"] == 0 and first["crowd"]["means"] is None and first["lean"] is None
-    assert "engine" not in first  # players compare with the crowd only
-    assert "website" in first
+    assert "engine" not in first  # players never see the engine
+    assert [o["key"] for o in first["opinions"]] == ["you"]  # nobody else's read yet
     assert 0 < r["next_set_in"] <= 24 * 3600  # countdown to tomorrow's set
 
 

@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import accounts, autofill, config, live, moderation, scoring, seed, service
+from . import accounts, autofill, config, live, moderation, opinions, reads, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, now
 from .engine import AXES
 
@@ -30,6 +30,7 @@ async def lifespan(_app: FastAPI):
     init_db(db)
     if seed.seed_if_empty(db):
         log.warning("Pitchdle: empty database, loaded seed data into %s", config.DB_PATH)
+    seed.fill_profiles(db)  # sample companies from before card profiles get theirs
     accounts.ensure_test_accounts(db)
     autofill.maybe_start(db)  # live mode tops itself up in the background; demo mode does nothing
     db.close()
@@ -648,11 +649,77 @@ def mod_delete_user(uid: int, staff: moderation.Staff = Depends(require_moderato
     return {"ok": True}
 
 
+# A'Pelago's own opinion: moderators and admins evaluate as A'Pelago representatives, not as players. Each keeps
+# one evaluation per startup and can change it; the card shows the average of all of them.
+
+def evaluation_card(db, comp, staff: moderation.Staff) -> dict:
+    mine = db.execute("SELECT * FROM opinions WHERE company_id = ? AND source = ? AND author = ?",
+                      (comp["id"], opinions.APELAGO, staff.name)).fetchone()
+    return service.public_card(comp) | {
+        "active": bool(comp["active"]),
+        "mine": {"scores": opinions.scores_of(mine), "note": mine["note"], "updated_at": mine["updated_at"]} if mine else None,
+        # The team's average shows once you've given your own, so it can't steer yours.
+        "apelago": opinions.apelago(db, comp["id"]) if mine else None,
+    }
+
+
+def evaluated_company(db, cid: int):
+    comp = service.get_company(db, cid)
+    if not comp:
+        raise HTTPException(404, "No such company.")
+    return comp
+
+
+@app.get("/api/mod/evaluations")
+def mod_evaluations(staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    """The current mode's startups (sample ones in demo, real ones in live), those in the game first."""
+    mode = service.get_mode(db)
+    comps = db.execute("SELECT * FROM companies WHERE is_real = ? ORDER BY active DESC, name",
+                       (service.pool_is_real(mode),)).fetchall()
+    return {"mode": mode, "companies": [evaluation_card(db, c, staff) for c in comps]}
+
+
+class EvaluationIn(BaseModel):
+    scores: Scores
+    note: str = Field("", max_length=600)  # stays with the staff; players only see the scores
+
+
+@app.put("/api/mod/evaluations/{cid}")
+def mod_evaluate(cid: int, body: EvaluationIn, staff: moderation.Staff = Depends(require_moderator),
+                 db=Depends(get_db)):
+    comp = evaluated_company(db, cid)
+    opinions.save(db, cid, opinions.APELAGO, body.scores.model_dump(), clean_paragraph(body.note), author=staff.name)
+    return evaluation_card(db, comp, staff)
+
+
+@app.delete("/api/mod/evaluations/{cid}")
+def mod_withdraw_evaluation(cid: int, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    comp = evaluated_company(db, cid)
+    opinions.remove(db, cid, opinions.APELAGO, staff.name)
+    return evaluation_card(db, comp, staff)
+
+
 # --- admin -----------------------------------------------------------------------------------------
 
 class Fact(BaseModel):
     label: str
     value: str
+
+
+class Investor(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    status: str = Field("invested", pattern="^(invested|interested)$")
+    amount_eur: int | None = Field(None, ge=0)  # what an investor has put in; none for the interested
+
+    @field_validator("name")
+    @classmethod
+    def one_line(cls, value: str) -> str:
+        if not clean_text(value):
+            raise ValueError("an investor needs a name")
+        return clean_text(value)
+
+
+VISION_WORDS = 400
 
 
 class CompanyIn(BaseModel):
@@ -667,16 +734,37 @@ class CompanyIn(BaseModel):
     evidence_note: str = ""
     is_real: bool = False
     active: bool = True
+    # The profile on the card: the vision behind "Read more", the stages passed, money raised and investors.
+    vision: str = Field("", max_length=4000)
+    stages: list[str] = Field([], max_length=12)
+    raised_eur: int | None = Field(None, ge=0)
+    investors: list[Investor] = Field([], max_length=30)
+
+    @field_validator("vision")
+    @classmethod
+    def vision_fits(cls, value: str) -> str:
+        value = clean_paragraph(value)
+        if len(value.split()) > VISION_WORDS:
+            raise ValueError(f"the vision must be {VISION_WORDS} words or fewer")
+        return value
+
+    @field_validator("stages")
+    @classmethod
+    def stage_names(cls, value: list[str]) -> list[str]:
+        return [stage for stage in (clean_text(v)[:60] for v in value) if stage]
 
 
 def admin_company(db, row) -> dict:
     out = dict(row)
     for key, default in (("facts", []), ("evidence", {}), ("engine_axes", {}), ("engine_coverage", {}), ("crawl", None),
-                         ("pulse", None)):
+                         ("pulse", None), ("stages", []), ("investors", [])):
         out[key] = j(row[key], default)
+    out["vision"] = row["vision"] or ""
     out["opportunities"] = [dict(o) for o in db.execute("SELECT * FROM opportunities WHERE company_id = ? ORDER BY fit DESC",
                                                         (row["id"],))]
     out["votes"] = db.execute("SELECT COUNT(*) FROM votes WHERE company_id = ? AND round = 1", (row["id"],)).fetchone()[0]
+    out["opinions"] = opinions.outside(db, row["id"])
+    out["apelago"] = opinions.apelago(db, row["id"])
     return out
 
 
@@ -694,14 +782,17 @@ def admin_factors():
 def save_company(db, body: CompanyIn, cid: int | None) -> int:
     values = (body.name.strip(), body.emoji.strip(), body.sector, body.one_liner, body.claim_ask, body.website,
               dumps([f.model_dump() for f in body.facts]), dumps(body.evidence), body.evidence_note,
-              int(body.is_real), int(body.active))
+              int(body.is_real), int(body.active), body.vision, dumps(body.stages), body.raised_eur,
+              dumps([i.model_dump() for i in body.investors]))
     if cid is None:
         cid = db.execute(
             "INSERT INTO companies (name, emoji, sector, one_liner, claim_ask, website, facts, evidence, evidence_note, "
-            "is_real, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values + (now(),)).lastrowid
+            "is_real, active, vision, stages, raised_eur, investors, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values + (now(),)).lastrowid
     else:
         db.execute("UPDATE companies SET name = ?, emoji = ?, sector = ?, one_liner = ?, claim_ask = ?, website = ?, facts = ?, "
-                   "evidence = ?, evidence_note = ?, is_real = ?, active = ? WHERE id = ?", values + (cid,))
+                   "evidence = ?, evidence_note = ?, is_real = ?, active = ?, vision = ?, stages = ?, raised_eur = ?, "
+                   "investors = ? WHERE id = ?", values + (cid,))
     seed.score_company(db, cid)
     db.commit()
     return cid
@@ -781,6 +872,68 @@ def admin_recrawl(cid: int, db=Depends(get_db)):
     db.execute("UPDATE companies SET crawl = ? WHERE id = ?", (dumps(result), cid))
     db.commit()
     return result
+
+
+# --- outside opinions: AI models and social media (fetched from Admin, never on the game's path) ----------
+
+def store_reads(db, cid: int, results: dict) -> dict:
+    """Keep each read that came back. Returns what happened per source: done (with posts found), error or skipped."""
+    report = {}
+    for source, result in results.items():
+        if "scores" in result:
+            opinions.save(db, cid, source, result["scores"], result["note"], result["meta"] | {"by": "fetched"})
+            report[source] = {"done": True, "posts": result["meta"].get("posts")}
+        else:
+            report[source] = result
+    return report
+
+
+@app.post("/api/admin/companies/{cid}/reads/{kind}", dependencies=[Depends(require_admin)])
+def admin_reads(cid: int, kind: str, db=Depends(get_db)):
+    """Ask the AI models (kind=ai) or read social media (kind=social) about one company, and keep the results."""
+    comp = service.get_company(db, cid)
+    if not comp or kind not in ("ai", "social"):
+        raise HTTPException(404, "No such company or read.")
+    results = reads.rate_all(comp) if kind == "ai" else reads.social_all(comp)
+    return {"report": store_reads(db, cid, results), "company": admin_company(db, service.get_company(db, cid))}
+
+
+class OpinionScores(BaseModel):
+    novel: float = Field(ge=0, le=5)
+    useful: float = Field(ge=0, le=5)
+    plausible: float = Field(ge=0, le=5)
+    investable: float = Field(ge=0, le=5)
+
+
+class OpinionIn(BaseModel):
+    scores: OpinionScores
+    note: str = Field("", max_length=600)
+    links: list[str] = Field([], max_length=10)  # for social media: posts the read rests on
+
+    @field_validator("links")
+    @classmethod
+    def web_links(cls, value: list[str]) -> list[str]:
+        return [web_link(v) for v in value if v.strip()]
+
+
+@app.put("/api/admin/companies/{cid}/opinions/{source}", dependencies=[Depends(require_admin)])
+def admin_set_opinion(cid: int, source: str, body: OpinionIn, db=Depends(get_db)):
+    """An AI model's or a platform's read, entered by hand (or corrected): when there's no key, or no search found it."""
+    if source not in opinions.OUTSIDE or not service.get_company(db, cid):
+        raise HTTPException(404, "No such company or source.")
+    meta = {"by": "hand", "links": body.links}
+    if source in opinions.SOCIAL:
+        meta["posts"] = len(body.links) or None
+    opinions.save(db, cid, source, body.scores.model_dump(), clean_paragraph(body.note), meta)
+    return admin_company(db, service.get_company(db, cid))
+
+
+@app.delete("/api/admin/companies/{cid}/opinions/{source}", dependencies=[Depends(require_admin)])
+def admin_clear_opinion(cid: int, source: str, db=Depends(get_db)):
+    if source not in opinions.OUTSIDE or not service.get_company(db, cid):
+        raise HTTPException(404, "No such company or source.")
+    opinions.remove(db, cid, source)
+    return admin_company(db, service.get_company(db, cid))
 
 
 # --- web pulse (host hint only: never feeds engine scores or player routes) ---------------------------
@@ -914,7 +1067,9 @@ def mode_payload(db) -> dict:
         "SELECT SUM(is_real = 0) AS demo, SUM(is_real = 1 AND active = 1) AS live_active, "
         "SUM(is_real = 1 AND active = 0) AS live_pending FROM companies").fetchone()
     return {"mode": service.get_mode(db), "autofill": autofill.status(db), "discover": autofill.settings_payload(),
-            "counts": {k: counts[k] or 0 for k in ("demo", "live_active", "live_pending")}}
+            "counts": {k: counts[k] or 0 for k in ("demo", "live_active", "live_pending")},
+            "reads": {"ready": reads.setup(), "models": {"claude": config.CLAUDE_MODEL, "gpt": config.GPT_MODEL,
+                                                         "grok": config.GROK_MODEL}}}
 
 
 class ModeIn(BaseModel):

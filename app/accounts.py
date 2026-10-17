@@ -160,9 +160,12 @@ def claim_guest(db, user, device_token: str | None) -> int:
 
 
 def delete_user(db, uid: int) -> bool:
-    """Remove an account with its answers and sessions. Its startup submissions stay, unattributed."""
-    if not db.execute("SELECT 1 FROM users WHERE id = ?", (uid,)).fetchone():
+    """Remove an account with its answers, sessions and any A'Pelago evaluations it gave as a moderator.
+    Its startup submissions stay, unattributed."""
+    user = db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+    if not user:
         return False
+    db.execute("DELETE FROM opinions WHERE source = 'apelago' AND author = ?", (user["username"],))
     db.execute("DELETE FROM sessions WHERE user_id = ?", (uid,))
     pids = [r["id"] for r in db.execute("SELECT id FROM players WHERE user_id = ?", (uid,))]
     for pid in pids:

@@ -1,6 +1,6 @@
 // Player flow for /play (today's set, self-paced) and /live (host-paced room).
 // Answer every card first; you vs the crowd is shown only at the end.
-const { h, api, post, AXES, AXIS, colorFor } = PD;
+const { h, api, post, AXES, AXIS, colorFor, safeLink, hostOf, plural } = PD;
 
 const $app = document.getElementById("app");
 const S = {
@@ -75,10 +75,13 @@ function showCard(c, index, total, { live = false } = {}) {
   const el = card(colorFor(index),
     cardTop(index, total, live ? h("span", { class: "timer", dataset: { timer: "1" } }, "") : null),
     h("div", { class: "pitch-head" },
-      h("div", {}, h("div", { class: "caps sector" }, c.sector), h("p", { class: "pitch-line" }, c.one_liner)),
+      h("div", {}, h("div", { class: "caps sector" }, c.sector),
+        h("p", { class: "pitch-line" }, c.one_liner || (c.vision || "").split(/(?<=[.!?])\s/)[0])),
       c.emoji ? h("div", { class: "art", "aria-hidden": "true" }, c.emoji) : null),
     h("p", { class: "ask" }, c.claim_ask),
     h("div", { class: "who" }, `— ${c.name}`),
+    // The profile sits behind "Read more", so the four calls stay quick (a live card has a timer).
+    PD.profile(c),
     // Leads into the four calls: "Is this… novel? useful? …"
     h("div", { class: "is-this" }, "Is this…"),
     h("div", { class: "axes" }, rows),
@@ -142,14 +145,10 @@ function headline(leans) {
 // Averages to one decimal, dropping a trailing ".0": 4.2 → "4.2", 3.02 → "3".
 const fmtAvg = (n) => (n === null || n === undefined ? "–" : String(Math.round(n * 10) / 10));
 
-// Links come from the server already checked, but never render anything that isn't plain http(s).
-const safeLink = (url) => (/^https?:\/\//i.test(url || "") ? url : null);
-
 function companyLink(r) {
-  const site = safeLink(r.website);
+  const site = safeLink(r.card.website);
   if (site) {
-    const host = new URL(site).hostname.replace(/^www\./, "");
-    return h("a", { class: "company-link", href: site, target: "_blank", rel: "noopener noreferrer nofollow" }, `${host} ↗`);
+    return h("a", { class: "company-link", href: site, target: "_blank", rel: "noopener noreferrer nofollow" }, `${hostOf(site)} ↗`);
   }
   if (r.card.is_real) {
     const q = encodeURIComponent(r.card.name);
@@ -159,18 +158,43 @@ function companyLink(r) {
   return h("span", { class: "company-link muted-link" }, "Made-up startup");
 }
 
+// Every opinion on a result card is the same little chart: four columns, Novel to Investable, on 0–5.
+const OPINION_GROUPS = [["people", "People"], ["ai", "AI models"], ["social", "Social media"]];
+const COUNT_WORD = { crowd: "answer", apelago: "reviewer" }; // social media counts posts
+
+function opinionTile(t) {
+  const you = t.key === "you";
+  const count = t.count ? plural(t.count, COUNT_WORD[t.key] || "post") : null;
+  // Your read is the one picked out; you and everyone else carry their numbers, the rest on hover or below.
+  return h("figure", { class: `op${you ? " op-you" : ""}` },
+    h("figcaption", {}, h("b", {}, t.label), count ? h("small", {}, count) : null),
+    PD.opinionChart(t.scores, { labelled: you || t.key === "crowd" }));
+}
+
+// The same numbers as a table, with why each AI or platform thinks so: nothing is only on hover.
+function opinionDetails(tiles) {
+  const notes = tiles.filter((t) => t.note);
+  return h("details", { class: "op-more" },
+    h("summary", {}, notes.length ? "Numbers and reasons" : "Numbers"),
+    h("table", { class: "op-table" },
+      h("thead", {}, h("tr", {}, h("td"), AXES.map((a) => h("th", { scope: "col" }, AXIS[a])))),
+      h("tbody", {}, tiles.map((t) => h("tr", {}, h("th", { scope: "row" }, t.label),
+        AXES.map((a) => h("td", {}, fmtAvg(t.scores[a]))))))),
+    notes.length ? h("ul", { class: "op-notes" }, notes.map((t) => h("li", {}, h("b", {}, `${t.label}: `), t.note))) : null);
+}
+
 function resultCard(r, i) {
-  const nums = (scores, fmt) => h("div", { class: "nums" },
-    AXES.map((a) => h("div", {}, h("b", {}, fmt(scores && scores[a])), h("small", {}, AXIS[a]))));
   return card(colorFor(i),
     h("div", { class: "result-head" },
       r.card.emoji ? h("div", { class: "art small", "aria-hidden": "true" }, r.card.emoji) : null,
       h("div", {}, h("div", { class: "result-name" }, r.card.name), h("div", { class: "caps sector" }, r.card.sector),
         companyLink(r))),
-    h("div", { class: "block you" }, h("div", { class: "caps" }, "You said"), nums(r.you.scores, (v) => v)),
-    // Average of every other player's answer.
-    h("div", { class: "block crowd" }, h("div", { class: "caps" }, `Everyone · ${r.crowd.n}`),
-      nums(r.crowd.means, fmtAvg)));
+    OPINION_GROUPS.map(([group, title]) => {
+      const tiles = r.opinions.filter((t) => t.group === group);
+      return tiles.length ? h("section", { class: "op-group" }, h("div", { class: "caps op-title" }, title),
+        h("div", { class: "op-grid" }, tiles.map(opinionTile))) : null;
+    }),
+    opinionDetails(r.opinions));
 }
 
 async function showResults() {

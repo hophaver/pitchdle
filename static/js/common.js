@@ -79,5 +79,56 @@ const PD = (() => {
       h("div", { class: "bars-x" }, share.map((pct, b) => h("span", { class: b === you ? "you" : "" }, b))));
   }
 
-  return { AXES, AXIS, ROLES, colorFor, api, post, h, fmt1, toast, bars };
+  // Euros the short way: €650k, €1.2M.
+  const short = (n) => String(Math.round(n * 10) / 10);
+  const money = (eur) => (eur >= 1e6 ? `€${short(eur / 1e6)}M` : eur >= 1e3 ? `€${short(eur / 1e3)}k` : `€${eur}`);
+
+  // One opinion as four columns on the fixed 0–5 scale, so opinions compare at a glance side by side.
+  // `labelled` puts every value on its cap; otherwise a column shows its value on hover and keyboard focus.
+  const AXIS_LETTER = { novel: "N", useful: "U", plausible: "P", investable: "I" };
+  function opinionChart(scores, { labelled = false } = {}) {
+    return h("div", { class: `opc${labelled ? " labelled" : ""}` },
+      h("div", { class: "opc-plot" }, AXES.map((a) => {
+        const v = short(scores[a]);
+        return h("span", { class: "opc-col", tabindex: "0", role: "img", "aria-label": `${AXIS[a]} ${v} out of 5`,
+          title: `${AXIS[a]} ${v}`, style: { "--v": Math.max(0, Math.min(5, scores[a])) / 5 } },
+        h("i"), h("em", { "aria-hidden": "true" }, v));
+      })),
+      h("div", { class: "opc-x", "aria-hidden": "true" }, AXES.map((a) => h("span", {}, AXIS_LETTER[a]))));
+  }
+
+  // Links come from the server already checked, but never render anything that isn't plain http(s).
+  const safeLink = (url) => (/^https?:\/\//i.test(url || "") ? url : null);
+  const hostOf = (url) => new URL(url).hostname.replace(/^www\./, "");
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+  // A startup's profile: a strip of facts, then the vision, stages and investors behind "Read more".
+  // The player's card and the moderators' evaluation share it; each page's CSS colours it.
+  function profile(c) {
+    const invested = c.investors.filter((i) => i.status === "invested");
+    const site = safeLink(c.website);
+    const facts = [
+      c.raised_eur === null || c.raised_eur === undefined ? null : `${money(c.raised_eur)} raised`,
+      c.stages.length ? c.stages[c.stages.length - 1] : null,
+      invested.length ? plural(invested.length, "investor") : null,
+    ].filter(Boolean);
+    const more = c.vision || c.stages.length || c.investors.length;
+    return [
+      facts.length || site ? h("div", { class: "facts" }, facts.map((f) => h("span", { class: "fact" }, f)),
+        site ? h("a", { class: "fact", href: site, target: "_blank", rel: "noopener noreferrer nofollow" }, `${hostOf(site)} ↗`) : null)
+        : null,
+      more ? h("details", { class: "more" },
+        h("summary", {}, "Read more"),
+        c.vision ? c.vision.split(/\n{2,}/).map((para) => h("p", {}, para)) : null,
+        c.stages.length ? [h("div", { class: "caps more-label" }, "Stages passed"),
+          h("ol", { class: "stage-list" }, c.stages.map((stage) => h("li", {}, stage)))] : null,
+        c.investors.length ? [h("div", { class: "caps more-label" }, "Investors"),
+          h("ul", { class: "investor-list" }, c.investors.map((i) => h("li", {}, h("b", {}, i.name), " ",
+            i.status === "interested" ? h("span", { class: "interested" }, "interested")
+              : i.amount_eur ? money(i.amount_eur) : "invested")))] : null)
+        : null,
+    ];
+  }
+
+  return { AXES, AXIS, ROLES, colorFor, api, post, h, fmt1, toast, bars, money, opinionChart, safeLink, hostOf, plural, profile };
 })();

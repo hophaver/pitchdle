@@ -13,6 +13,29 @@ let factors = null;
 let editing = null; // company object being edited, or {} for new
 
 const OPP_HELP = "One per line: kind | name | fit 0–1 | stage | why. Kinds: investor, grant, partner, customer.";
+const INVESTOR_HELP = "Investors, one per line: name | invested | amount (500000, 500k or 1.2M), or name | interested";
+const VISION_WORDS = 400; // matches VISION_WORDS in app/main.py
+
+// Euros as typed: 500000, 500k, 1.2M and €1.2M all work. Blank is "not disclosed"; anything else is NaN.
+function parseEuros(text) {
+  const t = String(text || "").replace(/[€\s,]/g, "");
+  if (!t) return null;
+  const m = t.match(/^(\d+(?:\.\d+)?)([kKmM]?)$/);
+  return m ? Math.round(parseFloat(m[1]) * ({ k: 1e3, m: 1e6 }[m[2].toLowerCase()] || 1)) : NaN;
+}
+function investorsToText(list) {
+  return (list || []).map((i) => (i.status === "interested" ? `${i.name} | interested`
+    : `${i.name} | invested${i.amount_eur ? ` | ${i.amount_eur}` : ""}`)).join("\n");
+}
+function textToInvestors(text) {
+  return text.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [name = "", status = "", amount = ""] = l.split("|").map((x) => x.trim());
+    const interested = /^interest/i.test(status);
+    const eur = interested ? null : parseEuros(amount);
+    return { name, status: interested ? "interested" : "invested", amount_eur: Number.isNaN(eur) ? null : eur };
+  });
+}
+const wordCount = (text) => (text.trim() ? text.trim().split(/\s+/).length : 0);
 
 function factsToText(facts) { return (facts || []).map((f) => `${f.label}: ${f.value}`).join("\n"); }
 function textToFacts(text) {
@@ -229,7 +252,10 @@ function companyBody(c, overrides = {}) {
   return {
     name: c.name, emoji: c.emoji || "", sector: c.sector || "", one_liner: c.one_liner || "", claim_ask: c.claim_ask || "",
     website: c.website || "", facts: c.facts || [], evidence: c.evidence || {}, evidence_note: c.evidence_note || "",
-    is_real: !!c.is_real, active: c.active === undefined ? true : !!c.active, ...overrides,
+    is_real: !!c.is_real, active: c.active === undefined ? true : !!c.active,
+    // The whole company is saved each time, so a quick toggle must carry the profile along too.
+    vision: c.vision || "", stages: c.stages || [], raised_eur: c.raised_eur ?? null, investors: c.investors || [],
+    ...overrides,
   };
 }
 
@@ -274,6 +300,15 @@ function editor() {
   const active = h("input", { type: "checkbox", checked: c.active === undefined ? true : !!c.active });
   const opps = h("textarea", { rows: 4 });
   opps.value = oppsToText(c.opportunities);
+  const words = h("span", { class: "muted small" });
+  const countWords = () => {
+    const n = wordCount(f.vision.value);
+    words.textContent = `${n}/${VISION_WORDS} words`;
+    words.classList.toggle("thin", n > VISION_WORDS);
+  };
+  f.vision = h("textarea", { rows: 7, maxlength: 4000, oninput: countWords });
+  f.vision.value = c.vision || "";
+  countWords();
   const crawlOut = h("div", {}, c.crawl ? crawlView(c.crawl) : null);
   const pulseOut = h("div", {}, c.pulse ? pulseView(c.pulse) : null);
 
@@ -290,12 +325,17 @@ function editor() {
   }
 
   async function save() {
+    const raised = parseEuros(f.raised.value);
     const body = {
       name: f.name.value.trim(), emoji: f.emoji.value.trim(), sector: f.sector.value, one_liner: f.one_liner.value, claim_ask: f.claim_ask.value,
       website: f.website.value.trim(), facts: textToFacts(f.facts.value), evidence: collectEvidence(),
       evidence_note: f.note.value, is_real: isReal.checked, active: active.checked,
+      vision: f.vision.value, stages: f.stages.value.split("\n").map((l) => l.trim()).filter(Boolean),
+      raised_eur: raised, investors: textToInvestors(f.investors.value),
     };
     if (!body.name) return PD.toast("Name is required");
+    if (Number.isNaN(raised)) return PD.toast("Money raised: a number like 650000, 650k or 1.2M");
+    if (wordCount(body.vision) > VISION_WORDS) return PD.toast(`The vision is over ${VISION_WORDS} words`);
     try {
       let saved = c.id ? await post(`/api/admin/companies/${c.id}`, body, "PUT") : await post("/api/admin/companies", body);
       saved = await post(`/api/admin/companies/${saved.id}/opportunities`, textToOpps(opps.value), "PUT");
@@ -335,6 +375,15 @@ function editor() {
     h("div", { class: "form-grid", style: { marginTop: ".8rem" } },
       input("one_liner", "The pitch: one concrete line (show, don't tell)", c.one_liner),
       input("claim_ask", "The ask, e.g. “€500k to build ten more rafts”", c.claim_ask)),
+    h("h3", { style: { marginTop: "1.2rem" } }, "Profile on the card"),
+    h("p", { class: "muted small" }, "Players see the vision, stages, money raised and investors behind “Read more” while they rate."),
+    h("label", { class: "field" }, h("span", { class: "row" }, "Vision (a blank line starts a new paragraph)",
+      h("span", { class: "spacer" }), words),
+    f.vision),
+    h("div", { class: "form-grid", style: { marginTop: ".8rem" } },
+      input("stages", "Stages passed, one per line, oldest first (incubators, rounds)", (c.stages || []).join("\n"), { textarea: true }),
+      input("raised", "Money raised so far, € (blank: not disclosed)", c.raised_eur ?? "", { placeholder: "650k" }),
+      input("investors", INVESTOR_HELP, investorsToText(c.investors), { textarea: true })),
     h("div", { class: "form-grid", style: { marginTop: ".8rem" } },
       input("facts", "Facts for the wall reveal, one per line as “Label: value” (1–2)", factsToText(c.facts), { textarea: true }),
       input("note", "Evidence note (sources)", c.evidence_note, { textarea: true })),
@@ -349,6 +398,111 @@ function editor() {
       h("button", { class: "btn", onclick: recrawl }, "Recrawl website (optional)"),
       h("button", { class: "btn", onclick: runPulse }, "Run web pulse")),
     crawlOut, pulseOut);
+}
+
+// --- outside opinions -------------------------------------------------------------------------------------
+// What players see as charts next to their own read, after answering: AI models' ratings and what social media
+// says. Fetched with the API keys in .env, or typed in here. A'Pelago's own evaluation is given on Moderation.
+
+const OUTSIDE = { claude: "Claude", gpt: "GPT", grok: "Grok", x: "X", threads: "Threads", linkedin: "LinkedIn",
+  reddit: "Reddit", bluesky: "Bluesky" };
+const AI_SOURCES = ["claude", "gpt", "grok"];
+const KEY_NAMES = { claude: "ANTHROPIC_API_KEY", gpt: "OPENAI_API_KEY", grok: "XAI_API_KEY" };
+let fetching = null; // "ai" | "social" while a read runs
+let lastReport = null; // { cid, report } from the last read, so its errors stay on screen
+
+const day = (iso) => (iso ? iso.slice(0, 10) : "");
+const safeLink = (url) => (/^https?:\/\//i.test(url || "") ? url : null);
+
+function reportView(report) {
+  return h("ul", { class: "small report" }, Object.entries(report).map(([k, r]) => h("li", {}, h("b", {}, OUTSIDE[k]), ": ",
+    r.done ? (r.posts === 0 ? "searched, found no posts about it" : r.posts ? `read ${r.posts} post${r.posts === 1 ? "" : "s"}` : "rated it")
+      : r.error ? h("span", { class: "thin" }, r.error) : `skipped (${r.skipped})`)));
+}
+
+function opinionRow(c, key) {
+  const label = OUTSIDE[key];
+  const o = (c.opinions || {})[key];
+  const social = !AI_SOURCES.includes(key);
+  const nums = Object.fromEntries(AXES.map((a) => {
+    const el = h("input", { type: "number", min: 0, max: 5, step: 0.5, "aria-label": `${label}: ${AXIS[a]}` });
+    el.value = o && o.scores ? o.scores[a] : "";
+    return [a, el];
+  }));
+  const note = h("input", { type: "text", maxlength: 600, placeholder: social ? "what people say" : "the model's reason" });
+  note.value = o ? o.note : "";
+  const links = social ? h("input", { type: "text", placeholder: "links to the posts, space-separated" }) : null;
+  if (links) links.value = o && o.meta.links ? o.meta.links.join(" ") : "";
+  async function save() {
+    const scores = Object.fromEntries(AXES.map((a) => [a, parseFloat(nums[a].value)]));
+    if (AXES.some((a) => !(scores[a] >= 0 && scores[a] <= 5))) return PD.toast(`${label}: give all four calls, 0–5`);
+    try {
+      editing = await post(`/api/admin/companies/${c.id}/opinions/${key}`,
+        { scores, note: note.value, links: links ? links.value.split(/\s+/).filter(Boolean) : [] }, "PUT");
+      PD.toast(`${label} saved`);
+      await refresh();
+    } catch (e) { PD.toast(e.message); }
+  }
+  async function clear() {
+    try {
+      editing = await api(`/api/admin/companies/${c.id}/opinions/${key}`, { method: "DELETE" });
+      PD.toast(`${label} cleared`);
+      await refresh();
+    } catch (e) { PD.toast(e.message); }
+  }
+  const status = !o ? "none yet"
+    : o.scores === null ? `found no posts · ${day(o.updated_at)}`
+      : o.meta.by === "hand" ? `typed in · ${day(o.updated_at)}`
+        : `${social ? `${o.meta.posts} post${o.meta.posts === 1 ? "" : "s"}, ${o.meta.via}` : o.meta.model} · ${day(o.updated_at)}`;
+  const postLinks = social && o && o.meta.links ? o.meta.links.map(safeLink).filter(Boolean) : [];
+  return h("tr", {},
+    h("td", {}, h("b", {}, label), h("div", { class: "co-meta" }, status)),
+    AXES.map((a) => h("td", { class: "score-cell" }, nums[a])),
+    h("td", { class: "wide" }, note, links,
+      postLinks.length ? h("div", { class: "co-meta" }, postLinks.map((u, i) => [i ? " · " : "",
+        h("a", { href: u, target: "_blank", rel: "noopener noreferrer nofollow" }, `post ${i + 1} ↗`)])) : null),
+    h("td", {}, h("div", { class: "row", style: { flexWrap: "nowrap" } },
+      h("button", { class: "btn small", onclick: save }, "Save"),
+      o ? h("button", { class: "btn small danger", onclick: clear }, "Clear") : null)));
+}
+
+function opinionsPanel(c) {
+  const { ready, models } = modeInfo.reads;
+  async function fetchReads(kind) {
+    fetching = kind;
+    render();
+    try {
+      const out = await post(`/api/admin/companies/${c.id}/reads/${kind}`, {});
+      lastReport = { cid: c.id, report: out.report };
+      editing = out.company;
+      const done = Object.values(out.report).filter((r) => r.done).length;
+      PD.toast(`${done} of ${Object.keys(out.report).length} ${kind === "ai" ? "models" : "platforms"} read; details below`);
+    } catch (e) { PD.toast(e.message); }
+    fetching = null;
+    await refresh();
+  }
+  const a = c.apelago;
+  return h("section", { class: "panel" },
+    h("div", { class: "panel-head" }, h("h2", {}, `Outside opinions on ${c.name}`)),
+    h("p", { class: "muted small", style: { marginTop: 0 } },
+      "Players see each one as a chart next to their own read, after answering. Fetch them, or type them in when there's no key or a search came up empty."),
+    h("p", { class: "small" }, AI_SOURCES.map((k, i) => [i ? " · " : "", h("b", {}, OUTSIDE[k]), " ",
+      ready[k] ? h("span", { class: "muted" }, models[k]) : h("span", { class: "thin" }, `not set up (${KEY_NAMES[k]})`)])),
+    h("div", { class: "btns", style: { marginTop: 0 } },
+      h("button", { class: `btn${fetching === "ai" ? " busy" : ""}`, disabled: !!fetching || !AI_SOURCES.some((k) => ready[k]),
+        onclick: () => fetchReads("ai") }, fetching === "ai" ? "Asking the AIs… (up to a minute)" : "Ask the AIs"),
+      h("button", { class: `btn${fetching === "social" ? " busy" : ""}`, disabled: !!fetching || !(ready.claude || ready.grok),
+        onclick: () => fetchReads("social"),
+        title: "Claude searches each platform; Grok searches X itself when it has a key" },
+      fetching === "social" ? "Reading social media… (a minute or two)" : "Read social media")),
+    lastReport && lastReport.cid === c.id ? reportView(lastReport.report) : null,
+    h("div", { class: "table-wrap" }, h("table", { class: "data opinions" },
+      h("thead", {}, h("tr", {}, ["Source", ...AXES.map((x) => AXIS[x]), "Note", ""].map((t) => h("th", {}, t)))),
+      h("tbody", {}, Object.keys(OUTSIDE).map((key) => opinionRow(c, key))))),
+    h("p", { class: "small", style: { margin: ".8rem 0 0" } }, h("b", {}, "A'Pelago: "),
+      a ? `${a.n} reviewer${a.n === 1 ? "" : "s"} (${a.reps.join(", ")}) · ${AXES.map((x) => `${AXIS[x]} ${fmt1(a.means[x])}`).join(" · ")}`
+        : "no evaluation yet. ",
+      h("a", { href: "/moderate" }, "Evaluate on Moderation"), "."));
 }
 
 function crawlView(cr) {
@@ -436,6 +590,7 @@ function render() {
         h("a", { href: "/moderate" }, "Moderation"), "."))),
     modeSection(),
     editing ? editor() : null,
+    editing && editing.id ? opinionsPanel(editing) : null,
     discoverSection(),
     submissionSection(),
     companyTable(),

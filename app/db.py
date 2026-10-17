@@ -115,6 +115,22 @@ CREATE TABLE IF NOT EXISTS candidates (
   company_id    INTEGER REFERENCES companies(id) ON DELETE SET NULL,
   created_at    TEXT
 );
+-- Opinions on a startup besides the players': A'Pelago's own (one row per representative), AI models' and
+-- social media's (one row each). Scores are 0-5 per axis; a social search that found nothing leaves them NULL.
+CREATE TABLE IF NOT EXISTS opinions (
+  id          INTEGER PRIMARY KEY,
+  company_id  INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  source      TEXT NOT NULL,           -- apelago | claude | gpt | grok | x | threads | linkedin | reddit | bluesky
+  author      TEXT NOT NULL DEFAULT '', -- apelago: the representative (a moderator's username, or "admin")
+  novel       REAL,
+  useful      REAL,
+  plausible   REAL,
+  investable  REAL,
+  note        TEXT DEFAULT '',         -- the model's reason, what people say, or the representative's comment
+  meta        TEXT DEFAULT '{}',       -- how it was made: model, posts found, links, by hand or fetched
+  updated_at  TEXT,
+  UNIQUE (company_id, source, author)
+);
 -- Small key/value store for runtime switches: the demo/live mode and the autofill status.
 CREATE TABLE IF NOT EXISTS settings (
   key    TEXT PRIMARY KEY,
@@ -158,6 +174,11 @@ MIGRATIONS = [
     ("users", "badge_by", "TEXT"),
     ("users", "badge_at", "TEXT"),
     ("users", "is_moderator", "INTEGER DEFAULT 0"),  # set by an admin on /moderate
+    # The startup's profile on its card. vision stays NULL until first saved, so seed profiles can fill it in.
+    ("companies", "vision", "TEXT"),
+    ("companies", "stages", "TEXT DEFAULT '[]'"),  # incubation programmes and rounds passed, in order
+    ("companies", "raised_eur", "INTEGER"),  # NULL: not disclosed
+    ("companies", "investors", "TEXT DEFAULT '[]'"),  # [{name, status: invested | interested, amount_eur}]
 ]
 
 

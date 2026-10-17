@@ -25,7 +25,7 @@ Open http://localhost:8000/play. The first run creates `.venv`, installs `requir
 | `/host` | Dashboard: crowd vs engine, flags, next actions | admin |
 | `/host/live` | Run the live room (open, lock, reveal, next) | admin |
 | `/admin` | Companies, evidence, opportunities, dives, resets, export | admin |
-| `/moderate` | Review sign-ups, set member badges, delete accounts, make moderators | moderator account or admin |
+| `/moderate` | Review sign-ups, set member badges, make moderators; give A'Pelago's read of each startup | moderator account or admin |
 
 Host and admin pages use a browser login prompt. Any username works; the password is
 `ADMIN_PASSWORD` (default `admin`). `/moderate` takes the admin password too, and moderators sign in with their
@@ -104,6 +104,33 @@ guests together make up at most `GUEST_MAX_SHARE` (40%) of its score. These weig
 the host dashboard and exports. The live room counts the people in it alike, except muted members. Accounts from
 before sign-up review count as approved members with no badge.
 
+## The startup card and its opinions
+
+Each card shows the pitch (picture, sector, one line, the ask, the name) with a strip of facts under it: money
+raised, the latest stage and how many investors, plus a link to the startup's page. "Read more" opens the vision
+(up to 400 words), every incubation stage or funding round passed, and the investors: who has invested and how
+much, and who is only interested. All of it is edited in `/admin` on the company.
+
+After answering, each result card sets every opinion on the startup side by side as a small bar chart, Novel to
+Investable on the same 0–5 scale: **you**, **everyone** else, **A'Pelago**, the **AI models** (Claude, GPT, Grok)
+and **social media** (X, Threads, LinkedIn, Reddit, Bluesky). They only appear after answering, so none of them
+can anchor a player's own read; "Numbers and reasons" under the charts lists every value and why each model or
+platform thinks so.
+
+- **A'Pelago** is the average of its representatives' evaluations: moderators and admins rate each startup on
+  `/moderate` → Startups, as representatives rather than players. A representative sees the average only after
+  giving their own, their comment stays with the team, and deleting an account removes its evaluations.
+- **AI models**: Admin → a company → **Ask the AIs** asks every model that has a key to rate the card's profile.
+- **Social media**: **Read social media** has Grok search X itself (with `XAI_API_KEY`) and Claude search each
+  other platform's own site. A platform's read only counts posts the search returned and the model cited; with
+  none it's recorded as quiet and gets no chart.
+- Any AI or platform read can be typed in or corrected by hand in the same Admin panel, e.g. without a key.
+
+Both buttons call paid APIs, never on the game's path: per company, three short model calls, and up to 4 web
+searches per platform (Claude bills web search at $10 per 1,000) or X posts fetched by Grok ($5 per 1,000), plus
+tokens. Keys and models are set in `.env`: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, and
+`CLAUDE_MODEL` / `GPT_MODEL` / `GROK_MODEL` (defaults `claude-opus-5-5`, `gpt-6-astra`, `grok-4.7`).
+
 ## Rehearsing the live demo
 
 1. Open `/wall` on the projector and `/host/live` on your laptop.
@@ -131,7 +158,8 @@ write the pitch as one concrete line (show, don't tell): what it is or does, not
 
 They cover the engine (including both demo cases), crowd maths, a full solo set with results locked until
 the last card, final answers, a 3-phone live round, the timer lock, admin add-and-score, the demo-vote
-flags, and sign-up review with moderator access and badge weights. No network needed.
+flags, sign-up review with moderator access and badge weights, the card profile and every kind of opinion.
+The AI and social reads run against canned API answers through the real SDKs. No network needed.
 
 ## Layout
 
@@ -143,6 +171,8 @@ app/
   scoring.py     crowd stats, vote weights (guests, badges) and lean (higher / with / lower)
   accounts.py    sign-up, login, sessions, guests' answers moving onto an account
   moderation.py  sign-up review, member badges, how each member plays
+  opinions.py    A'Pelago's, AI models' and social media's opinions, and a result card's charts
+  reads.py       asking the AI models and reading social media (Admin only)
   live.py        live-room state machine
   seed.py        seed / reset / rescore CLI and demo votes
   seed_data.py   the fictional seed companies and sets
