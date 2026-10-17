@@ -1,17 +1,14 @@
-// Player flow for /play (today's set, self-paced) and /live (host-paced room).
+// Player flow for /play: today's set, self-paced.
 // Answer every card first; you vs the crowd is shown only at the end.
 const { h, api, post, AXES, AXIS, colorFor } = PD;
 
 const $app = document.getElementById("app");
 const S = {
-  mode: location.pathname.startsWith("/live") ? "live" : "solo",
   set: null,
   cards: [],
   answered: new Set(),
-  liveKey: null,
-  deadline: null,
   user: null,      // { username } when signed in
-  overlay: false,  // an account screen is up; live polling holds off re-rendering
+  overlay: false,  // an account screen is up
 };
 
 function show(...nodes) {
@@ -31,7 +28,7 @@ function cardTop(index, total, right) {
     h("span", {}, right ?? setLabel()));
 }
 
-// "#3" reads as "No. 3"; named sets (like the live one) keep their name.
+// "#3" reads as "No. 3"; named sets keep their name.
 const setLabel = () => (!S.set ? "" : S.set.label.startsWith("#") ? `No. ${S.set.label.slice(1)}` : S.set.label);
 
 const pill = (label, onclick, attrs = {}) => h("button", { class: "pill", onclick, ...attrs }, label);
@@ -55,7 +52,7 @@ function showStart() {
 
 // --- one card -------------------------------------------------------------------------------------
 
-function showCard(c, index, total, { live = false } = {}) {
+function showCard(c, index, total) {
   const values = {};
   const lock = pill("Lock it in ↵", null, { disabled: true, class: "pill ghost block" });
   const rows = AXES.map((axis) => {
@@ -73,7 +70,7 @@ function showCard(c, index, total, { live = false } = {}) {
   });
 
   const el = card(colorFor(index),
-    cardTop(index, total, live ? h("span", { class: "timer", dataset: { timer: "1" } }, "") : null),
+    cardTop(index, total),
     h("div", { class: "pitch-head" },
       h("div", {}, h("div", { class: "caps sector" }, c.sector), h("p", { class: "pitch-line" }, c.one_liner)),
       c.emoji ? h("div", { class: "art", "aria-hidden": "true" }, c.emoji) : null),
@@ -90,14 +87,13 @@ function showCard(c, index, total, { live = false } = {}) {
       await post("/api/vote", { dive_id: S.set.id, company_id: c.id, scores: values });
       S.answered.add(c.id);
       el.classList.add("out");
-      setTimeout(() => (live ? showLocked(index, total) : nextCard()), 230);
+      setTimeout(nextCard, 230);
     } catch (e) {
       PD.toast(e.message);
       lock.disabled = false;
     }
   });
   show(el);
-  tickTimers();
 }
 
 function nextCard() {
@@ -106,28 +102,12 @@ function nextCard() {
   return showCard(S.cards[i], i, S.cards.length);
 }
 
-// --- live waiting states ----------------------------------------------------------------------------
-
-const dots = () => h("div", { class: "dots" }, h("i"), h("i"), h("i"));
+// --- waiting ---------------------------------------------------------------------------------------
 
 function waitCard(color, index, total, mark, title, sub, ...extra) {
   return card(color, cardTop(index, total), h("div", { class: "big-mark" }, mark),
     h("div", { class: "wait-title" }, title), sub ? h("div", { class: "wait-sub" }, sub) : null, ...extra);
 }
-
-function showLocked(index, total) {
-  show(waitCard(colorFor(index), index, total, "✓", "Locked in", "next one soon", dots()));
-}
-
-function tickTimers() {
-  if (!S.deadline) return;
-  const left = Math.max(0, Math.round((S.deadline - Date.now()) / 1000));
-  document.querySelectorAll("[data-timer]").forEach((el) => {
-    el.textContent = `${left}s`;
-    el.classList.toggle("low", left <= 5);
-  });
-}
-setInterval(tickTimers, 250);
 
 // --- results ----------------------------------------------------------------------------------------
 
@@ -340,10 +320,6 @@ function submitForm(wrap) {
 // Back to whatever the player was doing, after an account screen.
 function resume() {
   S.overlay = false;
-  if (S.mode === "live") {
-    S.liveKey = null;
-    return livePoll();
-  }
   return startSolo();
 }
 
@@ -555,63 +531,12 @@ async function startSolo() {
   return showStart();
 }
 
-// --- live -------------------------------------------------------------------------------------------
-
-async function livePoll() {
-  let st;
-  try {
-    st = await api("/api/live/state");
-  } catch {
-    return; // keep showing the last screen; the next poll retries
-  }
-  if (st.dive) S.set = st.dive;
-  S.deadline = st.remaining !== null ? Date.now() + st.remaining * 1000 : null;
-  document.querySelectorAll("[data-joined]").forEach((el) => { el.textContent = st.joined; });
-  if (S.overlay) return;
-  const key = `${st.key}:${st.voted ? "v" : ""}`;
-  if (key === S.liveKey) return;
-  S.liveKey = key;
-  renderLive(st);
-}
-
-function renderLive(st) {
-  const total = st.dive ? st.dive.total : 0;
-  const i = st.card_index;
-  switch (st.phase) {
-    case "idle":
-      return show(card(colorFor(0), cardTop(-1, 0, ""),
-        h("div", { class: "hero" }, h("h1", {}, "No live"), h("span", { class: "hand" }, "game"), h("h1", {}, "right now")),
-        st.notice ? h("p", { class: "wait-sub" }, st.notice) : null,
-        h("div", { class: "actions" }, h("a", { class: "pill", href: "/play" }, "Play today's →"))));
-    case "lobby":
-      return show(card(colorFor(0), cardTop(-1, 0, ""),
-        h("div", { class: "hero" }, h("h1", {}, "You're"), h("span", { class: "hand" }, "in"),
-          h("p", { class: "caps" }, h("span", { dataset: { joined: "1" } }, st.joined), " here")),
-        dots()));
-    case "open":
-      return st.voted ? showLocked(i, total) : showCard(st.card, i, total, { live: true });
-    case "locked":
-      return st.voted ? showLocked(i, total) : show(waitCard(colorFor(i), i, total, "✕", "Missed it", "next one soon", dots()));
-    case "revealed":
-      return show(waitCard(colorFor(i), i, total, "👀", "Eyes up", "on the big screen", dots()));
-    case "final":
-      return showResults();
-    default:
-      return null;
-  }
-}
-
 // --- boot -------------------------------------------------------------------------------------------
 
 (async function boot() {
   try {
     S.user = (await api("/api/me")).user; // also sets the device cookie before anything else
-    if (S.mode === "live") {
-      await livePoll();
-      setInterval(livePoll, 2000);
-    } else {
-      await startSolo();
-    }
+    await startSolo();
   } catch (e) {
     show(waitCard(colorFor(0), -1, 0, "!", "Something broke", e.message));
   }

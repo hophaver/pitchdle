@@ -9,7 +9,7 @@ import random
 from datetime import date, timedelta
 
 from . import engine, service
-from .db import connect, dumps, init_db, j, now
+from .db import connect, dumps, init_db, j, name_key, now
 from .engine import AXES
 from .seed_data import COMPANIES, DEMO_BIAS, DIVES
 
@@ -25,9 +25,9 @@ def seed(db) -> None:
     ids = {}
     for c in COMPANIES:
         cur = db.execute(
-            "INSERT INTO companies (name, emoji, sector, one_liner, claim_ask, facts, evidence, evidence_note, is_real, "
-            "active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)",
-            (c["name"], c["emoji"], c["sector"], c["one_liner"], c["claim_ask"], dumps(c["facts"]), dumps(c["evidence"]),
+            "INSERT INTO companies (name, name_key, emoji, sector, one_liner, claim_ask, facts, evidence, evidence_note, "
+            "is_real, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)",
+            (c["name"], name_key(c["name"]), c["emoji"], c["sector"], c["one_liner"], c["claim_ask"], dumps(c["facts"]), dumps(c["evidence"]),
              c["evidence_note"], now()))
         ids[c["name"]] = cur.lastrowid
         score_company(db, cur.lastrowid)
@@ -53,7 +53,6 @@ def reset(db) -> None:
     for table in ("votes", "sessions", "players", "users", "opportunities", "dives", "candidates", "companies",
                   "settings"):
         db.execute(f"DELETE FROM {table}")
-    db.execute("UPDATE live_state SET dive_id = NULL, card_index = -1, phase = 'idle'")
     db.commit()
     seed(db)
 

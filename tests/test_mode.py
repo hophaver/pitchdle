@@ -50,7 +50,6 @@ def test_live_mode_with_nothing_found_shows_a_notice(client, admin, monkeypatch)
     assert overview(client, admin)["companies"] == []
     today = client.get("/api/dive/today").json()
     assert today["cards"] == [] and "real startups" in today["notice"]
-    assert "real startups" in client.get("/api/live/state").json()["notice"]
 
 
 def test_autofill_finds_real_startups_for_the_dashboard_not_the_game(client, admin):
@@ -101,8 +100,8 @@ def test_sets_follow_the_mode(client, admin):
     assert demo_dives
     set_mode(client, admin, "live")
     assert client.get("/api/host/dives", auth=admin).json() == []
-    real = client.get("/api/admin/companies", auth=admin).json()[0]
-    client.post("/api/admin/dives", json={"label": "Real room", "company_ids": [real["id"]], "mode": "live"}, auth=admin)
+    real = client.get("/api/admin/companies?pool=live", auth=admin).json()[0]
+    client.post("/api/admin/dives", json={"label": "Real room", "company_ids": [real["id"]]}, auth=admin)
     assert [d["label"] for d in client.get("/api/host/dives", auth=admin).json()] == ["Real room"]
     set_mode(client, admin, "demo")
     assert "Real room" not in [d["label"] for d in client.get("/api/host/dives", auth=admin).json()]
@@ -111,3 +110,75 @@ def test_sets_follow_the_mode(client, admin):
 def test_mode_needs_admin(client):
     assert client.post("/api/admin/mode", json={"mode": "live"}).status_code == 401
     assert client.post("/api/admin/autofill").status_code == 401
+
+
+# --- AI-written cards (OpenRouter call stubbed) ------------------------------------------------------
+
+def fake_complete(messages):
+    sources = messages[-1]["content"]
+    if "Company name: Tidewise" in sources:
+        return {"is_startup": False, "reject_reason": "a news aggregator", "emoji": "", "sector": "", "one_liner": "",
+                "claim_ask": "", "facts": []}
+    if "Company name: Finfarm" in sources:
+        raise OSError("rate limited")
+    return {"is_startup": True, "reject_reason": "", "emoji": "🌿", "sector": "Seaweed Packaging",
+            "one_liner": "Food packaging made from seaweed that dissolves in water.",
+            "claim_ask": "Funding to build its first production line",
+            "facts": [{"label": "Origin", "value": "Launched on Hacker News"}, {"label": "", "value": "dropped"}]}
+
+
+@pytest.fixture
+def ai(monkeypatch):
+    from app.crawler import pitch
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(pitch, "complete", fake_complete)
+    return pitch
+
+
+def test_autofill_writes_demo_style_cards_and_skips_non_startups(client, admin, ai):
+    set_mode(client, admin, "live")
+    st = client.get("/api/admin/mode", auth=admin).json()
+    assert st["discover"]["ai"]["enabled"]
+    assert sorted(st["autofill"]["added"]) == ["Finfarm", "Kelpco"]
+    assert {"name": "Tidewise", "reason": "a news aggregator"} in st["autofill"]["skipped"]
+    assert {"name": "Spamco", "reason": "excluded (matches “crypto”)"} in st["autofill"]["skipped"]
+    assert any("Finfarm: card writer" in e for e in st["autofill"]["errors"])
+    dismissed = {c["name"] for c in client.get("/api/admin/discover?status=dismissed", auth=admin).json()}
+    assert dismissed == {"Tidewise", "Spamco"}
+
+    by_name = {c["name"]: c for c in client.get("/api/admin/companies", auth=admin).json()}
+    kelp = by_name["Kelpco"]
+    assert kelp["emoji"] == "🌿" and kelp["sector"] == "seaweed packaging"
+    assert kelp["one_liner"].startswith("Food packaging") and kelp["claim_ask"].startswith("Funding")
+    assert kelp["facts"] == [{"label": "Origin", "value": "Launched on Hacker News"}]
+    assert "written by AI" in kelp["evidence_note"]
+    # Card text only: evidence and scores are what discovery proved, nothing more.
+    assert kelp["evidence"] == {} and kelp["engine_coverage"]["assessed"] == 0
+    # A failed call keeps the startup with its headline as the pitch.
+    assert by_name["Finfarm"]["one_liner"] == "Finfarm – salmon pens" and by_name["Finfarm"]["claim_ask"] == ""
+
+
+def test_rewrite_card(client, admin, monkeypatch):
+    set_mode(client, admin, "live")
+    kelp = next(c for c in client.get("/api/admin/companies", auth=admin).json() if c["name"] == "Kelpco")
+    assert client.post(f"/api/admin/companies/{kelp['id']}/rewrite", auth=admin).status_code == 400  # no key
+
+    from app.crawler import pitch
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(pitch, "complete", fake_complete)
+    out = client.post(f"/api/admin/companies/{kelp['id']}/rewrite", auth=admin).json()
+    assert out["is_startup"] and out["company"]["claim_ask"] == "Funding to build its first production line"
+
+    tide = next(c for c in client.get("/api/admin/companies", auth=admin).json() if c["name"] == "Tidewise")
+    out = client.post(f"/api/admin/companies/{tide['id']}/rewrite", auth=admin).json()
+    assert not out["is_startup"] and out["reject_reason"] == "a news aggregator"
+    assert out["company"]["one_liner"] == tide["one_liner"]  # unchanged
+
+
+def test_written_cards_fit_the_game_limits(ai, monkeypatch):
+    monkeypatch.setattr(ai, "complete", lambda m: {
+        "is_startup": True, "reject_reason": "", "emoji": "🐟", "sector": "x" * 50, "one_liner": "word " * 40,
+        "claim_ask": "€1M " * 30, "facts": [{"label": "A", "value": "b"}] * 5})
+    card = ai.write_card("sources")
+    assert len(card["one_liner"]) <= 90 and len(card["claim_ask"]) <= 60 and len(card["sector"]) <= 30
+    assert len(card["facts"]) == 3

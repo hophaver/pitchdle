@@ -3,8 +3,8 @@ import random
 import sqlite3
 from datetime import date, datetime, time, timedelta
 
-from . import config, scoring
-from .db import dumps, j, now
+from . import config, landscape, scoring
+from .db import dumps, j, name_key, now
 from .engine import AXES, composite_of, full_score as engine_full
 
 HANDLE_EMOJI = ["🐙", "🦈", "🐳", "🐬", "🦀", "🐡", "🐠", "🦑", "🦭", "🐢", "🪼", "🦞", "🐚", "🐟"]
@@ -68,10 +68,26 @@ def get_dive(db, did: int):
 
 
 def dive_companies(db, dive) -> list:
+    """A set's companies, in order. Only ever its own pool's: a demo set yields sample companies and a live set
+    real ones, whatever ids it holds, so the two can never mix in a game, the wall or results."""
     ids = j(dive["company_ids"], [])
     rows = {r["id"]: r for r in db.execute(
-        f"SELECT * FROM companies WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else {}
+        f"SELECT * FROM companies WHERE id IN ({','.join('?' * len(ids))}) AND is_real = ?",
+        [*ids, pool_is_real(dive["pool"] or "demo")])} if ids else {}
     return [rows[i] for i in ids if i in rows]
+
+
+def outside_pool(db, ids: list[int], pool: str) -> list[int]:
+    """The ids that aren't companies of this pool (missing ones included)."""
+    inside = {r["id"] for r in db.execute(
+        f"SELECT id FROM companies WHERE id IN ({','.join('?' * len(ids))}) AND is_real = ?",
+        [*ids, pool_is_real(pool)])} if ids else set()
+    return [i for i in ids if i not in inside]
+
+
+def in_mode(db, dive) -> bool:
+    """Whether a set belongs to the current mode. Players only ever reach the current mode's sets."""
+    return (dive["pool"] or "demo") == get_mode(db)
 
 
 def dive_payload(dive) -> dict:
@@ -142,9 +158,7 @@ def results(db, dive, pid: int) -> dict:
         if not vote:
             continue
         you = scores_of(vote)
-        # A live room is the people in it, all counted alike; everywhere else guests count for less.
-        others = scoring.crowd([v for v in card_votes(db, dive["id"], comp["id"]) if v["player_id"] != pid],
-                               weighted=dive["mode"] != "live")
+        others = scoring.crowd([v for v in card_votes(db, dive["id"], comp["id"]) if v["player_id"] != pid])
         you_composite = composite_of(you)
         # Nobody else has answered yet: nothing to lean against.
         lean = scoring.lean(you_composite, others["composite"]) if others["n"] else None
@@ -227,21 +241,6 @@ def history(db, pid: int) -> dict:
     }
 
 
-# --- wall ------------------------------------------------------------------------------------------
-
-def callout(room: dict, engine_composite: float) -> dict | None:
-    """The perception-gap line for the wall and host, once the room is big enough to mean something."""
-    if room["n"] < config.MIN_VOTES:
-        return None
-    gap = round(room["composite"] - engine_composite, 1)
-    lead = f"The room averaged {room['composite']:.1f}, the engine says {engine_composite:.1f}"
-    if gap >= 1.0:
-        return {"kind": "story", "gap": gap, "text": f"{lead}. The pitch reads better than its fundamentals."}
-    if gap <= -1.0:
-        return {"kind": "substance", "gap": gap, "text": f"{lead}. Stronger fundamentals than the pitch suggests."}
-    return None
-
-
 # --- host overview ---------------------------------------------------------------------------------
 
 FLAG_LABELS = {
@@ -251,7 +250,7 @@ FLAG_LABELS = {
 }
 # Which opportunity kinds a flag pushes up the "next actions" list, and why.
 FLAG_BOOST = {
-    "story": ({"partner", "customer"}, "prove it with a pilot before raising"),
+    "story": ({"partner", "client"}, "prove it with a pilot before raising"),
     "substance": ({"investor", "grant"}, "fundamentals are there; go raise"),
 }
 
@@ -288,6 +287,23 @@ def triangulate(crowd_n: int, crowd_c: float | None, engine_c: float, pulse: dic
     return "convergent", f"Crowd, engine and web ({lean}) agree"
 
 
+REVIEW = {
+    "auto": ("Auto-estimated · host confirms",
+             "Found by discovery. Only the tech stage is estimated, from its headlines or site; every other factor "
+             "stays unknown until the host reviews the evidence in Admin."),
+    "pending": ("Awaiting host evidence review",
+                "Found by discovery, not yet evidence-backed. Nothing in its headlines or site could be scored, so "
+                "readiness and thesis fit stay unknown until the host adds evidence in Admin."),
+}
+
+
+def review_state(comp) -> dict:
+    """Whether a company's engine read is backed by evidence the host checked, for the dashboard and exports."""
+    status = comp["evidence_status"] if comp["evidence_status"] in REVIEW else "confirmed"
+    label, detail = REVIEW.get(status, ("Evidence reviewed by the host", ""))
+    return {"status": status, "pending": status != "confirmed", "label": label, "detail": detail}
+
+
 def company_insight(db, comp, real_only: bool) -> dict:
     seed_clause = " AND v.is_seed = 0" if real_only else ""
     votes = db.execute(f"{VOTES_WITH_USER} WHERE v.company_id = ? AND v.round = 1{seed_clause}", (comp["id"],)).fetchall()
@@ -317,33 +333,41 @@ def company_insight(db, comp, real_only: bool) -> dict:
                           "detail": f"Std-dev {room['consensus']:.1f} across {room['n']} reads"})
 
     flag_keys = {f["key"] for f in flags}
+    tech = readiness_levels["tech"]
+    # Hand-picked opportunities (seed data, the host's own) and the landscape's matches, ranked together.
+    pool = [{"kind": KIND.get(o["kind"], o["kind"]), "name": o["name"], "why": o["why"], "fit": o["fit"] or 0,
+             "stage_fit": o["stage_fit"], "url": "", "reasons": [], "source": "manual"}
+            for o in db.execute("SELECT * FROM opportunities WHERE company_id = ?", (comp["id"],))]
+    picked = {name_key(o["name"]) for o in pool}
+    company = {"sector": comp["sector"], "one_liner": comp["one_liner"], "claim_ask": comp["claim_ask"],
+               "facts": j(comp["facts"], []), "country": comp["country"] or ""}
+    pool += [m for m in landscape.match(company, tech.get("trl")) if name_key(m["name"]) not in picked]
     actions = []
-    for o in db.execute("SELECT * FROM opportunities WHERE company_id = ?", (comp["id"],)):
-        score, reasons = o["fit"] or 0, []
+    for o in pool:
+        score, boosted = o["fit"], []
         for key in flag_keys:
             if key in FLAG_BOOST and o["kind"] in FLAG_BOOST[key][0]:
                 score += 0.3
-                reasons.append(FLAG_BOOST[key][1])
-        # Thesis fit also steers the "next" list: a strong accelerator fit flags the accelerator-style
-        # opportunities (partners, grants, customers); a strong investment fit flags investors.
-        k = o["kind"]
-        thesis = ("apelago", "fits the accelerator thesis") if k in ("partner", "grant", "customer") \
-            else ("redstone", "fits the investment thesis") if k == "investor" else None
+                boosted.append(FLAG_BOOST[key][1])
+        # Thesis fit also steers the list: a strong accelerator fit lifts the accelerator-style opportunities
+        # (partners, grants, clients); a strong investment fit lifts investors.
+        thesis = ("apelago", "fits the accelerator thesis") if o["kind"] in ("partner", "grant", "client") \
+            else ("redstone", "fits the investment thesis") if o["kind"] == "investor" else None
         if thesis and theses[thesis[0]]["score"] is not None:
             boost = (theses[thesis[0]]["score"] - 2.5) * 0.15
             score += boost
             if boost > 0:
-                reasons.append(thesis[1])
-        score = round(score, 2)
-        actions.append({"kind": o["kind"], "name": o["name"], "why": o["why"], "fit": o["fit"],
-                        "stage_fit": o["stage_fit"], "score": score, "boosted": reasons})
-    actions.sort(key=lambda a: a["score"], reverse=True)
+                boosted.append(thesis[1])
+        actions.append(o | {"score": round(score, 2), "boosted": boosted})
+    actions.sort(key=lambda a: (-a["score"], a["name"]))
     pulse = j(comp["pulse"])
     verdict, verdict_reason = triangulate(room["n"], room["composite"], ec, pulse, config.MIN_VOTES)
 
-    return {
+    out = {
         "id": comp["id"], "name": comp["name"], "sector": comp["sector"], "is_real": bool(comp["is_real"]),
-        "active": bool(comp["active"]),
+        "one_liner": comp["one_liner"] or "", "claim_ask": comp["claim_ask"] or "", "website": comp["website"] or "",
+        "country": comp["country"] or "",
+        "active": bool(comp["active"]), "origin": comp["origin"] or "", "review": review_state(comp),
         "engine": {"axes": engine, "composite": ec},
         "readiness": readiness_levels, "theses": theses, "factors": factors,
         "evidence_note": comp["evidence_note"] or "",
@@ -353,6 +377,68 @@ def company_insight(db, comp, real_only: bool) -> dict:
         "gap": gap, "flags": flags, "actions": actions,
         "pulse": pulse, "verdict": verdict, "verdict_reason": verdict_reason,
     }
+    return out | {"call": call(out), "next": next_move(out)}
+
+
+# Older opportunity rows say "customer"; the landscape says "client".
+KIND = {"customer": "client"}
+
+BACK_AT, AVOID_BELOW = 3.5, 2.5
+
+
+def call(c: dict) -> dict:
+    """Back, watch, avoid, or needs evidence, with the reasons. Driven by the best thesis fit, then tempered by
+    what the room and the web say. Without any evidenced thesis factor it never guesses: needs evidence."""
+    scored = [t for t in c["theses"].values() if t["score"] is not None]
+    if not scored:
+        return {"key": "evidence", "label": "Needs evidence",
+                "reasons": [c["review"]["label"] if c["review"]["pending"] else "No thesis factor evidenced yet"]}
+    best = max(scored, key=lambda t: t["score"])
+    key = "back" if best["score"] >= BACK_AT else "avoid" if best["score"] < AVOID_BELOW else "watch"
+    reasons = [f"{best['label']} fit {best['score']:.1f}"]
+    soften = lambda k: "watch" if k == "back" else k
+    flags = {f["key"]: f for f in c["flags"]}
+    if "story" in flags:
+        key = soften(key)
+        reasons.append(f"Pitch outsells the evidence ({flags['story']['detail']})")
+    if "substance" in flags:
+        reasons.append(f"Stronger than its pitch ({flags['substance']['detail']})")
+    if c["pulse"] and c["pulse"]["lean"] == "negative":
+        key = soften(key)
+        reasons.append("Web coverage leans negative")
+    if c["review"]["pending"]:
+        key = soften(key)
+        reasons.append("Evidence not yet confirmed by the host")
+    labels = {"back": "Back", "watch": "Watch", "avoid": "Avoid"}
+    return {"key": key, "label": labels[key], "reasons": reasons}
+
+
+# What closes each readiness gap, and which kind of opportunity helps with it.
+MOVES = {
+    "ocean_impact": ("Measure and prove its impact", "partner"),
+    "business": ("Win a paying pilot", "client"),
+    "tech": ("De-risk the technology", "grant"),
+    "investment": ("Get investment-ready", "investor"),
+}
+
+
+def next_move(c: dict) -> dict | None:
+    """The weakest readiness level and the top opportunity that addresses it: the lowest evidenced one, or an
+    unknown one when everything evidenced is fine. When every level is strong, raise. None when nothing is evidenced."""
+    levels = [lv for lv in c["readiness"].values() if lv["score"] is not None]
+    if not levels:
+        return None
+    weakest = min(levels, key=lambda lv: lv["score"])
+    # What's evidenced looks fine but a level is still unknown: that's the gap, not raising money.
+    unknown = [c["readiness"][k] for k in ("business", "investment", "ocean_impact", "tech") if c["readiness"][k]["score"] is None]
+    if unknown and weakest["score"] >= AVOID_BELOW:
+        weakest = unknown[0]
+    text, kind = MOVES[weakest["key"]]
+    if weakest["score"] is not None and weakest["score"] >= BACK_AT:
+        text, kind = "Raise the next round", "investor"
+    with_whom = next((a for a in c["actions"] if a["kind"] == kind), None) or (c["actions"] or [None])[0]
+    return {"gap": weakest["key"], "gap_label": weakest["label"], "gap_score": weakest["score"], "text": text,
+            "with": with_whom["name"] if with_whom else None, "url": with_whom["url"] if with_whom else ""}
 
 
 def overview(db, real_only: bool) -> dict:

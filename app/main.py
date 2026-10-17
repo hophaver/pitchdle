@@ -4,11 +4,12 @@ import io
 import logging
 import re
 import secrets
+import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date
 
-import segno
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -17,9 +18,10 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
-from . import accounts, autofill, config, live, scoring, seed, service
-from .db import connect, dumps, get_db, init_db, j, now
-from .engine import AXES
+from . import accounts, autofill, config, scoring, seed, service
+from .db import connect, dumps, get_db, init_db, j, name_key, now
+from .crawler import pitch
+from .engine import AXES, full_score as engine_full
 
 log = logging.getLogger("pitchdle")
 
@@ -31,6 +33,9 @@ async def lifespan(_app: FastAPI):
     if seed.seed_if_empty(db):
         log.warning("Pitchdle: empty database, loaded seed data into %s", config.DB_PATH)
     accounts.ensure_test_account(db)
+    fixed = autofill.tidy(db)
+    if fixed["removed"]:
+        log.warning("Pitchdle: removed excluded names discovery had filed as startups: %s", ", ".join(fixed["removed"]))
     autofill.maybe_start(db)  # live mode tops itself up in the background; demo mode does nothing
     db.close()
     if config.ADMIN_PASSWORD == "admin":
@@ -89,10 +94,6 @@ def is_guest(player) -> bool:
     return player["user_id"] is None
 
 
-def base_url(request: Request) -> str:
-    return config.BASE_URL or str(request.base_url).rstrip("/")
-
-
 # --- pages -----------------------------------------------------------------------------------------
 
 def page(name: str) -> FileResponse:
@@ -105,14 +106,8 @@ def index():
 
 
 @app.get("/play", include_in_schema=False)
-@app.get("/live", include_in_schema=False)
 def play_page():
     return page("play.html")
-
-
-@app.get("/wall", include_in_schema=False)
-def wall_page():
-    return page("wall.html")
 
 
 @app.get("/host", include_in_schema=False, dependencies=[Depends(require_admin)])
@@ -120,24 +115,14 @@ def host_page():
     return page("host.html")
 
 
-@app.get("/host/live", include_in_schema=False, dependencies=[Depends(require_admin)])
-def host_live_page():
-    return page("hostlive.html")
+@app.get("/game", include_in_schema=False, dependencies=[Depends(require_admin)])
+def game_page():
+    return page("game.html")
 
 
 @app.get("/admin", include_in_schema=False, dependencies=[Depends(require_admin)])
 def admin_page():
     return page("admin.html")
-
-
-@app.get("/qr", include_in_schema=False)
-def qr(request: Request, path: str = "/live"):
-    if not path.startswith("/"):
-        path = "/" + path
-    out = io.BytesIO()
-    segno.make(base_url(request) + path, error="m").save(out, kind="svg", scale=10, border=2,
-                                                         dark="#04162b", light="#ffffff")
-    return Response(out.getvalue(), media_type="image/svg+xml", headers={"Cache-Control": "no-cache"})
 
 
 # --- player API ------------------------------------------------------------------------------------
@@ -230,7 +215,7 @@ def dive_today(player=Depends(get_player), db=Depends(get_db)):
 @app.get("/api/dive/{dive_id}")
 def dive_by_id(dive_id: int, player=Depends(get_player), db=Depends(get_db)):
     dive = service.get_dive(db, dive_id)
-    if not dive:
+    if not dive or not service.in_mode(db, dive):
         raise HTTPException(404, "No such set.")
     if is_guest(player) and service.guest_locked(db, dive, player["id"]):
         raise HTTPException(401, "Log in to play earlier sets.")
@@ -254,18 +239,11 @@ class VoteIn(BaseModel):
 def vote(body: VoteIn, player=Depends(get_player), db=Depends(get_db)):
     """One answer per card, final: there's no way to revise it."""
     dive = service.get_dive(db, body.dive_id)
-    if not dive or body.company_id not in j(dive["company_ids"], []):
+    if not dive or not service.in_mode(db, dive) or body.company_id not in j(dive["company_ids"], []):
         raise HTTPException(404, "That card isn't in this set.")
     comp = service.get_company(db, body.company_id)
     if not comp:
         raise HTTPException(404, "No such company.")
-    if dive["mode"] == "live":
-        st = live.get_state(db)
-        cur = live.current_company(db, st)
-        if st["dive_id"] != dive["id"] or not cur or cur["id"] != comp["id"]:
-            raise HTTPException(409, "That's not the live card right now.")
-        if st["phase"] != "open":
-            raise HTTPException(409, "Voting is closed for this card.")
     if is_guest(player) and service.needs_account(dive):
         raise HTTPException(401, "Log in to play earlier sets.")
     if comp["id"] in service.answered(db, player["id"], dive["id"]):
@@ -281,18 +259,13 @@ def vote(body: VoteIn, player=Depends(get_player), db=Depends(get_db)):
 
 @app.get("/api/dive/{dive_id}/results")
 def results(dive_id: int, player=Depends(get_player), db=Depends(get_db)):
-    """You vs the crowd, only once every card is answered (or the live set has finished)."""
+    """You vs the crowd, only once every card is answered."""
     dive = service.get_dive(db, dive_id)
     if not dive:
         raise HTTPException(404, "No such set.")
-    if dive["mode"] == "live":
-        st = live.get_state(db)
-        if st["dive_id"] == dive_id and st["phase"] != "final":
-            raise HTTPException(403, "Results appear when the live set is over.")
-    else:
-        total = len(service.dive_companies(db, dive))
-        if len(service.answered(db, player["id"], dive_id)) < total:
-            raise HTTPException(403, "Answer every card first.")
+    total = len(service.dive_companies(db, dive))
+    if len(service.answered(db, player["id"], dive_id)) < total:
+        raise HTTPException(403, "Answer every card first.")
     return service.results(db, dive, player["id"])
 
 
@@ -357,90 +330,6 @@ def submit_startup(body: SubmissionIn, player=Depends(get_player), db=Depends(ge
     return {"ok": True}
 
 
-# --- live room -------------------------------------------------------------------------------------
-
-def joined_count(db, since: float = 30) -> int:
-    return db.execute("SELECT COUNT(*) FROM players WHERE is_seed = 0 AND last_seen > ?",
-                      (time.time() - since,)).fetchone()[0]
-
-
-def live_base(db, st: dict) -> dict:
-    dive = service.get_dive(db, st["dive_id"]) if st["dive_id"] else None
-    comp = live.current_company(db, st)
-    total = len(service.dive_companies(db, dive)) if dive else 0
-    notice = service.pool_notice(db, service.get_mode(db)) if st["phase"] == "idle" else None
-    return {
-        "phase": st["phase"],
-        "dive": service.dive_payload(dive) | {"total": total} if dive else None,
-        "card_index": st["card_index"],
-        "card": service.public_card(comp) if comp and st["phase"] in ("open", "locked", "revealed") else None,
-        "remaining": live.remaining(st),
-        "seconds": config.LIVE_SECONDS,
-        "joined": joined_count(db),
-        "votes": len(service.card_votes(db, dive["id"], comp["id"])) if dive and comp else 0,
-        # The notice is part of the key so phones drop it once real startups are in the game.
-        "key": f"{st['phase']}:{st['dive_id']}:{st['card_index']}{':notice' if notice else ''}",
-        "notice": notice,
-    }
-
-
-@app.get("/api/live/state")
-def live_state(player=Depends(get_player), db=Depends(get_db)):
-    db.execute("UPDATE players SET last_seen = ? WHERE id = ?", (time.time(), player["id"]))
-    db.commit()
-    st = live.get_state(db)
-    out = live_base(db, st)
-    comp = live.current_company(db, st)
-    out["voted"] = bool(comp) and comp["id"] in service.answered(db, player["id"], st["dive_id"])
-    return out
-
-
-def wall_card(db, dive_id: int, comp) -> dict:
-    # The room on the wall counts everyone in it alike.
-    room = scoring.crowd(service.card_votes(db, dive_id, comp["id"]), weighted=False)
-    return {
-        "card": service.public_card(comp),
-        "engine": {"axes": j(comp["engine_axes"]), "composite": comp["engine_composite"]},
-        "room": {"n": room["n"], "means": room["means"], "composite": room["composite"],
-                 "share": room["share"], "mode": room["mode"]},
-        "callout": service.callout(room, comp["engine_composite"]),
-        "facts": j(comp["facts"], []),
-    }
-
-
-@app.get("/api/live/wall")
-def live_wall(request: Request, db=Depends(get_db)):
-    st = live.get_state(db)
-    out = live_base(db, st)
-    out["join_url"] = base_url(request) + "/live"
-    comp = live.current_company(db, st)
-    if st["phase"] == "revealed" and comp:
-        out["reveal"] = wall_card(db, st["dive_id"], comp)
-    if st["phase"] == "final" and st["dive_id"]:
-        dive = service.get_dive(db, st["dive_id"])
-        out["cards"] = [wall_card(db, dive["id"], c) for c in service.dive_companies(db, dive)]
-    return out
-
-
-class LiveAction(BaseModel):
-    action: str
-    dive_id: int | None = None
-
-
-@app.post("/api/host/live", dependencies=[Depends(require_admin)])
-def live_action(body: LiveAction, db=Depends(get_db)):
-    try:
-        st = live.act(db, body.action, body.dive_id)
-    except live.LiveError as e:
-        raise HTTPException(409, str(e))
-    return live_base(db, st)
-
-
-@app.get("/api/host/live", dependencies=[Depends(require_admin)])
-def live_host_state(db=Depends(get_db)):
-    return live_base(db, live.get_state(db))
-
-
 # --- host dashboard --------------------------------------------------------------------------------
 
 @app.get("/api/host/overview", dependencies=[Depends(require_admin)])
@@ -448,13 +337,42 @@ def host_overview(real_only: bool = False, db=Depends(get_db)):
     return service.overview(db, real_only)
 
 
+@app.get("/api/host/radar", dependencies=[Depends(require_admin)])
+def host_radar(real_only: bool = False, db=Depends(get_db)):
+    """The dashboard: the current pool's companies with their call, readiness, thesis fit and ranked next steps,
+    plus (live mode only, as they're real startups) the open discovery candidates not yet tracked."""
+    out = service.overview(db, real_only)
+    out["candidates"] = [candidate_out(r) for r in db.execute(
+        "SELECT * FROM candidates WHERE status IN ('new', 'queued') ORDER BY id DESC")] if out["mode"] == "live" else []
+    return out
+
+
 @app.get("/api/host/dives", dependencies=[Depends(require_admin)])
 def host_dives(db=Depends(get_db)):
-    rows = db.execute("SELECT * FROM dives WHERE pool = ? ORDER BY id DESC", (service.get_mode(db),)).fetchall()
-    counts = {r["dive_id"]: r["n"] for r in db.execute(
-        "SELECT dive_id, COUNT(DISTINCT player_id) AS n FROM votes GROUP BY dive_id")}
-    return [service.dive_payload(d) | {"company_ids": j(d["company_ids"], []), "players": counts.get(d["id"], 0)}
-            for d in rows]
+    """The current mode's sets, newest first, each marked past, today or upcoming (future or undated).
+    Sets left over from the removed live room are not listed."""
+    rows = db.execute("SELECT * FROM dives WHERE pool = ? AND mode = 'daily' ORDER BY id DESC",
+                      (service.get_mode(db),)).fetchall()
+    counts = {r["dive_id"]: (r["n"], r["answers"]) for r in db.execute(
+        "SELECT dive_id, COUNT(DISTINCT player_id) AS n, COUNT(*) AS answers FROM votes GROUP BY dive_id")}
+    today = date.today().isoformat()
+    when = lambda d: "past" if d["date"] and d["date"] < today else "today" if d["date"] == today else "upcoming"
+    return [service.dive_payload(d) | {"company_ids": j(d["company_ids"], []), "players": counts.get(d["id"], (0, 0))[0],
+                                       "answers": counts.get(d["id"], (0, 0))[1], "when": when(d)} for d in rows]
+
+
+@app.get("/api/host/dives/{dive_id}", dependencies=[Depends(require_admin)])
+def host_dive(dive_id: int, db=Depends(get_db)):
+    """One set's cards with the crowd read next to the engine's, for the Game page."""
+    dive = service.get_dive(db, dive_id)
+    if not dive or not service.in_mode(db, dive):
+        raise HTTPException(404, "No such set.")
+    cards = []
+    for comp in service.dive_companies(db, dive):
+        room = scoring.crowd(service.card_votes(db, dive_id, comp["id"]))
+        cards.append({"id": comp["id"], "name": comp["name"], "sector": comp["sector"], "website": comp["website"] or "",
+                      "crowd": {"n": room["n"], "composite": room["composite"]}, "engine": comp["engine_composite"]})
+    return service.dive_payload(dive) | {"cards": cards}
 
 
 # --- admin -----------------------------------------------------------------------------------------
@@ -474,8 +392,14 @@ class CompanyIn(BaseModel):
     facts: list[Fact] = []
     evidence: dict = {}
     evidence_note: str = ""
-    is_real: bool = False
+    # Which pool a new company joins: real (live mode) or sample (demo mode). Left out, it's the current mode's.
+    # Fixed once created: an update never moves a company between pools.
+    is_real: bool | None = None
     active: bool = True
+    # Sent by the editor's "Save and score": the host has reviewed the evidence and the card. Quick toggles
+    # (Active) leave them out, so ticking a box never passes an auto-estimate or an unchecked card off as checked.
+    evidence_reviewed: bool = False
+    card_reviewed: bool = False
 
 
 def admin_company(db, row) -> dict:
@@ -486,12 +410,20 @@ def admin_company(db, row) -> dict:
     out["opportunities"] = [dict(o) for o in db.execute("SELECT * FROM opportunities WHERE company_id = ? ORDER BY fit DESC",
                                                         (row["id"],))]
     out["votes"] = db.execute("SELECT COUNT(*) FROM votes WHERE company_id = ? AND round = 1", (row["id"],)).fetchone()[0]
+    out["theses"] = {k: {"label": t["label"], "score": t["score"]}
+                     for k, t in engine_full(out["evidence"])["theses"].items()}
     return out
 
 
 @app.get("/api/admin/companies", dependencies=[Depends(require_admin)])
-def admin_companies(db=Depends(get_db)):
-    return [admin_company(db, r) for r in db.execute("SELECT * FROM companies ORDER BY name")]
+def admin_companies(pool: str = "", db=Depends(get_db)):
+    """Every company, or one pool: pool=current (the mode's), live (real) or demo (sample)."""
+    if pool == "current":
+        pool = service.get_mode(db)
+    if pool not in ("", "live", "demo"):
+        raise HTTPException(400, "pool is current, live or demo.")
+    where, args = (" WHERE is_real = ?", (service.pool_is_real(pool),)) if pool else ("", ())
+    return [admin_company(db, r) for r in db.execute(f"SELECT * FROM companies{where} ORDER BY name", args)]
 
 
 @app.get("/api/admin/factors", dependencies=[Depends(require_admin)])
@@ -500,17 +432,36 @@ def admin_factors():
     return {"groups": FACTOR_GROUPS, "group_labels": GROUP_LABELS, "trl_stages": TRL_STAGES}
 
 
-def save_company(db, body: CompanyIn, cid: int | None) -> int:
-    values = (body.name.strip(), body.emoji.strip(), body.sector, body.one_liner, body.claim_ask, body.website,
-              dumps([f.model_dump() for f in body.facts]), dumps(body.evidence), body.evidence_note,
-              int(body.is_real), int(body.active))
+def save_company(db, body: CompanyIn, cid: int | None, evidence_status: str = "confirmed") -> int:
+    """Insert or update a company. A new one's evidence is the host's own unless evidence_status says otherwise;
+    an update keeps the stored status unless the host reviewed the evidence. A company's pool (real or sample)
+    is set when it's created and never changes, so no edit can slip a sample company into live mode or a
+    real one into demo mode."""
+    name = body.name.strip()
     if cid is None:
-        cid = db.execute(
-            "INSERT INTO companies (name, emoji, sector, one_liner, claim_ask, website, facts, evidence, evidence_note, "
-            "is_real, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values + (now(),)).lastrowid
+        is_real = body.is_real if body.is_real is not None else bool(service.pool_is_real(service.get_mode(db)))
     else:
-        db.execute("UPDATE companies SET name = ?, emoji = ?, sector = ?, one_liner = ?, claim_ask = ?, website = ?, facts = ?, "
-                   "evidence = ?, evidence_note = ?, is_real = ?, active = ? WHERE id = ?", values + (cid,))
+        is_real = bool(service.get_company(db, cid)["is_real"])
+    values = (name, name_key(name), body.emoji.strip(), body.sector, body.one_liner, body.claim_ask, body.website,
+              dumps([f.model_dump() for f in body.facts]), dumps(body.evidence), body.evidence_note,
+              int(is_real), int(body.active))
+    try:
+        if cid is None:
+            cid = db.execute(
+                "INSERT INTO companies (name, name_key, emoji, sector, one_liner, claim_ask, website, facts, evidence, "
+                "evidence_note, is_real, active, evidence_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                values + (evidence_status, now())).lastrowid
+        else:
+            db.execute("UPDATE companies SET name = ?, name_key = ?, emoji = ?, sector = ?, one_liner = ?, claim_ask = ?, "
+                       "website = ?, facts = ?, evidence = ?, evidence_note = ?, is_real = ?, active = ? WHERE id = ?",
+                       values + (cid,))
+            if body.evidence_reviewed:
+                db.execute("UPDATE companies SET evidence_status = 'confirmed' WHERE id = ?", (cid,))
+            if body.card_reviewed:
+                db.execute("UPDATE companies SET card_status = '' WHERE id = ?", (cid,))
+    except sqlite3.IntegrityError:
+        db.rollback()
+        raise HTTPException(409, f"There's already a real company called {name}.")
     seed.score_company(db, cid)
     db.commit()
     return cid
@@ -547,10 +498,15 @@ def admin_approve_submission(sid: int, db=Depends(get_db)):
     sub = db.execute("SELECT * FROM submissions WHERE id = ?", (sid,)).fetchone()
     if not sub:
         raise HTTPException(404, "No such submission.")
+    if hit := autofill.exclusion(sub["name"], url=sub["website"] or ""):
+        raise HTTPException(409, f"{sub['name']} is excluded (matches “{hit}”): funds, publishers and the event's "
+                                 "partners are never rated as startups.")
     body = CompanyIn(name=sub["name"], sector=sub["sector"], one_liner=sub["one_liner"], claim_ask=sub["claim_ask"],
                      website=sub["website"], is_real=True, active=False)
+    cid = save_company(db, body, None, evidence_status="pending")
     db.execute("DELETE FROM submissions WHERE id = ?", (sid,))
-    return admin_company(db, service.get_company(db, save_company(db, body, None)))
+    db.commit()
+    return admin_company(db, service.get_company(db, cid))
 
 
 @app.delete("/api/admin/submissions/{sid}", dependencies=[Depends(require_admin)])
@@ -562,7 +518,8 @@ def admin_reject_submission(sid: int, db=Depends(get_db)):
 
 @app.get("/api/admin/users", dependencies=[Depends(require_admin)])
 def admin_users(db=Depends(get_db)):
-    return {"users": accounts.list_users(db), "guests": accounts.guest_count(db)}
+    return {"users": accounts.list_users(db), "guests": accounts.guest_count(db),
+            "guest_weight": config.GUEST_WEIGHT, "guest_max_share": config.GUEST_MAX_SHARE}
 
 
 @app.delete("/api/admin/users/{uid}", dependencies=[Depends(require_admin)])
@@ -649,20 +606,25 @@ def admin_pulse_all(body: PulseAll, db=Depends(get_db)):
 
 def candidate_out(row) -> dict:
     out = dict(row)
-    out["engine_hint"] = j(row["engine_hint"])
-    out["pulse"] = j(row["pulse"])
+    for key in ("engine_hint", "pulse", "screen", "card"):
+        out[key] = j(row[key])
+    out["card_error"] = row["card_error"] or ""
     return out
 
 
 class DiscoverIn(BaseModel):
-    sector: str = Field(min_length=2, max_length=60)
+    """A field, a country, or both: a country alone finds startups based there in any field."""
+    sector: str = Field("", max_length=60)
     country: str = Field("", max_length=40)
     limit: int = Field(8, ge=1, le=10)
 
 
 @app.post("/api/admin/discover/search", dependencies=[Depends(require_admin)])
 def admin_discover_search(body: DiscoverIn, db=Depends(get_db)):
-    rows = autofill.store_candidates(db, clean_text(body.sector), clean_text(body.country), body.limit)
+    sector, country = clean_text(body.sector), clean_text(body.country)
+    if len(sector) < 2 and len(country) < 2:
+        raise HTTPException(422, "Enter a field, a country, or both.")
+    rows = autofill.store_candidates(db, sector, country, body.limit)
     return [candidate_out(r) for r in rows]
 
 
@@ -691,11 +653,18 @@ class QueueIn(BaseModel):
 
 @app.post("/api/admin/discover/{cand_id}/queue", dependencies=[Depends(require_admin)])
 def admin_discover_queue(cand_id: int, body: QueueIn, db=Depends(get_db)):
+    """Queueing writes the game card straight away, so the startup arrives playable. If writing fails it's
+    still queued, marked as needing a manual pass."""
     row = get_candidate(db, cand_id)
     if row["status"] == "approved":
         raise HTTPException(409, "Already approved into companies.")
+    if hit := autofill.excluded(row):  # covers restoring a dismissed one too
+        raise HTTPException(409, f"{row['name']} is excluded (matches “{hit}”): funds, publishers and the event's "
+                                 "partners are never rated as startups.")
     db.execute("UPDATE candidates SET status = ? WHERE id = ?", ("queued" if body.queued else "new", cand_id))
     db.commit()
+    if body.queued:
+        autofill.write_candidate_card(db, get_candidate(db, cand_id))
     return candidate_out(get_candidate(db, cand_id))
 
 
@@ -705,8 +674,46 @@ def admin_discover_approve(cand_id: int, db=Depends(get_db)):
     row = get_candidate(db, cand_id)
     if row["status"] == "approved":
         raise HTTPException(409, "Already approved into companies.")
-    cid = autofill.approve_candidate(db, row)
+    if hit := autofill.excluded(row):
+        raise HTTPException(409, f"{row['name']} is excluded (matches “{hit}”): funds, publishers and the event's "
+                                 "partners are never rated as startups.")
+    if same := autofill.existing_company(db, row["name"]):  # a second click, or filed under another candidate
+        return admin_company(db, service.get_company(db, autofill.link(db, cand_id, same["id"])))
+    # The card queued earlier, or one written now. The host chose it, so it's kept even if writing fails or the
+    # AI doubts it: then the headline stands in as the pitch and it's marked for a manual pass.
+    card = autofill.write_candidate_card(db, row)
+    cid = autofill.approve_candidate(db, get_candidate(db, cand_id), card=card)
     return admin_company(db, service.get_company(db, cid))
+
+
+@app.post("/api/admin/companies/{cid}/rewrite", dependencies=[Depends(require_admin)])
+def admin_rewrite_card(cid: int, db=Depends(get_db)):
+    """Rewrite a real company's game card (emoji, sector, pitch, ask, facts) with AI from its headlines and site.
+
+    Leaves evidence and scores alone. If the AI thinks it isn't a startup, nothing changes and the reason
+    comes back so the host can decide.
+    """
+    comp = service.get_company(db, cid)
+    if not comp:
+        raise HTTPException(404, "No such company.")
+    if not pitch.available():
+        raise HTTPException(400, "Set OPENROUTER_API_KEY in .env to write cards with AI.")
+    cand = db.execute("SELECT * FROM candidates WHERE company_id = ?", (cid,)).fetchone()
+    try:
+        card = autofill.write_card(comp["name"], cand["sector_query"] if cand else comp["sector"],
+                                   cand["snippet"] if cand else "", j(comp["pulse"]), comp["website"] or "")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Card writer failed: {e}")
+    if card["is_startup"]:
+        note = comp["evidence_note"] or ""
+        if "Card text written by AI" not in note:
+            note = (note + " " + autofill.AI_NOTE.format(model=config.OPENROUTER_MODEL)).strip()
+        db.execute("UPDATE companies SET emoji = ?, sector = ?, one_liner = ?, claim_ask = ?, facts = ?, evidence_note = ?, "
+                   "card_status = 'ai' WHERE id = ?", (card["emoji"] or comp["emoji"], card["sector"] or comp["sector"], card["one_liner"],
+                                    card["claim_ask"], dumps(card["facts"]), note, cid))
+        db.commit()
+    return {"company": admin_company(db, service.get_company(db, cid)), "is_startup": card["is_startup"],
+            "reject_reason": card["reject_reason"]}
 
 
 @app.delete("/api/admin/discover/{cand_id}", dependencies=[Depends(require_admin)])
@@ -734,8 +741,11 @@ def mode_payload(db) -> dict:
     counts = db.execute(
         "SELECT SUM(is_real = 0) AS demo, SUM(is_real = 1 AND active = 1) AS live_active, "
         "SUM(is_real = 1 AND active = 0) AS live_pending FROM companies").fetchone()
+    cands = db.execute("SELECT SUM(status = 'new') AS new, SUM(status = 'queued') AS queued FROM candidates").fetchone()
     return {"mode": service.get_mode(db), "autofill": autofill.status(db), "discover": autofill.settings_payload(),
-            "counts": {k: counts[k] or 0 for k in ("demo", "live_active", "live_pending")}}
+            "counts": {k: counts[k] or 0 for k in ("demo", "live_active", "live_pending")},
+            "candidates": {"new": cands["new"] or 0, "queued": cands["queued"] or 0,
+                           "submissions": db.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]}}
 
 
 class ModeIn(BaseModel):
@@ -764,12 +774,15 @@ def admin_autofill(db=Depends(get_db)):
 class DiveIn(BaseModel):
     label: str = Field(min_length=1)
     company_ids: list[int] = Field(min_length=1)
-    mode: str = Field("daily", pattern="^(daily|live)$")
+    mode: str = Field("daily", pattern="^daily$")
     date: str | None = None
 
 
 @app.post("/api/admin/dives", dependencies=[Depends(require_admin)])
 def admin_create_dive(body: DiveIn, db=Depends(get_db)):
+    pool = service.get_mode(db)
+    if service.outside_pool(db, body.company_ids, pool):
+        raise HTTPException(409, f"A {pool} set can only hold {'real' if pool == 'live' else 'sample'} companies.")
     cid = db.execute("INSERT INTO dives (label, date, company_ids, mode, pool, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                      (body.label, body.date, dumps(body.company_ids), body.mode, service.get_mode(db), now())).lastrowid
     db.commit()
@@ -779,7 +792,6 @@ def admin_create_dive(body: DiveIn, db=Depends(get_db)):
 @app.delete("/api/admin/dives/{dive_id}", dependencies=[Depends(require_admin)])
 def admin_delete_dive(dive_id: int, db=Depends(get_db)):
     db.execute("DELETE FROM dives WHERE id = ?", (dive_id,))
-    db.execute("UPDATE live_state SET dive_id = NULL, card_index = -1, phase = 'idle' WHERE dive_id = ?", (dive_id,))
     db.commit()
     return {"ok": True}
 
@@ -830,7 +842,8 @@ def export_csv(db=Depends(get_db)):
                 *[f"engine_{a}" for a in AXES], "engine_composite",
                 "ocean_impact", "business_ready", "tech_trl", "investment_ready",
                 "thesis_apelago", "thesis_redstone",
-                "gap", "coverage", "flags", "top_action", "web_items", "web_lean", "verdict", "verdict_reason"])
+                "gap", "coverage", "evidence_review", "origin", "flags", "top_action", "web_items", "web_lean", "verdict",
+                "verdict_reason", "call", "call_reasons", "next_move", "next_steps"])
     blank = lambda v: "" if v is None else v
     for c in data["companies"]:
         cm = c["crowd"]["means"] or {}
@@ -842,9 +855,12 @@ def export_csv(db=Depends(get_db)):
                                          rd["investment"]["score"], th["apelago"]["score"], th["redstone"]["score"])],
                     "" if c["gap"] is None else c["gap"],
                     f"{c['coverage'].get('assessed', '')}/{c['coverage'].get('total', '')}",
+                    c["review"]["status"], c["origin"],
                     "; ".join(f["label"] for f in c["flags"]),
                     c["actions"][0]["name"] if c["actions"] else "",
                     c["pulse"]["items_total"] if c["pulse"] else "", c["pulse"]["lean"] if c["pulse"] else "",
-                    c["verdict"], c["verdict_reason"]])
+                    c["verdict"], c["verdict_reason"], c["call"]["label"], "; ".join(c["call"]["reasons"]),
+                    f"{c['next']['text']}: {c['next']['with']}" if c["next"] and c["next"]["with"] else "",
+                    "; ".join(f"{a['kind']}: {a['name']}" for a in c["actions"][:5])])
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": 'attachment; filename="insights.csv"'})

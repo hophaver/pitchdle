@@ -78,12 +78,12 @@ def test_admin_adds_company_it_scores_immediately(client, admin):
 
 
 def test_demo_votes_light_up_the_designed_cases(client, admin):
-    live_dive = next(d for d in client.get("/api/host/dives", auth=admin).json() if d["mode"] == "live")
-    client.post("/api/admin/demo-votes", json={"dive_id": live_dive["id"], "players": 30}, auth=admin)
+    final = next(d for d in client.get("/api/host/dives", auth=admin).json() if d["label"] == "JunctionX final")
+    client.post("/api/admin/demo-votes", json={"dive_id": final["id"], "players": 30}, auth=admin)
     by_name = {c["name"]: c for c in client.get("/api/host/overview", auth=admin).json()["companies"]}
     assert any(f["key"] == "story" for f in by_name["TideLedger"]["flags"])
     assert any(f["key"] == "substance" for f in by_name["Rakko Feed"]["flags"])
-    assert by_name["TideLedger"]["actions"][0]["kind"] in ("partner", "customer")
+    assert by_name["TideLedger"]["actions"][0]["kind"] in ("partner", "client")
     real_only = client.get("/api/host/overview?real_only=true", auth=admin).json()["companies"]
     assert all(c["crowd"]["n"] == 0 for c in real_only)
 
@@ -122,56 +122,14 @@ def test_csv_export_includes_readiness_and_thesis_columns(client, admin):
 
 
 def test_demo_votes_reorder_thesis_aware_actions(client, admin):
-    live_dive = next(d for d in client.get("/api/host/dives", auth=admin).json() if d["mode"] == "live")
-    client.post("/api/admin/demo-votes", json={"dive_id": live_dive["id"], "players": 30}, auth=admin)
+    final = next(d for d in client.get("/api/host/dives", auth=admin).json() if d["label"] == "JunctionX final")
+    client.post("/api/admin/demo-votes", json={"dive_id": final["id"], "players": 30}, auth=admin)
     by_name = {c["name"]: c for c in client.get("/api/host/overview", auth=admin).json()["companies"]}
     # Rakko Feed is strong on fundamentals -> its investor should be the top action, and it should
     # also carry a thesis fit that pushed it there.
     assert by_name["Rakko Feed"]["theses"]["redstone"]["score"] >= 3.8
     assert by_name["Rakko Feed"]["actions"][0]["kind"] == "investor"
     assert any("thesis" in b for b in by_name["Rakko Feed"]["actions"][0]["boosted"])
-
-
-def test_live_round(client, admin):
-    live_dive = next(d for d in client.get("/api/host/dives", auth=admin).json() if d["mode"] == "live")
-    dive_id = live_dive["id"]
-    phones = [new_player(client) for _ in range(3)]
-    post = lambda action: client.post("/api/host/live", json={"action": action, "dive_id": dive_id}, auth=admin)
-
-    assert post("start").json()["phase"] == "lobby"
-    assert post("open").json()["phase"] == "open"
-    states = [p.get("/api/live/state").json() for p in phones]
-    assert len({s["card"]["id"] for s in states}) == 1
-    cid = states[0]["card"]["id"]
-    for p in phones:
-        assert answer(p, dive_id, cid).status_code == 200
-    assert phones[0].get("/api/live/state").json()["voted"] is True
-    post("lock")
-    assert answer(new_player(client), dive_id, cid).status_code == 409  # too late
-    post("reveal")
-    wall = client.get("/api/live/wall").json()
-    assert wall["phase"] == "revealed" and wall["reveal"]["room"]["n"] == 3
-    # Phones only get results when the whole set is over.
-    assert phones[0].get(f"/api/dive/{dive_id}/results").status_code == 403
-    for _ in range(5):
-        st = post("next").json()
-    assert st["phase"] == "final"
-    assert len(client.get("/api/live/wall").json()["cards"]) == 5
-    r = phones[0].get(f"/api/dive/{dive_id}/results").json()
-    assert len(r["cards"]) == 1 and r["total"] == 5
-
-
-def test_live_timer_locks_voting(client, admin, monkeypatch):
-    live_dive = next(d for d in client.get("/api/host/dives", auth=admin).json() if d["mode"] == "live")
-    client.post("/api/host/live", json={"action": "start", "dive_id": live_dive["id"]}, auth=admin)
-    client.post("/api/host/live", json={"action": "open"}, auth=admin)
-    monkeypatch.setattr(config, "LIVE_SECONDS", -1)
-    assert client.get("/api/live/state").json()["phase"] == "locked"
-
-
-def test_qr_is_svg(client):
-    r = client.get("/qr?path=/live")
-    assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg")
 
 
 PITCH = {"name": "BrineWorks", "sector": "desalination",
@@ -262,7 +220,7 @@ def test_history_and_streak(client, admin):
     client.get("/api/me")
     assert client.get("/api/account/history").status_code == 401
     sign_up(client)
-    dives = [d for d in client.get("/api/host/dives", auth=admin).json() if d["mode"] == "daily"]
+    dives = [d for d in client.get("/api/host/dives", auth=admin).json() if d["date"]]
     for d in dives:  # #1, #2 and #3: three days running up to today
         for cid in d["company_ids"]:
             answer(client, d["id"], cid)

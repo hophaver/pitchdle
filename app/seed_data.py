@@ -330,7 +330,7 @@ DIVES = [
     ("#1", "daily", ["BrineWorks", "Fishfluencer", "FrostWatch", "GreenGlug", "Simpukka Farms"], 2),
     ("#2", "daily", ["Barnacle Buster", "Krakenomics", "ShipShape Routing", "WaveWhisper", "Rakko Feed"], 1),
     ("#3", "daily", ["TideLedger", "Rakko Feed", "SeaSpa Pods", "ShipShape Routing", "WaveWhisper"], 0),
-    ("JunctionX live", "live", ["TideLedger", "Fishfluencer", "Rakko Feed", "FrostWatch", "BrineWorks"], None),
+    ("JunctionX final", "daily", ["TideLedger", "Fishfluencer", "Rakko Feed", "FrostWatch", "BrineWorks"], None),
 ]
 
 DEMO_BIAS = {c["name"]: c["demo_bias"] for c in COMPANIES}
