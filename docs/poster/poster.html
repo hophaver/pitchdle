@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pitchdle poster</title>
+<!-- Three A4 pages in the app's own look (static/css/app.css): warm paper, bold cards, Helvetica + Caveat.
+     Render: see render.sh next to this file. Numbers come from README.md and the demo data. -->
+<style>
+  @font-face { font-family: "Caveat"; src: url("caveat-700.woff2") format("woff2"); font-weight: 700; }
+  :root {
+    --page: #e9e6de; --paper: #f5f3ec; --white: #fff; --ink: #141414; --muted: #6d6a63; --line: #d9d5ca;
+    --yellow: #f4d53b; --orange: #ef6a45; --blue: #4e6bff; --green: #1f4d3a; --navy: #2a2e96; --plum: #8a3b8f;
+    --good: #1f6b46; --good-bg: #e3f1e8; --bad: #b42d17; --bad-bg: #fbe5df; --warn: #8a6200; --warn-bg: #fbf0cc;
+    --soft: rgba(255, 255, 255, .18); --soft-2: rgba(255, 255, 255, .32);
+    --sans: Helvetica, "Nimbus Sans", Arial, sans-serif; --hand: "Caveat", "Bradley Hand", cursive;
+  }
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { margin: 0; background: #cfcbc1; font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; line-height: 1.35; }
+  h1, h2, h3, p { margin: 0; }
+  .page { width: 210mm; height: 297mm; margin: 0 auto 10mm; padding: 11mm 12mm 9mm; background: var(--page); overflow: hidden;
+    display: flex; flex-direction: column; gap: 4.3mm; break-after: page; }
+  .page:last-child { break-after: auto; }
+  @media print { body { background: var(--page); } .page { margin: 0; } }
+
+  .hand { font-family: var(--hand); font-weight: 700; color: var(--yellow); letter-spacing: 0; }
+  .caps { text-transform: uppercase; letter-spacing: .14em; font-size: 9.5px; font-weight: 700; }
+  .muted { color: var(--muted); }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .spacer { flex: 1; }
+
+  /* top of every page */
+  .top { display: flex; align-items: baseline; gap: 10px; padding-bottom: 3mm; border-bottom: 1px solid var(--line); }
+  .brand { font-weight: 800; font-size: 19px; letter-spacing: -.02em; display: flex; align-items: center; gap: 7px; }
+  .brand i { width: 13px; height: 13px; border-radius: 3px; background: var(--orange); display: inline-block; }
+  .top .caps { color: var(--muted); }
+  .page-title { font-size: 34px; font-weight: 800; letter-spacing: -.03em; line-height: 1; }
+  .page-title .hand { color: var(--orange); font-size: 44px; }
+
+  /* the game's bold card */
+  .card { --card: var(--orange); background: var(--card); color: #fff; border-radius: 26px; padding: 20px 22px;
+    box-shadow: 0 14px 30px -18px rgba(0, 0, 0, .4); position: relative; }
+  .card .caps { opacity: .85; }
+  .art { width: 74px; height: 80px; background: #fff; border-radius: 9px; display: flex; align-items: center; justify-content: center;
+    font-size: 40px; transform: rotate(4deg); box-shadow: 0 10px 18px -10px rgba(0, 0, 0, .45); flex: none; }
+  .pitch-line { font-size: 21px; font-weight: 800; line-height: 1.1; letter-spacing: -.02em; }
+  .ask { font-family: var(--hand); color: var(--yellow); font-size: 23px; line-height: 1.05; font-weight: 700; }
+  .who { font-weight: 700; opacity: .85; font-size: 12px; }
+
+  /* the tool pages' white panels */
+  .panel { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+  .panel h3, .label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; }
+  .chip { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 6px; background: var(--paper); border: 1px solid var(--line);
+    font-size: 10.5px; font-weight: 700; white-space: nowrap; }
+  .badge { display: inline-flex; padding: 2px 8px; border-radius: 6px; font-size: 10.5px; font-weight: 700; }
+  .badge.back { background: var(--good-bg); color: var(--good); }
+  .badge.avoid { background: var(--bad-bg); color: var(--bad); }
+  .badge.watch { background: var(--warn-bg); color: var(--warn); }
+
+  /* page 1 ------------------------------------------------------------------------------------------------ */
+  .hero { display: grid; grid-template-columns: 1fr auto; gap: 16px; padding: 26px 28px 26px; }
+  .hero h1 { font-size: 58px; font-weight: 800; line-height: .95; letter-spacing: -.035em; }
+  .hero h1 .hand { font-size: 74px; display: inline-block; transform: translateY(4px); }
+  .hero .lead { margin-top: 16px; font-size: 16px; line-height: 1.4; max-width: 46ch; }
+  .hero .art { width: 104px; height: 112px; font-size: 56px; margin-top: 6px; }
+  .brief { padding: 14px 18px 10px; }
+  .q { display: grid; grid-template-columns: 22px 1fr 1.25fr; gap: 12px; align-items: baseline; padding: 5px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+  .q:first-of-type { border-top: 0; padding-top: 2px; }
+  .q b.n { font-size: 15px; color: var(--orange); }
+  .q span:last-child { color: #333; }
+  .q span:last-child::before { content: "→ "; color: var(--orange); font-weight: 700; }
+  .vs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .vs .card { padding: 16px 18px; display: flex; flex-direction: column; gap: 7px; }
+  .vs .pitch-line { font-size: 16.5px; }
+  .vs .ask { font-size: 19px; }
+  .track { position: relative; height: 34px; margin: 6px 4px 0; }
+  .track::before { content: ""; position: absolute; left: 0; right: 0; top: 16px; border-top: 2px solid var(--soft-2); }
+  .track .tick { position: absolute; top: 24px; transform: translateX(-50%); font-size: 9px; font-weight: 700; opacity: .7; }
+  .track .dot { position: absolute; top: 17px; width: 15px; height: 15px; border-radius: 50%; transform: translate(-50%, -50%);
+    box-shadow: 0 0 0 2px var(--card); }
+  .track .dot.crowd { background: #fff; }
+  .track .dot.engine { background: var(--yellow); }
+  .track .span { position: absolute; top: 15px; height: 4px; background: var(--soft-2); }
+  .legend { display: flex; gap: 12px; font-size: 10.5px; font-weight: 700; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+  .verdict { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; }
+  .verdict .hand { font-size: 22px; line-height: 1; }
+  .verdict .badge { background: #fff; }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .step { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; font-size: 11.5px; line-height: 1.4; }
+  .step b.big { display: block; font-size: 17px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 3px; }
+  .step .num { font-family: var(--hand); color: var(--orange); font-size: 24px; line-height: .8; margin-right: 4px; }
+  .note { font-size: 10px; color: var(--muted); }
+
+  /* page 2 ------------------------------------------------------------------------------------------------ */
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .section-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  .section-head .hand { color: var(--orange); font-size: 26px; line-height: .8; }
+  .section-head b { font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
+  .copy { font-size: 11.5px; line-height: 1.45; color: #2b2b2b; }
+  .copy p + p { margin-top: 5px; }
+  .game-card { padding: 16px 18px 18px; }
+  .game-card .top-row { display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; margin-bottom: 10px; }
+  .pips { display: flex; gap: 4px; align-items: center; }
+  .pips i { width: 6px; height: 6px; border-radius: 50%; background: var(--soft-2); }
+  .pips i.on { background: #fff; }
+  .game-card .head { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+  .game-card .pitch-line { font-size: 17px; margin-top: 4px; }
+  .game-card .art { width: 54px; height: 58px; font-size: 30px; }
+  .game-card .ask { font-size: 19px; margin-top: 7px; }
+  .is-this { font-family: var(--hand); color: var(--yellow); font-size: 23px; line-height: 1; margin-top: 10px; }
+  .axis { margin-top: 4px; }
+  .axis .caps { font-size: 8.5px; margin-bottom: 3px; }
+  .taps { display: grid; grid-template-columns: repeat(6, 28px); justify-content: space-between; }
+  .taps i { aspect-ratio: 1; border-radius: 50%; background: var(--soft); display: flex; align-items: center; justify-content: center;
+    font-style: normal; font-weight: 800; font-size: 12px; }
+  .taps i.on { background: #fff; color: var(--card); }
+  .pill { margin-top: 12px; height: 34px; border-radius: 999px; background: #fff; color: var(--card); display: flex; align-items: center;
+    justify-content: center; font-size: 11px; font-weight: 700; letter-spacing: .18em; }
+  .weights { margin-top: 8px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .weights div { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px; font-size: 10px; color: var(--muted); }
+  .weights b { display: block; color: var(--ink); font-size: 18px; font-weight: 800; }
+  .reviews { --card: var(--navy); padding: 15px 16px 14px; }
+  .reviews .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .reviews .head b { font-size: 16px; font-weight: 800; }
+  .op-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+  .op { background: rgba(0, 0, 0, .18); border-radius: 12px; padding: 7px 7px 5px; }
+  .op.crowd { background: #fff; color: var(--ink); --bar: var(--navy); --rule: var(--line); }
+  .op figcaption { font-size: 10.5px; font-weight: 800; }
+  .op figcaption small { display: block; font-weight: 400; font-size: 8.5px; opacity: .8; }
+  .opc { --bar: #fff; --rule: var(--soft-2); }
+  .op.crowd .opc { --bar: var(--navy); --rule: var(--line); }
+  .opc-plot { display: grid; grid-template-columns: repeat(4, 1fr); height: 50px; padding-top: 12px; border-bottom: 1px solid var(--rule); }
+  .opc-col { position: relative; }
+  .opc-col i { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: 13px; height: calc(var(--v) * 100%);
+    background: var(--bar); border-radius: 3px 3px 0 0; }
+  .opc-col em { position: absolute; left: 0; right: 0; bottom: calc(var(--v) * 100% + 1px); text-align: center; font-style: normal;
+    font-size: 8.5px; font-weight: 800; }
+  .opc-x { display: grid; grid-template-columns: repeat(4, 1fr); text-align: center; font-size: 8px; font-weight: 700; opacity: .8; margin-top: 2px; }
+  .reviews .note { color: #fff; opacity: .75; margin-top: 8px; }
+  .sources { margin: 8px 0 0; padding: 0; list-style: none; font-size: 11.5px; line-height: 1.4; }
+  .sources li { padding: 5px 0; border-top: 1px solid var(--line); }
+  .sources li:first-child { border-top: 0; }
+  .radar { display: grid; grid-template-columns: 1fr 1.08fr; gap: 14px; align-items: start; }
+  .dash { border: 1px solid var(--line); border-radius: 12px; padding: 12px 13px; background: #fff; }
+  .dash .name { display: flex; align-items: center; gap: 8px; }
+  .dash .name b { font-size: 16px; font-weight: 700; }
+  .dash .sector { font-size: 10.5px; color: var(--muted); margin-top: 3px; }
+  .dash .pitch { font-size: 12px; margin-top: 6px; line-height: 1.35; }
+  .dash .askline { font-size: 10.5px; color: var(--muted); margin-top: 5px; }
+  .dash .chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 7px; }
+  .nupi { display: grid; grid-template-columns: repeat(4, 1fr) 1.15fr; gap: 6px; align-items: center; margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line); text-align: center; }
+  .nupi small { display: block; font-size: 8px; font-weight: 700; color: var(--muted); }
+  .nupi b { display: block; font-size: 15px; font-weight: 700; }
+  .nupi .bar { height: 3px; background: var(--line); border-radius: 2px; margin: 4px auto 0; width: 26px; position: relative; overflow: hidden; }
+  .nupi .bar::after { content: ""; position: absolute; inset: 0 auto 0 0; width: calc(var(--v) * 100%); background: var(--ink); }
+  .nupi .avg { border: 2px solid var(--ink); border-radius: 9px; padding: 4px 0 5px; background: var(--paper); }
+  .gap-tag { display: inline-block; margin-top: 8px; padding: 2px 8px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); font-size: 10px; font-weight: 700; }
+  .next { font-size: 11px; margin-top: 7px; }
+  .meters { display: grid; gap: 6px; }
+  .meter { display: grid; grid-template-columns: 118px 1fr 34px; gap: 8px; align-items: center; font-size: 10.5px; }
+  .meter .track2 { height: 7px; border-radius: 4px; background: #dfe1f5; position: relative; overflow: hidden; }
+  .meter .track2::after { content: ""; position: absolute; inset: 0 auto 0 0; width: calc(var(--v) * 100%); background: var(--navy); border-radius: 4px; }
+  .meter b { text-align: right; font-size: 11.5px; }
+  .chips-row { display: flex; flex-wrap: wrap; gap: 5px; }
+
+  /* page 3 ------------------------------------------------------------------------------------------------ */
+  .pipeline { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .pipe { --card: var(--blue); background: var(--card); color: #fff; border-radius: 16px; padding: 11px 11px 12px; font-size: 10.5px; line-height: 1.38; position: relative; }
+  .pipe:nth-child(2) { --card: var(--green); }
+  .pipe:nth-child(3) { --card: var(--navy); }
+  .pipe:nth-child(4) { --card: var(--plum); }
+  .pipe:nth-child(5) { --card: var(--orange); }
+  .pipe b { display: block; font-size: 15px; font-weight: 800; letter-spacing: -.01em; margin-bottom: 4px; }
+  .pipe .hand { font-size: 22px; line-height: .8; }
+  .pipe:not(:last-child)::after { content: "›"; position: absolute; right: -8px; top: 12px; width: 12px; text-align: center; color: var(--muted); font-weight: 800; font-size: 16px; }
+  .honest { --card: var(--green); padding: 16px 18px; }
+  .honest h3 { color: #fff; opacity: .85; }
+  .checks { margin: 0; padding: 0; list-style: none; font-size: 11px; line-height: 1.35; }
+  .checks li { display: grid; grid-template-columns: 16px 1fr; gap: 6px; padding: 4px 0; border-top: 1px solid var(--soft); }
+  .checks li:first-child { border-top: 0; padding-top: 0; }
+  .checks li::before { content: "✓"; font-weight: 800; color: var(--yellow); }
+  .facts-list { margin: 0; padding: 0; list-style: none; font-size: 11px; line-height: 1.35; }
+  .facts-list li { padding: 4px 0; border-top: 1px solid var(--line); }
+  .facts-list li:first-child { border-top: 0; padding-top: 0; }
+  .facts-list b { font-weight: 800; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .kpi { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; }
+  .kpi .label { margin-bottom: 2px; font-size: 8.5px; }
+  .kpi .value { font-size: 24px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; }
+  .kpi .sub { font-size: 9.5px; color: var(--muted); }
+  .closing { --card: var(--orange); padding: 15px 26px 16px; text-align: center; }
+  .closing .hand { font-size: 34px; line-height: 1; display: block; }
+  .closing p { font-size: 13.5px; margin: 6px auto 0; max-width: 60ch; line-height: 1.4; }
+  .foot { margin-top: auto; display: flex; gap: 10px; font-size: 9.5px; color: var(--muted); padding-top: 3mm; border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+
+<!-- 1 · the idea ------------------------------------------------------------------------------------------ -->
+<section class="page">
+  <div class="top"><span class="brand"><i></i>Pitchdle</span><span class="spacer"></span>
+    <span class="caps">JunctionX Turku · Redstone × A'Pelago challenge</span></div>
+
+  <div class="card hero">
+    <div>
+      <div class="caps">An ocean opportunity radar</div>
+      <h1 style="margin-top:12px">Would you <span class="hand">back</span><br>this?</h1>
+      <p class="lead">Pitchdle tells funds and accelerators which ocean startups to back, watch or avoid, why, and who
+        they should talk to next. A daily pitch game adds what the crowd makes of every pitch.</p>
+    </div>
+    <div class="art" aria-hidden="true">🌊</div>
+  </div>
+
+  <div class="panel brief">
+    <h3>The challenge asks five questions. Pitchdle answers each one.</h3>
+    <div class="q"><b class="n">1</b><b>Which startups are most promising?</b><span>A call for every startup: Back, Watch or Avoid</span></div>
+    <div class="q"><b class="n">2</b><b>Why, and do they fit the thesis?</b><span>Fit with the A'Pelago accelerator and Redstone investment theses, with the reasons</span></div>
+    <div class="q"><b class="n">3</b><b>How ready are they?</b><span>Four readiness levels: ocean impact, business, technology (TRL), investment</span></div>
+    <div class="q"><b class="n">4</b><b>Who should they talk to next?</b><span>Investors, grants, partners and clients, matched and ranked</span></div>
+    <div class="q"><b class="n">5</b><b>What should happen next?</b><span>One next move, aimed at the weakest readiness level</span></div>
+  </div>
+
+  <div>
+    <div class="section-head"><span class="hand">Perception</span><b>vs reality: the gap is the signal</b></div>
+    <div class="vs">
+      <div class="card" style="--card: var(--blue)">
+        <div class="caps">Ocean plastics · TideLedger</div>
+        <p class="pitch-line">Pick up a bottle on the beach, scan it, earn a token.</p>
+        <p class="ask">€3M to launch in 40 countries</p>
+        <div class="track">
+          <i class="span" style="left: 34%; width: 34%"></i>
+          <i class="dot engine" style="left: 34%"></i><i class="dot crowd" style="left: 68%"></i>
+          <span class="tick" style="left:0">0</span><span class="tick" style="left:100%">5</span>
+        </div>
+        <div class="legend"><span><i style="background:#fff"></i>Crowd 3.4</span><span><i style="background:var(--yellow)"></i>Evidence 1.7</span></div>
+        <div class="verdict"><span class="hand">The pitch outsells the evidence</span><span class="spacer"></span><span class="badge avoid">Avoid</span></div>
+      </div>
+      <div class="card" style="--card: var(--green)">
+        <div class="caps">Aquaculture &amp; feed · Rakko Feed</div>
+        <p class="pitch-line">Dried Baltic seaweed in cow feed. The cows burp less methane.</p>
+        <p class="ask">€800k to double its drying plant</p>
+        <div class="track">
+          <i class="span" style="left: 52%; width: 28%"></i>
+          <i class="dot crowd" style="left: 52%"></i><i class="dot engine" style="left: 80%"></i>
+          <span class="tick" style="left:0">0</span><span class="tick" style="left:100%">5</span>
+        </div>
+        <div class="legend"><span><i style="background:#fff"></i>Crowd 2.6</span><span><i style="background:var(--yellow)"></i>Evidence 4.0</span></div>
+        <div class="verdict"><span class="hand">Stronger than its pitch</span><span class="spacer"></span><span class="badge back">Back</span></div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:6px">The two designed demo cases: fictional startups, read by 30 demo players and scored by the evidence engine.</p>
+  </div>
+
+  <div class="steps">
+    <div class="step"><b class="big"><span class="num">1</span>Find</b>Real ocean startups from open news feeds, screened by AI for field and country.</div>
+    <div class="step"><b class="big"><span class="num">2</span>Read</b>The evidence, the crowd, A'Pelago, three AI models and social media, all on the same four calls.</div>
+    <div class="step"><b class="big"><span class="num">3</span>Decide</b>A call, the readiness levels, thesis fit, and who to call next.</div>
+  </div>
+</section>
+
+<!-- 2 · how it works --------------------------------------------------------------------------------------- -->
+<section class="page">
+  <div class="top"><span class="brand"><i></i>Pitchdle</span><span class="spacer"></span><span class="caps">How it works</span></div>
+  <h2 class="page-title">One startup, <span class="hand">read</span> from every side</h2>
+
+  <div class="two">
+    <div>
+      <div class="section-head"><span class="hand">1</span><b>The game</b></div>
+      <div class="card game-card">
+        <div class="top-row"><span>Log in</span><span class="pips"><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span>No. 3</span></div>
+        <div class="head">
+          <div><div class="caps">Aquaculture &amp; feed</div><p class="pitch-line">Dried Baltic seaweed in cow feed. The cows burp less methane.</p></div>
+          <div class="art" aria-hidden="true">🐄</div>
+        </div>
+        <p class="ask">€800k to double its drying plant</p>
+        <div class="who" style="margin-top:5px">— Rakko Feed</div>
+        <div class="is-this">Is this…</div>
+        <div class="axis"><div class="caps">Novel</div><div class="taps"><i>0</i><i>1</i><i class="on">2</i><i>3</i><i>4</i><i>5</i></div></div>
+        <div class="axis"><div class="caps">Useful</div><div class="taps"><i>0</i><i>1</i><i>2</i><i>3</i><i class="on">4</i><i>5</i></div></div>
+        <div class="axis"><div class="caps">Plausible</div><div class="taps"><i>0</i><i>1</i><i>2</i><i>3</i><i class="on">4</i><i>5</i></div></div>
+        <div class="axis"><div class="caps">Investable</div><div class="taps"><i>0</i><i>1</i><i>2</i><i class="on">3</i><i>4</i><i>5</i></div></div>
+        <div class="pill">LOCK IT IN ↵</div>
+      </div>
+      <p class="copy" style="margin-top:8px">Five startups a day, the same for everyone: read the pitch, make four final calls
+        from 0 to 5, then see your read next to everyone else's. Investors see the full card first, with every review.</p>
+    </div>
+
+    <div>
+      <div class="section-head"><span class="hand">2</span><b>The reviews</b></div>
+      <div class="card reviews">
+        <div class="head"><b>TideLedger</b><span class="spacer"></span><span class="caps">Novel · Useful · Plausible · Investable</span></div>
+        <div class="op-grid">
+          <figure class="op crowd" style="margin:0"><figcaption>Everyone<small>30 answers</small></figcaption>
+            <div class="opc"><div class="opc-plot">
+              <span class="opc-col" style="--v:.74"><i></i><em>3.7</em></span><span class="opc-col" style="--v:.8"><i></i><em>4</em></span>
+              <span class="opc-col" style="--v:.58"><i></i><em>2.9</em></span><span class="opc-col" style="--v:.64"><i></i><em>3.2</em></span>
+            </div><div class="opc-x"><span>N</span><span>U</span><span>P</span><span>I</span></div></div></figure>
+          <figure class="op" style="margin:0"><figcaption>A'Pelago<small>2 reviewers</small></figcaption>
+            <div class="opc"><div class="opc-plot">
+              <span class="opc-col" style="--v:.6"><i></i><em>3</em></span><span class="opc-col" style="--v:.7"><i></i><em>3.5</em></span>
+              <span class="opc-col" style="--v:.2"><i></i><em>1</em></span><span class="opc-col" style="--v:.2"><i></i><em>1</em></span>
+            </div><div class="opc-x"><span>N</span><span>U</span><span>P</span><span>I</span></div></div></figure>
+          <figure class="op" style="margin:0"><figcaption>Claude<small>AI model</small></figcaption>
+            <div class="opc"><div class="opc-plot">
+              <span class="opc-col" style="--v:.5"><i></i><em>2.5</em></span><span class="opc-col" style="--v:.6"><i></i><em>3</em></span>
+              <span class="opc-col" style="--v:.2"><i></i><em>1</em></span><span class="opc-col" style="--v:.2"><i></i><em>1</em></span>
+            </div><div class="opc-x"><span>N</span><span>U</span><span>P</span><span>I</span></div></div></figure>
+          <figure class="op" style="margin:0"><figcaption>GPT<small>AI model</small></figcaption>
+            <div class="opc"><div class="opc-plot">
+              <span class="opc-col" style="--v:.6"><i></i><em>3</em></span><span class="opc-col" style="--v:.7"><i></i><em>3.5</em></span>
+              <span class="opc-col" style="--v:.3"><i></i><em>1.5</em></span><span class="opc-col" style="--v:.2"><i></i><em>1</em></span>
+            </div><div class="opc-x"><span>N</span><span>U</span><span>P</span><span>I</span></div></div></figure>
+          <figure class="op" style="margin:0"><figcaption>Grok<small>AI model</small></figcaption>
+            <div class="opc"><div class="opc-plot">
+              <span class="opc-col" style="--v:.7"><i></i><em>3.5</em></span><span class="opc-col" style="--v:.6"><i></i><em>3</em></span>
+              <span class="opc-col" style="--v:.4"><i></i><em>2</em></span><span class="opc-col" style="--v:.3"><i></i><em>1.5</em></span>
+            </div><div class="opc-x"><span>N</span><span>U</span><span>P</span><span>I</span></div></div></figure>
+          <figure class="op" style="margin:0"><figcaption>X<small>4 posts</small></figcaption>
+            <div class="opc"><div class="opc-plot">
+              <span class="opc-col" style="--v:.6"><i></i><em>3</em></span><span class="opc-col" style="--v:.5"><i></i><em>2.5</em></span>
+              <span class="opc-col" style="--v:.3"><i></i><em>1.5</em></span><span class="opc-col" style="--v:.2"><i></i><em>1</em></span>
+            </div><div class="opc-x"><span>N</span><span>U</span><span>P</span><span>I</span></div></div></figure>
+        </div>
+        <p class="note">A fictional demo startup. The crowd's scores are from the demo; the others are example scores to show the layout.</p>
+      </div>
+      <ul class="sources">
+        <li><b>The crowd:</b> everyone's answers, weighted by who gave them.</li>
+        <li><b>A'Pelago:</b> the average of its own representatives' evaluations.</li>
+        <li><b>AI models:</b> Claude, GPT and Grok each rate the startup's profile.</li>
+        <li><b>Social media:</b> what people say on X, Threads, LinkedIn, Reddit and Bluesky. Only posts the model actually cited count.</li>
+        <li>All on the same four calls, so they compare at a glance; they run by themselves as soon as a startup is added.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div>
+    <div class="section-head"><span class="hand">3</span><b>The radar</b><span class="muted" style="font-size:11px">: the dashboard funds and accelerators work from</span></div>
+    <div class="panel radar">
+      <div class="dash">
+        <div class="name"><b>Rakko Feed</b><span class="spacer"></span><span class="badge back">Back</span></div>
+        <div class="sector">aquaculture &amp; feed</div>
+        <p class="pitch">Dried Baltic seaweed in cow feed. The cows burp less methane.</p>
+        <p class="askline">€800k to double its drying plant</p>
+        <div class="chips"><span class="chip">€650k raised</span><span class="chip">Seed</span><span class="chip">2 investors</span></div>
+        <div class="nupi">
+          <div><small>N</small><b>2.5</b><div class="bar" style="--v:.5"></div></div>
+          <div><small>U</small><b>2.9</b><div class="bar" style="--v:.58"></div></div>
+          <div><small>P</small><b>2.6</b><div class="bar" style="--v:.52"></div></div>
+          <div><small>I</small><b>2.6</b><div class="bar" style="--v:.52"></div></div>
+          <div class="avg"><small>AVG</small><b>2.7</b></div>
+        </div>
+        <span class="gap-tag">Gap 1.4 · evidence &gt; crowd</span>
+        <p class="next"><b>Next:</b> Raise the next round with Redstone</p>
+      </div>
+      <div>
+        <div class="label">Readiness</div>
+        <div class="meters">
+          <div class="meter"><span>Ocean impact</span><span class="track2" style="--v:.9"></span><b>4.5</b></div>
+          <div class="meter"><span>Business (BRL)</span><span class="track2" style="--v:.88"></span><b>4.4</b></div>
+          <div class="meter"><span>Technology (TRL 8)</span><span class="track2" style="--v:.88"></span><b>4.4</b></div>
+          <div class="meter"><span>Investment</span><span class="track2" style="--v:.8"></span><b>4.0</b></div>
+        </div>
+        <div class="label" style="margin-top:10px">Thesis fit</div>
+        <div class="meters">
+          <div class="meter"><span>Redstone investment</span><span class="track2" style="--v:.82"></span><b>4.1</b></div>
+          <div class="meter"><span>A'Pelago accelerator</span><span class="track2" style="--v:.68"></span><b>3.4</b></div>
+        </div>
+        <div class="label" style="margin-top:10px">Next steps, ranked</div>
+        <div class="chips-row"><span class="chip">1 Redstone</span><span class="chip">2 Aqua-Spark</span><span class="chip">3 Hatch Blue</span>
+          <span class="chip">4 Katapult Ocean</span><span class="chip">5 EU BlueInvest</span></div>
+      </div>
+    </div>
+    <p class="copy" style="margin-top:6px"><b>Back</b> at a thesis fit of 3.5 or more, <b>Avoid</b> under 2.5, <b>Watch</b> between, and softened
+      to Watch when the crowd overrates the pitch or the evidence isn't confirmed. Next steps come from a landscape of real
+      investors, grants, partners and clients, matched on sector, tech stage and region.</p>
+  </div>
+</section>
+
+<!-- 3 · under the hood ------------------------------------------------------------------------------------- -->
+<section class="page">
+  <div class="top"><span class="brand"><i></i>Pitchdle</span><span class="spacer"></span><span class="caps">Under the hood</span></div>
+  <h2 class="page-title">From a headline <span class="hand">to a call</span></h2>
+
+  <div class="pipeline">
+    <div class="pipe"><span class="hand">1</span><b>Find</b>Live mode searches Hacker News and Google News by field and country. An AI screen keeps only real startups and files the rest with the reason.</div>
+    <div class="pipe"><span class="hand">2</span><b>Fill</b>Each tracked startup's money raised, investors, stages, vision and evidence are filled from its website and news, only from what the sources say.</div>
+    <div class="pipe"><span class="hand">3</span><b>Check</b>One small AI call checks the card players will see: an operating startup, a pitch that says what it does, nothing misleading.</div>
+    <div class="pipe"><span class="hand">4</span><b>Review</b>Players rate it in the daily game; A'Pelago, Claude, GPT, Grok and social media review it on the same four calls.</div>
+    <div class="pipe"><span class="hand">5</span><b>Decide</b>The radar gives the call, the readiness levels, thesis fit, ranked next steps and the next move.</div>
+  </div>
+
+  <div class="two">
+    <div class="card honest">
+      <h3 class="label">Honest by design</h3>
+      <ul class="checks">
+        <li>Unknown stays unknown: scores use only evidenced factors, and every startup shows its coverage.</li>
+        <li>Tech readiness comes from pilots and deployments, never from a startup's own claim.</li>
+        <li>Evidence estimated by AI is marked as such, and a startup is never called Back until the host confirms it.</li>
+        <li>A social media read only counts posts the model actually cited on that platform.</li>
+        <li>Investors are vetted by moderators, and guests can never outvote members.</li>
+        <li>The game never waits on the web or on an AI model.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Measured against the evidence</h3>
+      <ul class="facts-list">
+        <li><b>Ocean Impact</b>: measurability, problem pressure, solution potential.</li>
+        <li><b>Business Readiness (KTH BRL)</b>: market, value proposition, business model, scalability.</li>
+        <li><b>Technology Readiness</b>: TRL 1–9, from evidence.</li>
+        <li><b>Investment</b>: Redstone's ten factors, from team and market to financials and deal dynamics.</li>
+        <li>The engine maps them onto the players' four calls, so crowd and evidence meet on one scale.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="label">Every opinion on</div><div class="value">4 calls</div><div class="sub">Novel, Useful, Plausible, Investable, 0–5</div></div>
+    <div class="kpi"><div class="label">Reviews of a real startup</div><div class="value">10</div><div class="sub">crowd, A'Pelago, 3 AI models, 5 platforms</div></div>
+    <div class="kpi"><div class="label">Readiness levels</div><div class="value">4</div><div class="sub">plus two theses: A'Pelago, Redstone</div></div>
+    <div class="kpi"><div class="label">Automated tests</div><div class="value">242</div><div class="sub">no network needed</div></div>
+  </div>
+
+  <div>
+    <div class="label">How much an answer counts</div>
+    <div class="weights" style="margin-top:0">
+      <div><b>×0.5</b>Guest. All guests together count for at most 40% of a card</div>
+      <div><b>×1</b>Player. Signs up and plays at once</div>
+      <div><b>×2</b>Investor. Approved by a moderator first</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Built to run anywhere</h3>
+    <div class="copy">Python, FastAPI and one SQLite file; plain HTML, CSS and JavaScript with no build step. One command runs it on a
+      laptop, any phone plays it with nothing to install, and one OpenRouter key runs every AI task.</div>
+  </div>
+
+  <div class="card closing">
+    <span class="hand">Crowd-sourced venture intelligence</span>
+    <p>We measure perception against reality at scale, and tell funds and accelerators where the gap is and who to call next.</p>
+  </div>
+
+  <div class="foot"><span>Pitchdle</span><span>·</span><span>Built at JunctionX Turku for the Redstone × A'Pelago blue-economy challenge</span>
+    <span class="spacer"></span><span>Sample startups shown are fictional</span></div>
+</section>
+
+</body>
+</html>
