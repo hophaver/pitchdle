@@ -158,6 +158,12 @@ def moderate_page():
     return page("moderate.html")
 
 
+# Review: A'Pelago's own read of each startup, on the moderation page's code.
+@app.get("/review", include_in_schema=False, dependencies=[Depends(require_moderator)])
+def review_page():
+    return page("moderate.html")
+
+
 # --- player API ------------------------------------------------------------------------------------
 
 @app.get("/api/me")

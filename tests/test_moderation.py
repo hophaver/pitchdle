@@ -109,6 +109,8 @@ def test_moderation_needs_a_moderator_account_or_the_admin(client, admin, modera
     r = client.get("/api/mod/users", auth=moderator)
     assert r.status_code == 200 and r.json()["viewer"] == {"name": "mira", "admin": False}
     assert client.get("/moderate", auth=moderator).status_code == 200
+    assert client.get("/review").status_code == 401
+    assert client.get("/review", auth=moderator).status_code == 200
     r = client.get("/api/mod/users", auth=admin)  # admins get in with the admin password, any username
     assert r.status_code == 200 and r.json()["viewer"] == {"name": "admin", "admin": True}
     assert client.get("/admin", auth=moderator).status_code == 401  # moderators don't get the host tools

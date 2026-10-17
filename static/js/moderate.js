@@ -4,7 +4,7 @@
 // Both also give A'Pelago's own read of each startup, as its representatives.
 const { h, api, post, fmt1, ROLES, AXES, AXIS } = PD;
 const $app = document.getElementById("app");
-const state = { view: "people", tab: null, open: new Set(), sort: { key: "joined", dir: -1 }, kind: "all",
+const state = { view: location.pathname === "/review" ? "startups" : "people", tab: null, open: new Set(), sort: { key: "joined", dir: -1 }, kind: "all",
   drafts: {} }; // drafts: evaluations being filled in, by company id, so a refresh never loses them
 let data = null; // people: /api/mod/users
 let startups = null; // /api/mod/evaluations
@@ -342,14 +342,8 @@ function evaluationCard(c, i) {
 
 function startupsView() {
   const list = [...startups.companies].sort((a, b) => !!a.mine - !!b.mine); // yours to do first
-  return h("section", { class: "evals" },
-    h("div", { class: "panel-head" }, h("h2", {}, "A'Pelago's read"), h("span", { class: "spacer" }),
-      startups.mode === "live" ? null : h("span", { class: "chip" }, "Sample startups (demo mode)")),
-    h("p", { class: "muted small", style: { marginTop: 0 } },
-      "Rate each startup as an A'Pelago representative, not as a player. Players see the average of every ",
-      "representative's read next to their own, after answering; you see it once you've given yours. Comments stay with the team."),
-    list.length ? h("div", { class: "eval-list" }, list.map(evaluationCard))
-      : h("p", { class: "muted", style: { margin: 0 } }, "No startups in this mode yet."));
+  return list.length ? h("div", { class: "eval-list" }, list.map(evaluationCard))
+    : h("p", { class: "muted", style: { margin: 0 } }, "No startups in this mode yet.");
 }
 
 // --- page -----------------------------------------------------------------------------------------------
@@ -358,28 +352,30 @@ function kpi(label, value, sub) {
   return h("div", { class: "kpi" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), sub ? h("div", { class: "sub" }, sub) : null);
 }
 
-// Moderators only get this page: links to the admin's tools would just ask them for the admin password.
+// Moderators only get Moderation and Review: links to the admin's tools would just ask them for the admin password.
 function trimNav() {
   if (data.viewer.admin) return;
-  document.querySelectorAll("nav a[data-nav]").forEach((a) => { if (a.dataset.nav !== "/moderate") a.remove(); });
-  document.querySelector("nav .brand small").textContent = "Moderation";
+  document.querySelectorAll("nav a[data-nav]").forEach((a) => { if (!["/moderate", "/review"].includes(a.dataset.nav)) a.remove(); });
 }
 
 function render() {
   if (!data || !startups) return;
   trimNav();
+  const reviewing = state.view === "startups";
   const toRate = startups.companies.filter((c) => !c.mine).length;
-  const view = (key, label) => h("button", { class: `btn${state.view === key ? " primary" : ""}`,
-    "aria-pressed": String(state.view === key), onclick: () => { state.view = key; render(); } }, label);
+  document.title = reviewing ? "Review" : "Moderation";
   const scroll = window.scrollY;
   $app.replaceChildren(
-    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Moderation"),
-      h("p", {}, "Let investors in, see who plays, and give A'Pelago's own read of each startup.")),
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, reviewing ? "Review" : "Moderation"),
+      h("p", {}, reviewing
+        ? ["Rate each startup as an A'Pelago representative, not as a player. Players see the average of every ",
+          "representative's read next to their own, after answering; you see it once you've given yours. Comments stay with the team."]
+        : "Let investors in and see who plays.")),
     h("span", { class: "spacer" }),
+    reviewing && startups.mode !== "live" ? h("span", { class: "chip" }, "Sample startups (demo mode)") : null,
+    reviewing ? h("span", { class: "chip" }, toRate ? `${toRate} to rate` : "All rated") : null,
     h("span", { class: "chip" }, data.viewer.admin ? "Signed in as admin" : `Signed in as ${data.viewer.name}`)),
-    h("div", { class: "seg view-switch", role: "group", "aria-label": "Moderate" },
-      view("people", "People"), view("startups", toRate ? `Startups (${toRate} to rate)` : "Startups")),
-    ...(state.view === "people" ? peopleView() : [startupsView()]));
+    ...(reviewing ? [startupsView()] : peopleView()));
   window.scrollTo({ top: scroll });
 }
 

@@ -868,7 +868,6 @@ body.dossier-open { overflow: hidden; }
 .signup-actions { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-top: .9rem; padding-top: .8rem; border-top: 1px solid var(--line); }
 .handle { color: var(--muted); font-weight: 600; }
 .co-name .chip { margin-left: .4rem; }
-.view-switch { margin: 0 0 1rem; }
 /* A'Pelago's read: each startup as the dashboard's opened card, the four calls as the game's rows of 0-5 buttons */
 .eval-list { display: grid; gap: 18px; }
 .eval-list .card + .card { margin-top: 0; }
