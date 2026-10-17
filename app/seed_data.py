@@ -3,8 +3,19 @@
 `demo_bias` is not stored. It only shapes the fake crowd produced by "Load demo votes": positive means
 the demo room overrates the pitch, negative means it underrates it.
 
-Evidence factors are 0-5; leave one out (or None) when it's unknown.
+Evidence factors are 0-5; leave one out (or None) when it's unknown. `checklist` answers rungs of the readiness
+ladders in rubric.json ("business.6" = BRL rung 6), each with the quote it rests on; unanswered rungs are unknown.
 """
+
+
+def _deck(answer: str, quote: str) -> dict:
+    """A checklist answer quoted from the company's own deck (the card's facts)."""
+    return {"answer": answer, "quote": quote, "source": "deck"}
+
+
+def _rungs(ladder: str, answers: dict) -> dict:
+    return {f"{ladder}.{n}": a for n, a in answers.items()}
+
 
 COMPANIES = [
     {
@@ -24,6 +35,17 @@ COMPANIES = [
             "brl": {"market": 2, "value_prop": 2, "business_model": 1},
             "redstone": {"market": 3, "product": 1, "team": 1.5, "business_model": 1, "competition": 2,
                          "marketing": 3, "financials": 0.5, "tech": 1.5, "deal_dynamics": 1, "impact": 2},
+            # BRL 2: the concept is clear, but nothing shows a business model or a quantified market yet.
+            "checklist": _rungs("business", {
+                1: _deck("yes", "Pick up a bottle on the beach, scan it, earn a token."),
+                2: _deck("yes", "Pick up a bottle on the beach, scan it, earn a token."),
+                5: _deck("no", "Waitlist of 1,200, no paying customers, no plastic collected"),
+                6: _deck("no", "no paying customers"),
+            }) | _rungs("tech", {
+                1: _deck("yes", "Pick up a bottle on the beach, scan it, earn a token."),
+                2: _deck("yes", "Pick up a bottle on the beach, scan it, earn a token."),
+                3: _deck("no", "2 founders, no engineers yet"),
+            }),
         },
         "evidence_note": "Demo case: strong narrative, no product, no collection partners, valuation ask out of line.",
         "demo_bias": 1.7,
@@ -53,6 +75,16 @@ COMPANIES = [
             "brl": {"market": 4, "value_prop": 4.5, "business_model": 4.5, "scalability": 3.5},
             "redstone": {"market": 4, "product": 4, "team": 4, "business_model": 4.5, "competition": 4,
                          "marketing": 3, "financials": 4, "tech": 3.5, "deal_dynamics": 4, "impact": 4.5},
+            # BRL 8 and TRL 8: repeat paying customers and peer-reviewed trials; scaling is what the raise is for.
+            "checklist": _rungs("business", {
+                1: _deck("yes", "Dried Baltic seaweed in cow feed. The cows burp less methane."),
+                2: _deck("yes", "Dried Baltic seaweed in cow feed. The cows burp less methane."),
+                **{n: _deck("yes", "€420k last year; 3 dairy co-ops buying repeatedly") for n in range(3, 9)},
+            }) | _rungs("tech", {
+                **{n: _deck("yes", "Two university feeding trials: 12–18% less methane per cow") for n in range(1, 7)},
+                7: _deck("yes", "€420k last year; 3 dairy co-ops buying repeatedly"),
+                8: _deck("yes", "€420k last year; 3 dairy co-ops buying repeatedly"),
+            }),
         },
         "evidence_note": "Demo case: boring one-liner, real revenue, peer-reviewed trials, sensible ask.",
         "demo_bias": -1.4,

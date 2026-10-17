@@ -11,17 +11,24 @@ const SORTS = [["avg", "Average"], ["novel", "Novel"], ["useful", "Useful"], ["p
 const KIND_LABEL = { investor: "Investors", grant: "Grants", partner: "Partners", client: "Clients" };
 const LEVELS = [["ocean_impact", "Ocean impact"], ["business", "Business"], ["tech", "Technology"], ["investment", "Investment"]];
 const DEFS = {
-  readiness: "Ocean impact: how proven the ocean benefit is (Ocean Impact Navigator). Business: market, value proposition and "
-    + "business model validation (KTH BRL). Technology: TRL 1–9 from evidence such as pilots and deployments, never a self-claim. "
-    + "Investment: market, product, team, model, competition, distribution, financials, tech, deal, impact. Scores 0–5.",
-  thesis: "Redstone: early-stage blue-economy venture lens (market, product, team, model, financials, deal). "
-    + "A'Pelago: accelerator lens (ocean impact, business readiness, team). 0–5, from evidence alone.",
+  readiness: "Technology: TRL 1–9 (Aalto/EU). Business: KTH Business Readiness Level 1–9. Ocean impact: a 5-step ladder of how "
+    + "well the impact is measured against the Ocean Impact Navigator's KPIs (the Navigator itself has no levels). Each is a "
+    + "ladder: level N only when every rung up to N is a 'yes' with a quoted source; the first rung that isn't is the blocker. "
+    + "Investment: Redstone's 10 factors, 0–5 with anchors. Without checklist answers a level is estimated from 0–5 factors "
+    + "(n/m known), pulled toward 2.0 when fewer than half are known.",
+  thesis: "Gates first (sector, geography, ticket size): failing one is out of scope, not a low score. Then the stage window: "
+    + "fit peaks in each holder's band (A'Pelago earlier, Redstone later) and falls off outside it. Then the evidence: "
+    + "Redstone weighs market, product, team, model, financials, deal; A'Pelago ocean impact, business readiness, team. "
+    + "The criteria are editable defaults until the partners confirm theirs (Admin › Thesis criteria).",
 };
+const SOURCE_LABEL = { host: "host-confirmed", registry: "registry", deck: "pitch deck", site: "company site", news: "news",
+  ai: "AI-inferred, not counted" };
+const READ_WORD = { crowd: "crowd", engine: "evidence", outside: "outside" };
 
 const saved = (localStorageGet("pd.sort") || "avg:desc").split(":");
 const state = {
   filter: "all", sort: SORTS.some(([k]) => k === saved[0]) ? saved[0] : "avg", dir: saved[1] === "asc" ? "asc" : "desc",
-  open: null, busy: new Set(), searching: false,
+  open: null, busy: new Set(), searching: false, editing: null, rubric: null,
 };
 const remember = () => localStorageSet("pd.sort", `${state.sort}:${state.dir}`);
 let data = null;
@@ -49,12 +56,21 @@ function callChip(c) {
   return c.kind === "cand" ? h("span", { class: "call new" }, "New") : h("span", { class: `call ${c.call.key}` }, c.call.label);
 }
 
-function bar(label, score, extra = "") {
+// A labelled 0-5 bar. cov ("2/4") says how much of it is known, and low greys it when that's too little to trust.
+function bar(label, score, extra = "", cov = null, low = false) {
   const none = score === null || score === undefined;
   const cls = none ? "none" : score >= 3.5 ? "hi" : score < 2.5 ? "lo" : "";
-  return h("div", { class: `bar ${cls}` }, h("span", { class: "k" }, label),
+  return h("div", { class: `bar ${cls}${low ? " low" : ""}`, title: low ? "Too few factors known: pulled toward 2.0" : null },
+    h("span", { class: "k" }, label),
     h("span", { class: "t" }, h("i", { style: { width: none ? "0" : `${(score / 5) * 100}%` } })),
-    h("span", { class: "v" }, none ? "–" : `${extra}${fmt1(score)}`));
+    h("span", { class: "v" }, none ? `${extra}–` : `${extra}${fmt1(score)}`, cov ? h("small", { class: "cov" }, ` · ${cov}`) : null));
+}
+
+// "Gap 2.2 · crowd > evidence": where the game, the evidence and the outside world part ways, on the list card.
+function gapChip(c) {
+  const d = c.divergence;
+  if (!d || !d.diverges) return null;
+  return h("div", { class: "gap-chip", title: d.text }, h("b", {}, `Gap ${fmt1(d.max_gap)}`), ` · ${READ_WORD[d.high]} > ${READ_WORD[d.low]}`);
 }
 
 function track(c) {
@@ -154,6 +170,7 @@ function card(c) {
     c.claim_ask ? h("div", { class: "ask" }, c.claim_ask) : null,
     factLine(c),
     reviewScores(c),
+    gapChip(c),
     n && n.with ? h("div", { class: "next" }, h("b", {}, "Next: "), `${n.text} with `, nameLink(n.with, n.url)) : null,
     h("div", { class: "foot" }, h("button", { class: "btn", onclick: () => openDrawer(c.id) }, "Details")));
 }
@@ -203,6 +220,7 @@ function openDrawer(id) {
 
 function closeDrawer() {
   state.open = null;
+  state.editing = null;
   history.replaceState(null, "", location.pathname);
   renderDrawer();
 }
@@ -273,8 +291,9 @@ function startupCol(c) {
 function evidenceSect(c) {
   const f = [...(c.factors || [])].sort((a, b) => b.value - a.value);
   return f.length ? sect(`Evidence${c.coverage ? ` · ${c.coverage.assessed}/${c.coverage.total} factors` : ""}${c.review.pending ? " · to confirm" : " · reviewed"}`,
-      f.length ? h("div", { class: "factor-grid" }, f.map((x) => h("div", { class: "factor", title: x.label },
-        h("span", { class: "k" }, x.label.replace(/\s*\(.*\)\s*/, "")), h("span", { class: "t" }, h("i", { style: { width: `${(x.value / 5) * 100}%` } })),
+      f.length ? h("div", { class: "factor-grid" }, f.map((x) => h("div", { class: `factor${x.source === "ai" ? " inferred" : ""}`,
+        title: [x.label, x.source ? `source: ${SOURCE_LABEL[x.source] || x.source}` : "no source recorded", x.quote ? `“${x.quote}”` : null].filter(Boolean).join("\n") },
+        h("span", { class: "k" }, x.short_label || x.label), h("span", { class: "t" }, h("i", { style: { width: `${(x.value / 5) * 100}%` } })),
         h("b", {}, fmt1(x.value))))) : null,
       c.evidence_note ? clamp(`Sources: ${c.evidence_note}`, "note sources") : null) : null;
 }
@@ -289,24 +308,148 @@ function callBox(c) {
       h("span", { class: "note" }, ` · weakest: ${n.gap_label.replace(/\s*\(.*\)/, "")} ${n.gap_score === null ? "unknown" : fmt1(n.gap_score)}`)) : null);
 }
 
+// One readiness level: a ladder with its level, source and blocker (the rungs open on a click), or an estimate from
+// the 0-5 factors with how many are known.
+function levelRow(c, k, label) {
+  const lv = c.readiness[k];
+  const cov = lv.coverage ? `${lv.coverage.assessed}/${lv.coverage.total}` : null;
+  if (lv.method === "ladder") {
+    const head = bar(label, lv.score, `${lv.scale} ${lv.level || "–"} · `, cov);
+    const said = [
+      lv.source ? `source: ${SOURCE_LABEL[lv.source] || lv.source}` : null,
+      lv.blocker ? `${lv.blocker.kind === "no" ? "blocked by" : "unverified"}: ${lv.blocker.text}` : "top of the ladder",
+      lv.claimed_max > (lv.level || 0) ? `claims up to ${lv.scale} ${lv.claimed_max}` : null,
+    ].filter(Boolean).join(" · ");
+    return h("div", { class: "level" }, head,
+      h("details", { class: "ladder" }, h("summary", { class: "note" }, said),
+        h("p", { class: "note fw" }, lv.framework),
+        h("ol", { class: "rungs" }, lv.steps.map((s) => h("li", { class: s.counted ? "yes" : s.answer, title: s.question },
+          h("span", { class: "mark", "aria-label": s.counted ? "met" : s.answer === "no" ? "not met" : "unverified" },
+            s.counted ? "✓" : s.answer === "no" ? "✗" : "?"),
+          h("span", { class: "rt" }, `${s.n}. ${s.title}`,
+            s.quote ? h("q", {}, PD.safeLink(s.url) ? nameLink(s.quote, s.url) : s.quote) : null,
+            s.source ? h("small", {}, ` ${SOURCE_LABEL[s.source] || s.source}${s.by === "host" ? " · host" : s.by === "ai" ? " · AI" : ""}`) : null))))));
+  }
+  if (lv.method === "stage") {
+    return h("div", { class: "level" }, bar(label, lv.score, lv.trl ? `TRL ${lv.trl} · ` : "", cov),
+      lv.trl ? h("p", { class: "note" }, "From the tech stage · no checklist answered yet") : null);
+  }
+  return h("div", { class: "level" }, bar(label, lv.score, "", cov, lv.low_coverage),
+    lv.score === null ? null : h("p", { class: "note" },
+      `Estimated from ${cov} factors${lv.low_coverage ? ", pulled toward 2.0: too few known" : ""} · no checklist answered yet`));
+}
+
+function thesisRow(t) {
+  const name = t.label.split(" ")[0];
+  const gates = (t.gates || []).filter((g) => g.status !== "pass").map((g) => g.note);
+  if (t.fit === "out") {
+    return h("div", { class: "thesis out", title: t.criteria_note },
+      h("div", { class: "bar none" }, h("span", { class: "k" }, name), h("span", { class: "scope" }, "Out of scope")),
+      clamp(t.why, "note"));
+  }
+  return h("div", { class: "thesis", title: t.criteria_note },
+    bar(name, t.score, "", t.coverage ? `${t.coverage.assessed}/${t.coverage.total}` : null, t.low_coverage),
+    t.why ? clamp(t.why, "note") : null,
+    t.risks && t.risks.length ? h("div", { class: "note" }, `Risks: ${t.risks.map((x) => `${short(x.label)} ${fmt1(x.value)}`).join(" · ")}`) : null,
+    gates.length ? h("div", { class: "note" }, `Gates: ${gates.join(" · ")}`) : null);
+}
+
+async function answerWithAI(c) {
+  const key = `check${c.id}`;
+  state.busy.add(key);
+  renderDrawer();
+  try {
+    const r = await post(`/api/admin/companies/${c.id}/checklist/ai`, {});
+    PD.toast(`${r.tally.verified} answers quoted from its sources${r.tally.unverified ? `, ${r.tally.unverified} not (those don't count)` : ""}`, 5000);
+  } catch (e) { PD.toast(e.message, 6000); }
+  state.busy.delete(key);
+  await refresh(true);
+}
+
+function checklistButtons(c) {
+  const ai = data.reads && data.reads.fill;
+  const busy = state.busy.has(`check${c.id}`);
+  return h("div", { class: "row review-btns" },
+    h("button", { class: "pill ghost small", onclick: () => openEditor(c) }, state.editing === c.id ? "Close checklist" : "Answer the checklist"),
+    h("button", { class: `pill ghost small${busy ? " busy" : ""}`, disabled: !ai || busy, onclick: () => answerWithAI(c),
+      title: ai ? "Answer every rung from its website and news, each answer quoted; your own answers stay" : "Set OPENROUTER_API_KEY in .env, or answer by hand" },
+      busy ? "Reading its sources…" : "Answer with AI"),
+    ai ? null : h("span", { class: "note" }, "No AI key: answer by hand."));
+}
+
+async function openEditor(c) {
+  if (state.editing === c.id) { state.editing = null; renderDrawer(); return; }
+  try { state.rubric = state.rubric || await api("/api/admin/rubric"); } catch (e) { PD.toast(e.message); return; }
+  state.editing = c.id;
+  renderDrawer();
+}
+
+// The host's own answers: every rung of each ladder and Redstone's investment factors, each with its quote, link and
+// source. Only the rows the host changes are sent, so an AI answer never turns into a host one by accident.
+function checklistEditor(c) {
+  const rubric = state.rubric;
+  const dirty = {};
+  const sources = Object.keys(rubric.sources.rank).filter((s) => s !== "ai");
+  const srcSelect = (cur, onchange) => h("select", { "aria-label": "Source", onchange },
+    h("option", { value: "" }, "source…"), sources.map((s) => h("option", { value: s, selected: cur === s }, SOURCE_LABEL[s] || s)));
+  const field = (key, base, name, value) => { dirty[key] = { ...(dirty[key] || base), [name]: value }; };
+  const ladders = Object.entries(rubric.ladders).map(([lk, spec]) => {
+    const steps = Object.fromEntries((c.readiness[lk].steps || []).map((s) => [s.n, s]));
+    return h("details", { class: "ck-ladder", open: lk === "business" },
+      h("summary", {}, spec.label),
+      spec.rungs.map((r) => {
+        const s = steps[r.n] || { answer: "unknown", quote: "", url: "", source: "" };
+        const key = `${lk}.${r.n}`;
+        const base = { answer: s.answer, quote: s.quote, url: s.url, source: s.source === "ai" ? "" : s.source };
+        return h("div", { class: `ck-row ${s.by === "ai" ? "by-ai" : ""}`, title: r.question },
+          h("span", { class: "ck-q" }, `${r.n}. ${r.question}`),
+          h("select", { "aria-label": `${spec.scale} ${r.n}`, onchange: (e) => field(key, base, "answer", e.target.value) },
+            ["unknown", "yes", "no"].map((a) => h("option", { value: a, selected: s.answer === a }, a))),
+          h("input", { type: "text", placeholder: "Quote", value: s.quote, maxlength: 300, oninput: (e) => field(key, base, "quote", e.target.value) }),
+          h("input", { type: "text", placeholder: "https://…", value: s.url, maxlength: 500, oninput: (e) => field(key, base, "url", e.target.value) }),
+          srcSelect(base.source, (e) => field(key, base, "source", e.target.value)));
+      }));
+  });
+  const facts = Object.fromEntries(c.factors.map((f) => [f.key, f]));
+  const sup = {};
+  const invest = h("details", { class: "ck-ladder" }, h("summary", {}, "Investment factors (Redstone, 0–5)"),
+    Object.entries(rubric.investment.factors).map(([name, f]) => {
+      const key = `redstone.${name}`;
+      const cur = facts[key] || {};
+      const base = { value: cur.value ?? null, quote: cur.quote || "", url: cur.url || "", source: cur.source === "ai" ? "" : cur.source || "" };
+      const set = (n, v) => { sup[key] = { ...(sup[key] || base), [n]: v }; };
+      return h("div", { class: "ck-row", title: `1 = ${f.anchors["1"]} · 3 = ${f.anchors["3"]} · 5 = ${f.anchors["5"]}` },
+        h("span", { class: "ck-q" }, `${f.label}: ${f.def}`),
+        h("input", { type: "number", min: 0, max: 5, step: 0.5, value: cur.value ?? "", "aria-label": f.label,
+          oninput: (e) => set("value", e.target.value === "" ? null : Number(e.target.value)) }),
+        h("input", { type: "text", placeholder: "Quote", value: base.quote, maxlength: 300, oninput: (e) => set("quote", e.target.value) }),
+        h("input", { type: "text", placeholder: "https://…", value: base.url, maxlength: 500, oninput: (e) => set("url", e.target.value) }),
+        srcSelect(base.source, (e) => set("source", e.target.value)));
+    }));
+  const confirm = h("input", { type: "checkbox" });
+  async function save(btn) {
+    btn.disabled = true;
+    try {
+      await post(`/api/admin/companies/${c.id}/checklist`, { checklist: dirty, support: sup, confirm: confirm.checked }, "PUT");
+      PD.toast("Checklist saved");
+      state.editing = null;
+    } catch (e) { PD.toast(e.message, 6000); btn.disabled = false; return; }
+    await refresh(true);
+  }
+  return h("div", { class: "ck" }, ladders, invest,
+    h("div", { class: "row" }, h("label", { class: "check" }, confirm, "I've checked this evidence"), h("span", { class: "spacer" }),
+      h("button", { class: "pill small", onclick: (e) => save(e.currentTarget) }, "Save")));
+}
+
 function readCol(c) {
-  const factorList = (title, list) => (list && list.length
-    ? h("div", { class: "note" }, `${title}: ${list.map((x) => `${short(x.label)} ${fmt1(x.value)}`).join(" · ")}`) : null);
   return [
     sect(["Readiness", Tool.tip(DEFS.readiness)],
-      h("div", { class: "bars-list" }, LEVELS.map(([k, label]) => {
-        const lv = c.readiness[k];
-        const known_ = lv.coverage ? ` (${lv.coverage.assessed}/${lv.coverage.total})` : "";
-        return h("div", { title: `${lv.label}: ${known_.trim() || "no"} factors known` },
-          k === "tech" && lv.trl ? bar(label, lv.score, `TRL ${lv.trl} · `) : bar(label, lv.score));
-      })),
+      h("div", { class: "bars-list" }, LEVELS.map(([k, label]) => levelRow(c, k, label))),
       c.coverage && c.coverage.unknown && c.coverage.unknown.length
-        ? clamp(`Unknown: ${c.coverage.unknown.join(", ")}`, "note") : null),
-    sect(["Thesis fit", Tool.tip(DEFS.thesis)],
-      Object.values(c.theses).map((t) => h("div", { class: "thesis" },
-        bar(t.label.split(" ")[0], t.score),
-        t.why ? clamp(t.why, "note") : null,
-        factorList("Risks", t.risks)))),
+        ? clamp(`Unknown factors: ${c.coverage.unknown.join(", ")}`, "note") : null,
+      checklistButtons(c),
+      state.editing === c.id && state.rubric ? checklistEditor(c) : null),
+    sect(["Thesis fit", Tool.tip(DEFS.thesis)], Object.values(c.theses).map(thesisRow)),
     stepsSect(c),
   ];
 }
@@ -391,14 +534,32 @@ function readsTable(c) {
     reviewButton(c));
 }
 
-function crowdSect(c) {
-  if (!c.crowd.n) return null;
-  return sect("Crowd vs engine",
-    track(c),
-    h("div", { class: "legend" }, h("span", {}, h("i", { class: "key crowd" }), `Crowd ${fmt1(c.crowd.composite)}`),
-      h("span", {}, h("i", { class: "key engine" }), `Engine ${known(c) ? fmt1(c.engine.composite) : "–"}`),
-      c.gap === null ? null : h("span", {}, `Gap ${c.gap > 0 ? "+" : ""}${fmt1(c.gap)}`),
-      h("span", { class: "note" }, `${plural(c.crowd.n, "answer")} · ${c.crowd.signed_in} signed in · spread ${fmt1(c.crowd.consensus)}`)),
+// The two reads nobody else has, set against the evidence on one 0-5 line: the game's crowd, the engine's evidence and
+// the outside world (AI models and social media). The span lights up when they part ways, with what that means.
+function perceptionSect(c) {
+  const d = c.divergence || { points: {} };
+  const p = d.points;
+  const pct = (v) => `${(v / 5) * 100}%`;
+  const known = Object.entries(p).filter(([, v]) => v !== null && v !== undefined);
+  const vals = known.map(([, v]) => v);
+  const lo = vals.length ? Math.min(...vals) : 0;
+  const hi = vals.length ? Math.max(...vals) : 0;
+  const LABEL = { crowd: "Crowd (game)", engine: "Evidence (engine)", outside: "Outside (AI + social)" };
+  const o = c.outside || {};
+  const legendNote = {
+    crowd: c.crowd.n ? `${plural(c.crowd.n, "answer")} · spread ${fmt1(c.crowd.consensus)}` : "no plays yet",
+    engine: known.some(([k]) => k === "engine") ? `${c.coverage.assessed}/${c.coverage.total} factors` : "no evidence yet",
+    outside: o.composite === null || o.composite === undefined ? "no reviews yet"
+      : [o.ai !== null ? `AI ${fmt1(o.ai)}` : null, o.social !== null ? `social ${fmt1(o.social)}` : null].filter(Boolean).join(" · "),
+  };
+  return sect("Perception gap",
+    h("div", { class: "track wide", role: "img", "aria-label": known.map(([k, v]) => `${LABEL[k]} ${fmt1(v)}`).join(", ") || "No reads yet" },
+      [0, 1, 2, 3, 4, 5].map((tk) => h("i", { class: "tick", style: { left: pct(tk) } })),
+      vals.length > 1 ? h("i", { class: `span${d.diverges ? " hot" : ""}`, style: { left: pct(lo), width: `${((hi - lo) / 5) * 100}%` } }) : null,
+      known.map(([k, v]) => h("i", { class: `dot ${k}`, style: { left: pct(v) }, title: `${LABEL[k]} ${fmt1(v)}` }))),
+    h("div", { class: "legend" }, ["crowd", "engine", "outside"].map((k) => h("span", { class: p[k] === null || p[k] === undefined ? "off" : "" },
+      h("i", { class: `key ${k}` }), `${LABEL[k]} ${fmt1(p[k])}`, h("small", {}, ` ${legendNote[k]}`)))),
+    h("p", { class: `verdict${d.diverges ? " hot" : ""}` }, d.text),
     c.flags.map((f) => h("div", { class: "note" }, h("b", {}, f.label), ` ${f.detail}`)));
 }
 
@@ -454,7 +615,7 @@ function renderDrawer() {
     h("div", { class: "dossier-grid" },
       h("div", { class: "col" }, startupCol(c)),
       h("div", { class: "col" }, readCol(c)),
-      h("div", { class: "col" }, readsTable(c), crowdSect(c), webSect(c))));
+      h("div", { class: "col" }, perceptionSect(c), readsTable(c), webSect(c))));
   const wrap = h("div", { class: "dossier-wrap", onclick: (e) => { if (e.target === wrap) closeDrawer(); } }, card);
   document.body.append(wrap);
   document.body.classList.add("dossier-open");
@@ -550,7 +711,8 @@ async function refresh(force = false) {
   // The open card is redrawn only when something on it changed (a fill or a read landing), so it never jumps.
   const open = state.open && data.companies.find((c) => c.id === state.open);
   const openSig = open ? JSON.stringify(open) + JSON.stringify(data.reads.auto.running) : null;
-  if (state.open && (force || openSig !== state.openSig)) renderDrawer();
+  // A half-filled checklist is never redrawn away by a background refresh.
+  if (state.open && (force || (openSig !== state.openSig && !state.editing))) renderDrawer();
   state.openSig = openSig;
 }
 

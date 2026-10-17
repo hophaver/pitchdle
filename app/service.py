@@ -298,6 +298,52 @@ def triangulate(crowd_n: int, crowd_c: float | None, engine_c: float, pulse: dic
     return "convergent", f"Crowd, engine and web ({lean}) agree"
 
 
+def outside_read(tiles: list[dict]) -> dict:
+    """The outside world's read on the four calls' average: the AI models' mean and social media's mean, each
+    counting once. None where nobody has read it yet."""
+    means = {}
+    for group in ("ai", "social"):
+        rows = [t for t in tiles if t["group"] == group]
+        if rows:
+            means[group] = round(sum(sum(t["scores"][a] for a in AXES) / len(AXES) for t in rows) / len(rows), 2)
+    composite = round(sum(means.values()) / len(means), 2) if means else None
+    return {"ai": means.get("ai"), "social": means.get("social"), "composite": composite,
+            "n": sum(t["group"] in ("ai", "social") for t in tiles)}
+
+
+READ_LABEL = {"crowd": "Crowd", "engine": "Evidence", "outside": "Outside"}
+# What it means when the first read sits well above the second.
+GAP_MEANING = {
+    ("crowd", "engine"): "the pitch outsells the evidence",
+    ("engine", "crowd"): "stronger than its pitch",
+    ("outside", "engine"): "its reputation runs ahead of the evidence",
+    ("engine", "outside"): "the evidence is ahead of its reputation",
+    ("crowd", "outside"): "the room likes it more than the outside world",
+    ("outside", "crowd"): "the outside world likes it more than the room",
+}
+
+
+def divergence(points: dict) -> dict:
+    """Where the crowd, the evidence and the outside world part ways: the widest gap among the reads that exist,
+    and what it means. Reads that aren't in yet are left out, never guessed."""
+    known = {k: v for k, v in points.items() if v is not None}
+    missing = [READ_LABEL[k].lower() for k in points if k not in known]
+    if len(known) < 2:
+        return {"max_gap": None, "high": None, "low": None, "points": points, "diverges": False,
+                "text": f"Needs two reads to compare ({', '.join(missing)} not in yet)."}
+    high = max(known, key=known.get)
+    low = min(known, key=known.get)
+    gap = round(known[high] - known[low], 1)
+    if gap >= VERDICT_GAP:
+        text = f"{READ_LABEL[high]} {known[high]:.1f} vs {READ_LABEL[low].lower()} {known[low]:.1f}: {GAP_MEANING[(high, low)]}."
+    else:
+        names = [READ_LABEL[k].lower() for k in known]
+        text = f"{', '.join(names[:-1])} and {names[-1]} agree within {gap:.1f}.".capitalize()
+    if missing:
+        text += f" No {' or '.join(missing)} read yet."
+    return {"max_gap": gap, "high": high, "low": low, "points": points, "diverges": gap >= VERDICT_GAP, "text": text}
+
+
 REVIEW = {
     "ai": ("Estimated by AI · host confirms",
            "Every factor its website and news speak to was scored by AI; the rest stay unknown. Readiness, thesis "
@@ -329,7 +375,9 @@ def company_insight(db, comp, real_only: bool) -> dict:
     # The named readiness levels, thesis-fit and the factor trail are pure projections of the
     # stored evidence — computed fresh so the dashboard always matches what's in evidence, and
     # so it works on its own before anyone has played.
-    full = engine_full(j(comp["evidence"], {}))
+    company = {"sector": comp["sector"], "one_liner": comp["one_liner"], "claim_ask": comp["claim_ask"],
+               "country": comp["country"] or ""}
+    full = engine_full(j(comp["evidence"], {}), company=company)
     readiness_levels = full["readiness"]
     theses = full["theses"]
     factors = full["factors"]
@@ -353,8 +401,7 @@ def company_insight(db, comp, real_only: bool) -> dict:
              "stage_fit": o["stage_fit"], "url": "", "reasons": [], "source": "manual"}
             for o in db.execute("SELECT * FROM opportunities WHERE company_id = ?", (comp["id"],))]
     picked = {name_key(o["name"]) for o in pool}
-    company = {"sector": comp["sector"], "one_liner": comp["one_liner"], "claim_ask": comp["claim_ask"],
-               "facts": j(comp["facts"], []), "country": comp["country"] or ""}
+    company = company | {"facts": j(comp["facts"], [])}
     pool += [m for m in landscape.match(company, tech.get("trl")) if name_key(m["name"]) not in picked]
     actions = []
     for o in pool:
@@ -376,6 +423,10 @@ def company_insight(db, comp, real_only: bool) -> dict:
     actions.sort(key=lambda a: (-a["score"], a["name"]))
     pulse = j(comp["pulse"])
     verdict, verdict_reason = triangulate(room["n"], room["composite"], ec, pulse, config.MIN_VOTES)
+    tiles = opinions.for_card(db, comp["id"], None, room if room["n"] else None)
+    outside = outside_read(tiles)
+    coverage = j(comp["engine_coverage"], {})
+    engine_known = ec if coverage.get("assessed") else None
 
     out = {
         "id": comp["id"], "name": comp["name"], "sector": comp["sector"], "is_real": bool(comp["is_real"]),
@@ -385,7 +436,7 @@ def company_insight(db, comp, real_only: bool) -> dict:
         "engine": {"axes": engine, "composite": ec},
         "readiness": readiness_levels, "theses": theses, "factors": factors,
         "evidence_note": comp["evidence_note"] or "",
-        "coverage": j(comp["engine_coverage"], {}),
+        "coverage": coverage,
         "crowd": {"n": room["n"], "signed_in": room["signed_in"], "means": room["means"],
                   "composite": room["composite"], "consensus": room["consensus"]},
         "gap": gap, "flags": flags, "actions": actions,
@@ -397,7 +448,12 @@ def company_insight(db, comp, real_only: bool) -> dict:
         "profile": {"status": comp["profile_status"] or "", "note": comp["profile_note"] or ""},
         # In the daily game or not, and why: the automatic moderation's verdict (crawler/gate.py).
         "game": {"status": comp["game_status"] or "", "note": comp["game_note"] or ""},
-        "opinions": opinions.for_card(db, comp["id"], None, room if room["n"] else None),
+        "opinions": tiles,
+        # The two reads nobody else has, against the evidence on one scale: the game's crowd and the outside
+        # world (AI models and social media). divergence says where they part ways.
+        "outside": outside,
+        "divergence": divergence({"crowd": room["composite"] if room["n"] else None, "engine": engine_known,
+                                  "outside": outside["composite"]}),
         "quiet": opinions.quiet(db, comp["id"]),
     }
     return out | {"call": call(out), "next": next_move(out)}
@@ -413,6 +469,10 @@ def call(c: dict) -> dict:
     """Back, watch, avoid, or needs evidence, with the reasons. Driven by the best thesis fit, then tempered by
     what the room and the web say. Without any evidenced thesis factor it never guesses: needs evidence."""
     scored = [t for t in c["theses"].values() if t["score"] is not None]
+    if c["theses"] and all(t.get("fit") == "out" for t in c["theses"].values()):
+        return {"key": "avoid", "label": "Out of scope", "scope": "out",
+                "reasons": [f"{t['label'].split(' ')[0]}: {t['why'].removeprefix('Out of scope: ')}"
+                            for t in c["theses"].values()]}
     if not scored:
         return {"key": "evidence", "label": "Needs evidence",
                 "reasons": [c["review"]["label"] if c["review"]["pending"] else "No thesis factor evidenced yet"]}

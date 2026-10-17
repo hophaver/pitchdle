@@ -13,7 +13,7 @@ import logging
 import threading
 
 from . import brief, opinions, reads
-from .crawler import gate, pitch, profile
+from .crawler import checklist, gate, pitch, profile
 from .db import connect, now
 from .service import get_setting, set_setting
 
@@ -95,8 +95,13 @@ def fill(db) -> dict:
             tried.add(comp["id"])
             if needs_profile(comp):
                 try:
-                    profile.fill(db, comp)
+                    filled = profile.fill(db, comp)
                     comp = db.execute("SELECT * FROM companies WHERE id = ?", (comp["id"],)).fetchone() or comp
+                    try:  # the readiness checklists, with quotes, from the same sources
+                        checklist.run(db, comp, (filled["sources"], filled["used"]))
+                        comp = db.execute("SELECT * FROM companies WHERE id = ?", (comp["id"],)).fetchone() or comp
+                    except Exception as e:  # noqa: BLE001 - the host can run it from the card, or answer by hand
+                        st["errors"].append(f"{comp['name']}, checklist: {reads.short_error(e)}")
                 except Exception as e:  # noqa: BLE001 - stays unfilled for the next run
                     st["errors"].append(f"{comp['name']}, profile: {reads.short_error(e)}")
             if needs_check(comp):  # filled: now it joins the game, or is kept out with the reason

@@ -21,7 +21,7 @@ URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT = 45
 # Output caps. Without one OpenRouter reserves the model's whole output window against the key's credit up
 # front, which a key with a spending limit can't cover (a 402 on every call).
-MAX_TOKENS = {"card": 1500, "screen": 3000, "profile": 4000, "brief": 600, "gate": 300}
+MAX_TOKENS = {"card": 1500, "screen": 3000, "profile": 4000, "brief": 600, "gate": 300, "checklist": 4000}
 # The same limits the player submission form uses, so a written card fits the card layout.
 LIMITS = {"one_liner": 90, "claim_ask": 60, "sector": 30}
 MAX_FACTS = 3

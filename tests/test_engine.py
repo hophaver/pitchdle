@@ -81,5 +81,7 @@ def test_factor_trail_lists_every_known_factor():
     assert all(f["value"] == engine.factor_value(BY_NAME["BrineWorks"]["evidence"], f["key"]) for f in trail)
     assert len(engine.factor_trail({"redstone": {"team": 4}})) == 1
     labels = [f["label"] for f in trail]
-    assert "Patents" in labels  # BrineWorks has patents: 0 -> a 1.0 factor is present
+    # BrineWorks has patents: 0, which is not applicable (normal for many startups), not a bad score.
+    assert "Patents" not in labels
+    assert "Patents" in engine.score(BY_NAME["BrineWorks"]["evidence"])["coverage"]["na"]
     assert "Tech readiness (TRL)" in labels

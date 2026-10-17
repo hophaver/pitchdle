@@ -484,6 +484,11 @@ body.tool {
 .track .dot { position: absolute; top: 50%; width: 10px; height: 10px; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 2px var(--white); }
 .dot.crowd, .key.crowd { background: var(--crowd); }
 .dot.engine, .key.engine { background: var(--engine); }
+.dot.outside, .key.outside { background: var(--white); box-shadow: inset 0 0 0 2.5px var(--plum); }
+.bar .cov { font-size: .72em; font-weight: 500; opacity: .75; }
+.bar.low .t i { opacity: .45; }
+.gap-chip { align-self: flex-start; font-size: .74rem; background: var(--warn-bg); color: var(--warn); border-radius: 6px; padding: .1rem .5rem; }
+.gap-chip b { font-weight: 800; }
 .key { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: .25rem; }
 .lean { display: inline-flex; align-items: center; gap: .3rem; }
 .lean i { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
@@ -637,7 +642,7 @@ body.dossier-open { overflow: hidden; }
 .dossier .factor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .2rem .9rem; }
 .dossier .factor { display: grid; grid-template-columns: minmax(0, 1fr) 40px 24px; gap: .35rem; align-items: center; font-size: .74rem; line-height: 1.25; }
 .dossier .sources { margin-top: .45rem; }
-.dossier .factor .k { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .9; }
+.dossier .factor .k { overflow-wrap: anywhere; opacity: .9; } /* "Business model · Redstone" wraps, never cut */
 .dossier .factor .t { height: 4px; border-radius: 2px; background: var(--soft); overflow: hidden; }
 .dossier .factor .t i { display: block; height: 100%; background: var(--white); }
 .dossier .factor b { text-align: right; font-variant-numeric: tabular-nums; }
@@ -683,6 +688,43 @@ body.dossier-open { overflow: hidden; }
 .dossier .steps li .w { grid-column: 2; font-size: .7rem; opacity: .8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dossier .steps details summary { cursor: pointer; font-size: .7rem; opacity: .85; margin: .1rem 0 0 1.3rem; }
 .dossier .tip { color: inherit; opacity: .85; }
+
+/* readiness ladders: level, source and blocker; the rungs open on a click */
+.dossier .level + .level { margin-top: .15rem; }
+.dossier .level > .note { margin: .05rem 0 0 calc(88px + .45rem); font-size: .7rem; }
+.dossier .ladder { margin: .05rem 0 0 calc(88px + .45rem); }
+.dossier .ladder summary { cursor: pointer; font-size: .72rem; margin: 0; list-style-position: outside; }
+.dossier .ladder .fw { font-size: .66rem; margin: .2rem 0; }
+.dossier .rungs { list-style: none; margin: .2rem 0 .3rem; padding: 0; display: grid; gap: .15rem; font-size: .72rem; }
+.dossier .rungs li { display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: .3rem; opacity: .7; }
+.dossier .rungs li.yes { opacity: 1; }
+.dossier .rungs li.no .mark { color: var(--yellow); }
+.dossier .rungs .mark { font-weight: 800; text-align: center; }
+.dossier .rungs q { display: block; font-style: italic; opacity: .9; }
+.dossier .rungs small { opacity: .75; }
+.dossier .bar .cov { font-size: .68rem; }
+.dossier .bar.low .t i { opacity: .5; }
+.dossier .thesis .scope { grid-column: 2 / -1; font-weight: 800; font-size: .74rem; text-transform: uppercase; letter-spacing: .08em; color: var(--yellow); }
+.dossier .factor.inferred { opacity: .6; }
+
+/* the host's own checklist answers */
+.dossier .ck { margin-top: .5rem; display: grid; gap: .4rem; }
+.dossier .ck-ladder summary { cursor: pointer; font-weight: 700; font-size: .78rem; }
+.dossier .ck-row { display: grid; grid-template-columns: minmax(0, 1fr) 4.6rem; gap: .2rem .3rem; padding: .3rem 0; border-bottom: 1px solid var(--soft); font-size: .72rem; }
+.dossier .ck-row .ck-q { grid-column: 1 / -1; opacity: .9; }
+.dossier .ck-row.by-ai .ck-q::after { content: " · AI answer"; opacity: .7; }
+.tool .dossier .ck-row input, .tool .dossier .ck-row select { font-size: .74rem; padding: .2rem .4rem; min-width: 0; width: 100%; }
+.dossier .ck .check { font-size: .76rem; }
+
+/* the perception gap: crowd, evidence and the outside world on one line */
+.dossier .track.wide { height: 22px; }
+.dossier .track .span.hot { background: var(--yellow); height: 4px; margin-top: -2px; }
+.dossier .dot.outside, .dossier .key.outside { background: var(--card); box-shadow: inset 0 0 0 2.5px var(--white), 0 0 0 2px var(--card); }
+.dossier .key { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: .3rem; vertical-align: baseline; }
+.dossier .legend small { font-weight: 400; opacity: .8; }
+.dossier .legend .off { opacity: .55; }
+.dossier .verdict { font-size: .86rem; font-weight: 700; margin-top: .35rem; }
+.dossier .verdict.hot { color: var(--yellow); }
 @media (max-width: 560px) {
   .dossier-head .name-row .art.small { width: 44px; height: 48px; font-size: 1.5rem; }
   .dossier .steps, .dossier .factor-grid { grid-template-columns: minmax(0, 1fr); }
@@ -726,3 +768,9 @@ a.chip:hover { border-color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* admin: thesis criteria */
+.thesis-form { margin-bottom: 1rem; }
+.thesis-form h3 { font-size: .95rem; }
+.thesis-form .row > input[type=text] { flex: 1; min-width: 12rem; }
+.thesis-form input[type=number] { width: 6.5rem; }

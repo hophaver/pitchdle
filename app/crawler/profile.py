@@ -39,18 +39,9 @@ FACTORS = {
         "business_model": "how validated the way it makes money is. 0 = none stated, 5 = recurring revenue proven.",
         "scalability": "how well it can grow beyond its first customers. 0 = bespoke one-offs, 5 = clearly scalable.",
     },
-    "redstone": {
-        "market": "size and growth of its market, as an investor sees it. 0 = tiny or shrinking, 5 = large and growing fast.",
-        "product": "how mature and good the product is. 0 = an idea, 5 = a polished product in customers' hands.",
-        "team": "strength and track record of the team, only if the sources describe it. 0 = weak, 5 = proven founders.",
-        "business_model": "how attractive the business model is to an investor (margins, recurring revenue).",
-        "competition": "its position against competitors. 0 = crowded with no edge, 5 = a clear, defensible lead.",
-        "marketing": "how credible its route to customers is (sales, partners, distribution).",
-        "financials": "revenue and funding traction. 0 = none, 5 = strong revenue growth or well funded.",
-        "tech": "technical depth and how hard it is to copy. 0 = commodity, 5 = deep, defensible technology.",
-        "deal_dynamics": "how attractive investing now is (round momentum, investor interest, terms). 0 = unattractive, 5 = a hot round.",
-        "impact": "ocean impact as part of the investment case. 0 = none, 5 = impact central and evidenced.",
-    },
+    # Redstone's investment factors, with their 1/3/5 anchors, from rubric.json: one definition for every reader.
+    "redstone": {name: f"{f['def']} 1 = {f['anchors']['1']}, 3 = {f['anchors']['3']}, 5 = {f['anchors']['5']}."
+                 for name, f in engine.load_rubric()["investment"]["factors"].items()},
 }
 assert {g: list(f) for g, f in FACTORS.items()} == engine.FACTOR_GROUPS  # keep the two in step
 
@@ -233,7 +224,7 @@ def merge_evidence(have: dict, found: dict) -> dict:
 
 def fill(db, comp) -> dict:
     """Read the sources, ask the model, and fill whichever profile fields are still empty, and the evidence unless
-    the host confirmed it. Returns {"filled": [field, ...], "used": [source, ...], "note": ...}. Raises on an API
+    the host confirmed it. Returns {"filled": [field, ...], "used": [source, ...], "note": ..., "sources": the text read}. Raises on an API
     or format error, leaving the company as it was so the next run tries again."""
     from .. import seed  # seed imports the crawler package; imported here to keep that one-way
 
@@ -268,4 +259,4 @@ def fill(db, comp) -> dict:
     if "evidence" in updates:
         seed.score_company(db, comp["id"])  # readiness, thesis fit and the call follow from the new evidence
     db.commit()
-    return {"filled": filled, "used": used, "note": note}
+    return {"filled": filled, "used": used, "note": note, "sources": text}

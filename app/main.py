@@ -1,6 +1,7 @@
 """Pitchdle: FastAPI app serving the API and the static pages."""
 import csv
 import io
+import json
 import logging
 import re
 import secrets
@@ -19,9 +20,9 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from . import accounts, autofill, autoread, brief, config, moderation, opinions, reads, scoring, seed, service
+from . import accounts, autofill, autoread, brief, config, engine, moderation, opinions, reads, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, name_key, now
-from .crawler import pitch
+from .crawler import checklist, pitch
 from .engine import AXES, full_score as engine_full
 
 log = logging.getLogger("pitchdle")
@@ -723,7 +724,7 @@ def admin_company(db, row) -> dict:
                                                         (row["id"],))]
     out["votes"] = db.execute("SELECT COUNT(*) FROM votes WHERE company_id = ? AND round = 1", (row["id"],)).fetchone()[0]
     out["theses"] = {k: {"label": t["label"], "score": t["score"]}
-                     for k, t in engine_full(out["evidence"])["theses"].items()}
+                     for k, t in engine_full(out["evidence"], company=out)["theses"].items()}
     out["opinions"] = opinions.outside(db, row["id"])
     out["apelago"] = opinions.apelago(db, row["id"])
     return out
@@ -1055,6 +1056,148 @@ def admin_rewrite_card(cid: int, db=Depends(get_db)):
             "reject_reason": card["reject_reason"]}
 
 
+# --- the readiness checklists and the thesis criteria (rubric.json) -------------------------------------------
+
+class ChecklistAnswer(BaseModel):
+    answer: str = Field(pattern="^(yes|no|unknown)$")
+    quote: str = Field("", max_length=checklist.QUOTE_MAX)
+    url: str = Field("", max_length=500)
+    source: str = ""
+
+
+class FactorSupport(BaseModel):
+    value: float | None = Field(None, ge=0, le=5)
+    quote: str = Field("", max_length=checklist.QUOTE_MAX)
+    url: str = Field("", max_length=500)
+    source: str = ""
+
+
+class ChecklistIn(BaseModel):
+    """The host's own answers: rungs by "ladder.n" ("business.6"), investment factors by "redstone.name". An
+    "unknown" answer or a null value clears it. confirm marks the company's evidence as reviewed by the host."""
+    checklist: dict[str, ChecklistAnswer] = {}
+    support: dict[str, FactorSupport] = {}
+    confirm: bool = False
+
+
+def _source_and_url(source: str, url: str) -> tuple[str, str]:
+    ranks = engine.load_rubric()["sources"]["rank"]
+    if source and source not in ranks:
+        raise HTTPException(400, f"source is one of {', '.join(ranks)}.")
+    url = url.strip()
+    if url and not re.match(r"^https?://", url, re.I):
+        raise HTTPException(400, "A source link starts with http:// or https://.")
+    return source or "host", url
+
+
+@app.get("/api/admin/rubric", dependencies=[Depends(require_admin)])
+def admin_rubric():
+    """The ladders, investment anchors, source ranks and thesis criteria the engine judges by."""
+    return engine.load_rubric()
+
+
+@app.put("/api/admin/companies/{cid}/checklist", dependencies=[Depends(require_admin)])
+def admin_checklist(cid: int, body: ChecklistIn, db=Depends(get_db)):
+    """Answer the readiness checklists and investment factors by hand: what the host stands behind, never touched
+    by an AI run. Works without any API key."""
+    comp = service.get_company(db, cid)
+    if not comp:
+        raise HTTPException(404, "No such company.")
+    rubric = engine.load_rubric()
+    ev = j(comp["evidence"], {}) or {}
+    answers, support = dict(ev.get("checklist") or {}), dict(ev.get("support") or {})
+    stamp = now()
+    for key, a in body.checklist.items():
+        ladder, _, n = key.partition(".")
+        if ladder not in rubric["ladders"] or not any(str(r["n"]) == n for r in rubric["ladders"][ladder]["rungs"]):
+            raise HTTPException(400, f"No checklist rung {key}.")
+        if a.answer == "unknown":
+            answers.pop(key, None)
+            continue
+        source, url = _source_and_url(a.source, a.url)
+        answers[key] = {"answer": a.answer, "quote": " ".join(a.quote.split()), "url": url, "source": source,
+                        "by": "host", "at": stamp}
+    for key, s in body.support.items():
+        group, _, name = key.partition(".")
+        if group != "redstone" or name not in rubric["investment"]["factors"]:
+            raise HTTPException(400, f"No investment factor {key}.")
+        values = dict(ev.get(group) or {})
+        if s.value is None:
+            values.pop(name, None)
+            support.pop(key, None)
+        else:
+            source, url = _source_and_url(s.source, s.url)
+            values[name] = round(s.value * 2) / 2
+            support[key] = {"quote": " ".join(s.quote.split()), "url": url, "source": source, "by": "host", "at": stamp}
+        ev[group] = values
+    ev["checklist"], ev["support"] = answers, support
+    status = "confirmed" if body.confirm else comp["evidence_status"]
+    db.execute("UPDATE companies SET evidence = ?, evidence_status = ? WHERE id = ?", (dumps(ev), status, cid))
+    seed.score_company(db, cid)
+    db.commit()
+    return admin_company(db, service.get_company(db, cid))
+
+
+@app.post("/api/admin/companies/{cid}/checklist/ai", dependencies=[Depends(require_admin)])
+def admin_checklist_ai(cid: int, db=Depends(get_db)):
+    """Answer a company's checklists with AI from its website and news, each answer quoted. The host's own answers
+    stay as they are. Without a key, the host answers by hand instead."""
+    comp = service.get_company(db, cid)
+    if not comp:
+        raise HTTPException(404, "No such company.")
+    if not pitch.available():
+        raise HTTPException(400, "Set OPENROUTER_API_KEY in .env to answer the checklist with AI, or answer it by hand.")
+    try:
+        tally = checklist.run(db, comp)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Checklist failed: {reads.short_error(e)}")
+    return {"company": admin_company(db, service.get_company(db, cid)), "tally": tally}
+
+
+class WindowIn(BaseModel):
+    scale: str = Field("trl", pattern="^(trl|brl)$")
+    peak: list[int] = Field(min_length=2, max_length=2)
+    falloff: float = Field(3, gt=0, le=9)
+
+    @field_validator("peak")
+    @classmethod
+    def peak_band(cls, value: list[int]) -> list[int]:
+        if not (1 <= value[0] <= value[1] <= 9):
+            raise ValueError("the peak band is two levels from 1 to 9, low first")
+        return value
+
+
+class ThesisIn(BaseModel):
+    """One holder's criteria. An empty list (or ["*"]) accepts any sector or country; null ticket bounds are open."""
+    sectors: list[str] = Field([], max_length=60)
+    countries: list[str] = Field([], max_length=60)
+    ticket_eur: list[int | None] | None = None
+    window: WindowIn
+    criteria_note: str = Field("", max_length=400)
+
+
+@app.put("/api/admin/rubric/theses", dependencies=[Depends(require_admin)])
+def admin_set_theses(body: dict[str, ThesisIn]):
+    """Edit the thesis criteria (gates, stage window, note) in rubric.json: where the partners' real criteria go."""
+    rubric = json.loads(config.RUBRIC_PATH.read_text())
+    for holder, t in body.items():
+        if holder not in rubric["theses"] or holder.startswith("_"):
+            raise HTTPException(400, f"No thesis {holder}.")
+        words = lambda xs: [x.strip().lower() for x in xs if x.strip()]
+        sectors, countries = words(t.sectors), [c.strip() for c in t.countries if c.strip()]
+        ticket = t.ticket_eur if t.ticket_eur and any(v is not None for v in t.ticket_eur) else None
+        if ticket is not None and len(ticket) != 2:
+            raise HTTPException(400, "ticket_eur is [min, max].")
+        rubric["theses"][holder]["gates"] = {"sectors": "*" if not sectors or sectors == ["*"] else sectors,
+                                             "countries": "*" if not countries or countries == ["*"] else countries,
+                                             "ticket_eur": ticket}
+        rubric["theses"][holder]["window"] = t.window.model_dump()
+        rubric["theses"][holder]["criteria_note"] = t.criteria_note.strip()
+    config.RUBRIC_PATH.write_text(json.dumps(rubric, indent=2, ensure_ascii=False) + "\n")
+    engine.reload()
+    return engine.load_rubric()["theses"]
+
+
 @app.delete("/api/admin/discover/{cand_id}", dependencies=[Depends(require_admin)])
 def admin_discover_dismiss(cand_id: int, db=Depends(get_db)):
     get_candidate(db, cand_id)
@@ -1185,7 +1328,8 @@ def export_csv(db=Depends(get_db)):
                 "ocean_impact", "business_ready", "tech_trl", "investment_ready",
                 "thesis_apelago", "thesis_redstone",
                 "gap", "coverage", "evidence_review", "origin", "flags", "top_action", "web_items", "web_lean", "verdict",
-                "verdict_reason", "call", "call_reasons", "next_move", "next_steps"])
+                "verdict_reason", "call", "call_reasons", "next_move", "next_steps",
+                "brl_level", "brl_blocker", "trl_level", "ocean_level", "thesis_scope", "max_gap", "outside_composite"])
     blank = lambda v: "" if v is None else v
     for c in data["companies"]:
         cm = c["crowd"]["means"] or {}
@@ -1203,6 +1347,10 @@ def export_csv(db=Depends(get_db)):
                     c["pulse"]["items_total"] if c["pulse"] else "", c["pulse"]["lean"] if c["pulse"] else "",
                     c["verdict"], c["verdict_reason"], c["call"]["label"], "; ".join(c["call"]["reasons"]),
                     f"{c['next']['text']}: {c['next']['with']}" if c["next"] and c["next"]["with"] else "",
-                    "; ".join(f"{a['kind']}: {a['name']}" for a in c["actions"][:5])])
+                    "; ".join(f"{a['kind']}: {a['name']}" for a in c["actions"][:5]),
+                    blank(rd["business"].get("level")), (rd["business"].get("blocker") or {}).get("text", ""),
+                    blank(rd["tech"].get("trl")), blank(rd["ocean_impact"].get("level")),
+                    "; ".join(f"{k}: {t['fit']}" for k, t in th.items()),
+                    blank(c["divergence"]["max_gap"]), blank(c["outside"]["composite"])])
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": 'attachment; filename="insights.csv"'})

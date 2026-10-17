@@ -1,0 +1,95 @@
+{
+  "_comment": "How readiness and thesis fit are judged, editable without code. Ladders are cumulative: a company is at level N only when every rung up to N is answered 'yes' with a quoted source. The first rung that isn't is the blocker. Answers live in each company's evidence.checklist ({'business.6': {answer, quote, url, source, by}}); the engine (app/engine.py ladder) turns them into a level. A level with no answers falls back to the 0-5 evidence factors in weights.json.",
+
+  "sources": {
+    "_comment": "How much a source is worth, best first. A 'yes' from 'ai' (a model's inference with no quote found in the sources) never counts towards a ladder, and an investment factor backed only by 'ai' is down-weighted and capped.",
+    "rank": {"host": 1.0, "registry": 0.9, "deck": 0.8, "site": 0.75, "news": 0.7, "ai": 0.4},
+    "labels": {"host": "host-confirmed", "registry": "registry", "deck": "pitch deck", "site": "company site", "news": "news", "ai": "AI-inferred"},
+    "ai_factor_cap": 3.5
+  },
+
+  "ladders": {
+    "tech": {
+      "scale": "TRL",
+      "label": "Tech readiness (TRL)",
+      "framework": "Technology Readiness Level 1-9 (Aalto University / EU Horizon definitions)",
+      "rungs": [
+        {"n": 1, "title": "Basic principles observed", "question": "Are the basic scientific principles behind the technology observed and reported?", "blocker": "no basic principles shown"},
+        {"n": 2, "title": "Technology concept formulated", "question": "Is the technology concept or application formulated (designed, even if not built)?", "blocker": "no technology concept"},
+        {"n": 3, "title": "Experimental proof of concept", "question": "Has an experimental proof of concept been shown?", "blocker": "no proof of concept"},
+        {"n": 4, "title": "Validated in the lab", "question": "Has the technology been validated in a lab?", "blocker": "not validated in the lab"},
+        {"n": 5, "title": "Validated in a relevant environment", "question": "Has it been validated in a relevant environment (realistic conditions)?", "blocker": "not validated in a relevant environment"},
+        {"n": 6, "title": "Demonstrated in a relevant environment", "question": "Has a prototype been demonstrated in a relevant environment, e.g. a field pilot or trial?", "blocker": "no field pilot"},
+        {"n": 7, "title": "Prototype in operational environment", "question": "Has a system prototype run in an operational environment with real users?", "blocker": "no prototype in real operation"},
+        {"n": 8, "title": "System complete and qualified", "question": "Is the system complete and qualified, in use by paying customers?", "blocker": "system not complete or in customer use"},
+        {"n": 9, "title": "Proven in operation", "question": "Is the actual system proven in operation, sold at scale?", "blocker": "not proven in commercial operation"}
+      ]
+    },
+    "business": {
+      "scale": "BRL",
+      "label": "Business readiness (BRL)",
+      "framework": "KTH Innovation Readiness Level: Business Readiness Level 1-9",
+      "rungs": [
+        {"n": 1, "title": "Business idea hypothesised", "question": "Is there a hypothesis of a possible business concept?", "blocker": "no business concept"},
+        {"n": 2, "title": "Concept described", "question": "Is the business concept described in a structured form (e.g. NABC), with the overall market and some competitors or alternatives identified?", "blocker": "concept, market or competitors not described"},
+        {"n": 3, "title": "Draft business model", "question": "Is there a draft business model (canvas) with the market quantified (TAM/SAM) and a full competitor overview?", "blocker": "no business model draft or quantified market"},
+        {"n": 4, "title": "Full business model", "question": "Is there a full business model including revenues and costs, with first economic projections?", "blocker": "no full business model with revenues and costs"},
+        {"n": 5, "title": "Tested on the market", "question": "Have parts of the business model been tested with customers, with pricing hypotheses and differentiation verified by market feedback?", "blocker": "business model not tested with customers"},
+        {"n": 6, "title": "Test sales", "question": "Is the full business model, including pricing, verified on customers by test sales (e.g. a paying pilot)?", "blocker": "no test sales"},
+        {"n": 7, "title": "Product/market fit", "question": "Is there product/market fit: significant customer use and sales where customers show clear payment willingness?", "blocker": "no product/market fit"},
+        {"n": 8, "title": "Model holds and can scale", "question": "Do sales and metrics show the business model holds and can scale, with sales channels and supply chain in place?", "blocker": "sales don't yet show the model holds"},
+        {"n": 9, "title": "Scaling, profitable", "question": "Is the business scaling with growing recurring revenue, profitably?", "blocker": "not yet scaling with recurring revenue"}
+      ]
+    },
+    "ocean_impact": {
+      "scale": "OIN",
+      "label": "Ocean impact (Navigator KPI maturity)",
+      "framework": "Ocean Impact Navigator (1000 Ocean Startups): a KPI framework with no official levels. This is our 5-step measurement-maturity ladder over its impact areas and KPIs, not an official OIN level.",
+      "impact_areas": ["Sustainably managed ocean resources", "A clean ocean", "Thriving and restored marine habitats", "Towards a 1.5C world", "Resilient coastal communities", "Positive socio-economic outcomes"],
+      "_impact_areas_source": "WEF / 1000 Ocean Startups, The Ocean Impact Navigator (2023): '30 KPIs in six main impact areas'.",
+      "rungs": [
+        {"n": 1, "title": "Ocean problem named", "question": "Does it name a specific ocean-health problem it tackles?", "blocker": "no specific ocean problem named"},
+        {"n": 2, "title": "Mapped to a Navigator impact area", "question": "Does its impact clearly fall in one of the Navigator's impact areas (name it)?", "blocker": "not mapped to a Navigator impact area"},
+        {"n": 3, "title": "KPI and baseline", "question": "Has it chosen an impact KPI and measured a baseline?", "blocker": "no impact KPI or baseline"},
+        {"n": 4, "title": "Measured in operation", "question": "Does it report that KPI over time from a pilot or real operations?", "blocker": "impact not measured in operation"},
+        {"n": 5, "title": "Independently verified", "question": "Is the impact independently verified (peer-reviewed study or third party)?", "blocker": "impact not independently verified"}
+      ]
+    }
+  },
+
+  "investment": {
+    "_comment": "Redstone's investment-potential factors from the challenge brief, scored 0-5. The anchors say what a 1, 3 and 5 look like; every score needs a supporting quote and source (evidence.support).",
+    "factors": {
+      "market": {"label": "Market", "def": "size and growth of its market, as an investor sees it.", "anchors": {"1": "niche or shrinking market, no sizing", "3": "credible market sizing, moderate growth", "5": "large, fast-growing market with evidence of demand"}},
+      "product": {"label": "Product", "def": "how mature and good the product is.", "anchors": {"1": "an idea or mock-up", "3": "working product with first users", "5": "polished product in paying customers' hands"}},
+      "team": {"label": "Team", "def": "strength and track record of the team, only if the sources describe it.", "anchors": {"1": "incomplete team, key skills missing", "3": "complete founding team with relevant experience", "5": "proven founders with prior exits or deep domain track record"}},
+      "business_model": {"label": "Business model", "def": "how attractive the business model is to an investor (margins, recurring revenue).", "anchors": {"1": "no clear way to make money", "3": "clear model, unproven margins", "5": "recurring revenue with proven, attractive margins"}},
+      "competition": {"label": "Competition", "def": "its position against competitors.", "anchors": {"1": "crowded, no edge", "3": "some differentiation", "5": "clear, defensible lead"}},
+      "marketing": {"label": "Marketing & distribution", "def": "how credible its route to customers is (sales, partners, distribution).", "anchors": {"1": "no route to customers", "3": "first channel or partner working", "5": "repeatable, scalable distribution"}},
+      "financials": {"label": "Financials", "def": "revenue and funding traction.", "anchors": {"1": "no revenue, no funding", "3": "first revenue or a funded round", "5": "strong revenue growth or well funded"}},
+      "tech": {"label": "Tech", "def": "technical depth and how hard it is to copy.", "anchors": {"1": "commodity technology", "3": "some proprietary know-how", "5": "deep, defensible technology"}},
+      "deal_dynamics": {"label": "Deal dynamics", "def": "how attractive investing now is (round momentum, investor interest, terms).", "anchors": {"1": "ask out of line with traction", "3": "sensible ask, some interest", "5": "hot round on fair terms"}},
+      "impact": {"label": "Impact", "def": "ocean impact as part of the investment case.", "anchors": {"1": "impact claimed, not part of the case", "3": "impact plausible and linked to revenue", "5": "impact central to the case and evidenced"}}
+    }
+  },
+
+  "theses": {
+    "_comment": "Thesis fit per holder: hard gates first (out of scope = no fit, with the reason), then a stage window (fit peaks in a band and falls off outside it), then the weighted evidence factors. Every criterion here is an EDITABLE DEFAULT, not the partners' real thesis: replace them with what A'Pelago and Redstone say (Admin > Thesis criteria, or edit this file). countries: '*' or a list of countries and regions (Nordic, EU, Baltic). ticket_eur: [min, max] in euros, either may be null; null switches the gate off. sectors: words matched against the sector and pitch (words of 5+ letters also match as a prefix: 'coast' finds 'coastal'); '*' accepts any.",
+    "apelago": {
+      "label": "A'Pelago accelerator",
+      "description": "Early-stage blue-economy accelerator: ocean impact, business readiness, founding team.",
+      "factors": [["impact.problem_pressure", 1.5], ["impact.solution_potential", 1.5], ["impact.measurability", 1], ["brl.market", 1.3], ["brl.value_prop", 1.2], ["brl.business_model", 1.2], ["brl.scalability", 1], ["redstone.team", 1.7], ["redstone.product", 1], ["trl", 0.8]],
+      "gates": {"sectors": ["ocean", "marine", "maritime", "blue", "sea", "seas", "seaweed", "algae", "aquaculture", "fish", "fishing", "fisheries", "shellfish", "coastal", "ship", "shipping", "harbour", "harbor", "offshore", "desalination", "kelp", "plastics", "water", "baltic", "arctic", "wave", "waves", "tidal"], "countries": "*", "ticket_eur": null},
+      "window": {"scale": "trl", "peak": [4, 7], "falloff": 3},
+      "criteria_note": "Editable default. Stage band and geography are placeholders until A'Pelago confirms its real criteria."
+    },
+    "redstone": {
+      "label": "Redstone investment",
+      "description": "Early-stage venture: market, product, team, business model, financials, deal dynamics.",
+      "factors": [["redstone.market", 1.5], ["redstone.product", 1.4], ["redstone.team", 1.4], ["redstone.business_model", 1.4], ["redstone.financials", 1.5], ["redstone.deal_dynamics", 1.5], ["redstone.competition", 1.1], ["redstone.tech", 1], ["redstone.impact", 0.8]],
+      "gates": {"sectors": ["ocean", "marine", "maritime", "blue", "sea", "seas", "seaweed", "algae", "aquaculture", "fish", "fishing", "fisheries", "shellfish", "coastal", "ship", "shipping", "harbour", "harbor", "offshore", "desalination", "kelp", "plastics", "water", "baltic", "arctic", "wave", "waves", "tidal"], "countries": "*", "ticket_eur": null},
+      "window": {"scale": "trl", "peak": [5, 9], "falloff": 3},
+      "criteria_note": "Editable default. Ticket size and geography are off until Redstone confirms its real criteria."
+    }
+  }
+}

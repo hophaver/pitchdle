@@ -54,6 +54,7 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL") or ""
 GPT_MODEL = os.environ.get("GPT_MODEL") or ""
 GROK_MODEL = os.environ.get("GROK_MODEL") or ""
 WEIGHTS_PATH = ROOT / "weights.json"
+RUBRIC_PATH = ROOT / "rubric.json"
 CRAWL_CACHE = ROOT / "data" / "crawl_cache"
 STATIC_DIR = ROOT / "static"
 
