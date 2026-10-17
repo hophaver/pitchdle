@@ -1,17 +1,21 @@
 // Player flow for /play: today's set, self-paced.
 // Answer every card first; you vs the crowd is shown only at the end.
-const { h, api, post, AXES, AXIS, colorFor } = PD;
+const { h, api, post, AXES, AXIS, colorFor, safeLink, hostOf, plural } = PD;
 
 const $app = document.getElementById("app");
 const S = {
   set: null,
   cards: [],
   answered: new Set(),
-  user: null,      // { username } when signed in
+  user: null,      // { username, kind } when signed in
   overlay: false,  // an account screen is up
 };
 
+// Investors rate the full card (facts, vision and what others make of it); players and guests the pitch alone.
+const isInvestor = () => !!S.user && S.user.kind === "investor";
+
 function show(...nodes) {
+  $app.classList.remove("wide"); // only the card being rated takes the whole screen
   $app.replaceChildren(...nodes.flat().filter(Boolean));
   window.scrollTo({ top: 0 });
 }
@@ -51,6 +55,57 @@ function showStart() {
 }
 
 // --- one card -------------------------------------------------------------------------------------
+// A player's card is the pitch and the four calls. An investor's has everything there is to weigh, from the start: the pitch, the facts and the vision, and what A'Pelago, the AI models
+// and social media make of it. On a wide screen the facts, vision and your four calls sit left and the opinions
+// right; on a phone they stack in that order, opinions before the calls. The crowd's read waits for the results.
+
+function cardFacts(c) {
+  const invested = c.investors.filter((i) => i.status === "invested");
+  const box = (label, value, cls = "") => h("div", { class: `fact-box ${cls}` }, h("small", { class: "caps" }, label),
+    h("b", {}, value));
+  return h("section", { class: "sect g-facts" },
+    h("div", { class: "fact-grid" },
+      box("Raised so far", c.raised_eur === null || c.raised_eur === undefined ? "Not disclosed" : PD.money(c.raised_eur)),
+      box("Investors", invested.length ? String(invested.length) : "None yet"),
+      box("Stage", c.stages.length ? c.stages[c.stages.length - 1] : "Not given", "wide")),
+    c.stages.length ? [h("div", { class: "caps sect-title" }, "Stages passed"),
+      h("ol", { class: "stage-list" }, c.stages.map((stage) => h("li", {}, stage)))] : null,
+    c.investors.length ? [h("div", { class: "caps sect-title" }, "Investors"),
+      h("ul", { class: "investor-list" }, c.investors.map((i) => h("li", {}, h("b", {}, i.name), " ",
+        i.status === "interested" ? h("span", { class: "interested" }, "interested")
+          : i.amount_eur ? PD.money(i.amount_eur) : "invested")))] : null);
+}
+
+function cardVision(c) {
+  if (!c.vision) return null;
+  return h("section", { class: "sect g-vision" }, h("div", { class: "caps sect-title" }, "Vision"),
+    c.vision.split(/\n{2,}/).map((para) => h("p", { class: "vision" }, para)));
+}
+
+// One row per opinion: who, their four calls on the 0–5 scale, and why.
+function opinionRow(t) {
+  const count = t.count ? plural(t.count, COUNT_WORD[t.key] || "post") : null;
+  return h("div", { class: "op-row" },
+    h("div", { class: "op-who" }, h("b", {}, t.label), count ? h("small", {}, count) : null),
+    PD.opinionChart(t.scores, { labelled: true }),
+    t.note ? h("p", { class: "op-note" }, t.note) : null);
+}
+
+function cardOpinions(c) {
+  const group = (g) => c.opinions.filter((t) => t.group === g);
+  const empty = (text) => h("p", { class: "op-empty" }, text);
+  const [apelago, ai, social] = [group("people"), group("ai"), group("social")];
+  return h("section", { class: "sect g-opinions" },
+    h("div", { class: "caps sect-title" }, "What others make of it"),
+    apelago.length ? apelago.map(opinionRow) : empty("A'Pelago hasn't rated it yet."),
+    h("div", { class: "caps sect-title" }, "AI models"),
+    ai.length ? ai.map(opinionRow) : empty("No AI ratings yet."),
+    h("div", { class: "caps sect-title" }, "Social media"),
+    social.map(opinionRow),
+    !c.is_real && !social.length ? empty("None: this startup is made up.")
+      : c.quiet.length ? empty(`No posts found on ${c.quiet.join(", ")}.`)
+        : social.length ? null : empty("Not read yet."));
+}
 
 function showCard(c, index, total) {
   const values = {};
@@ -69,17 +124,18 @@ function showCard(c, index, total) {
     return h("div", {}, h("div", { class: "caps axis-label" }, AXIS[axis]), h("div", { class: "taps" }, buttons));
   });
 
-  const el = card(colorFor(index),
-    cardTop(index, total),
-    h("div", { class: "pitch-head" },
-      h("div", {}, h("div", { class: "caps sector" }, c.sector), h("p", { class: "pitch-line" }, c.one_liner)),
-      c.emoji ? h("div", { class: "art", "aria-hidden": "true" }, c.emoji) : null),
-    h("p", { class: "ask" }, c.claim_ask),
-    h("div", { class: "who" }, `— ${c.name}`),
-    // Leads into the four calls: "Is this… novel? useful? …"
-    h("div", { class: "is-this" }, "Is this…"),
-    h("div", { class: "axes" }, rows),
-    h("div", { class: "actions" }, lock));
+  const el = isInvestor() ? fullCard(c, index, total, rows, lock)
+    : card(colorFor(index),
+      cardTop(index, total),
+      h("div", { class: "pitch-head" },
+        h("div", {}, h("div", { class: "caps sector" }, c.sector), h("p", { class: "pitch-line" }, c.one_liner)),
+        c.emoji ? h("div", { class: "art", "aria-hidden": "true" }, c.emoji) : null),
+      h("p", { class: "ask" }, c.claim_ask),
+      h("div", { class: "who" }, `— ${c.name}`),
+      // Leads into the four calls: "Is this… novel? useful? …"
+      h("div", { class: "is-this" }, "Is this…"),
+      h("div", { class: "axes" }, rows),
+      h("div", { class: "actions" }, lock));
 
   lock.addEventListener("click", async () => {
     lock.disabled = true;
@@ -94,6 +150,31 @@ function showCard(c, index, total) {
     }
   });
   show(el);
+  if (isInvestor()) $app.classList.add("wide");
+}
+
+function fullCard(c, index, total, rows, lock) {
+  const site = safeLink(c.website);
+  const el = card(colorFor(index),
+    cardTop(index, total),
+    h("div", { class: "pitch-head" },
+      h("div", {}, h("div", { class: "caps sector" }, c.sector),
+        h("p", { class: "pitch-line" }, c.one_liner || (c.vision || "").split(/(?<=[.!?])\s/)[0])),
+      c.emoji ? h("div", { class: "art", "aria-hidden": "true" }, c.emoji) : null),
+    h("p", { class: "ask" }, c.claim_ask),
+    h("div", { class: "who" }, `— ${c.name}`, site ? [" · ", h("a", { href: site, target: "_blank",
+      rel: "noopener noreferrer nofollow" }, `${hostOf(site)} ↗`)] : null),
+    h("div", { class: "card-grid" },
+      cardFacts(c),
+      cardVision(c),
+      cardOpinions(c),
+      // Leads into the four calls: "Is this… novel? useful? …"
+      h("section", { class: "sect g-call" },
+        h("div", { class: "is-this" }, "Is this…"),
+        h("div", { class: "axes" }, rows),
+        h("div", { class: "actions" }, lock))));
+  el.classList.add("full");
+  return el;
 }
 
 function nextCard() {
@@ -122,14 +203,10 @@ function headline(leans) {
 // Averages to one decimal, dropping a trailing ".0": 4.2 → "4.2", 3.02 → "3".
 const fmtAvg = (n) => (n === null || n === undefined ? "–" : String(Math.round(n * 10) / 10));
 
-// Links come from the server already checked, but never render anything that isn't plain http(s).
-const safeLink = (url) => (/^https?:\/\//i.test(url || "") ? url : null);
-
 function companyLink(r) {
-  const site = safeLink(r.website);
+  const site = safeLink(r.card.website);
   if (site) {
-    const host = new URL(site).hostname.replace(/^www\./, "");
-    return h("a", { class: "company-link", href: site, target: "_blank", rel: "noopener noreferrer nofollow" }, `${host} ↗`);
+    return h("a", { class: "company-link", href: site, target: "_blank", rel: "noopener noreferrer nofollow" }, `${hostOf(site)} ↗`);
   }
   if (r.card.is_real) {
     const q = encodeURIComponent(r.card.name);
@@ -139,18 +216,53 @@ function companyLink(r) {
   return h("span", { class: "company-link muted-link" }, "Made-up startup");
 }
 
+// Every opinion on a result card is the same little chart: four columns, Novel to Investable, on 0–5.
+const OPINION_GROUPS = [["people", "People"], ["ai", "AI models"], ["social", "Social media"]];
+const COUNT_WORD = { crowd: "answer", apelago: "reviewer" }; // social media counts posts
+
+function opinionTile(t) {
+  const you = t.key === "you";
+  const count = t.count ? plural(t.count, COUNT_WORD[t.key] || "post") : null;
+  // Your read is the one picked out; you and everyone else carry their numbers, the rest on hover or below.
+  return h("figure", { class: `op${you ? " op-you" : ""}` },
+    h("figcaption", {}, h("b", {}, t.label), count ? h("small", {}, count) : null),
+    PD.opinionChart(t.scores, { labelled: you || t.key === "crowd" }));
+}
+
+// The same numbers as a table, with why each AI or platform thinks so: nothing is only on hover.
+function opinionDetails(tiles) {
+  const notes = tiles.filter((t) => t.note);
+  return h("details", { class: "op-more" },
+    h("summary", {}, notes.length ? "Numbers and reasons" : "Numbers"),
+    h("table", { class: "op-table" },
+      h("thead", {}, h("tr", {}, h("td"), AXES.map((a) => h("th", { scope: "col" }, AXIS[a])))),
+      h("tbody", {}, tiles.map((t) => h("tr", {}, h("th", { scope: "row" }, t.label),
+        AXES.map((a) => h("td", {}, fmtAvg(t.scores[a]))))))),
+    notes.length ? h("ul", { class: "op-notes" }, notes.map((t) => h("li", {}, h("b", {}, `${t.label}: `), t.note))) : null);
+}
+
+// A player sees their read next to everyone else's; an investor also sees A'Pelago's, the AI models' and social media's.
 function resultCard(r, i) {
-  const nums = (scores, fmt) => h("div", { class: "nums" },
-    AXES.map((a) => h("div", {}, h("b", {}, fmt(scores && scores[a])), h("small", {}, AXIS[a]))));
-  return card(colorFor(i),
-    h("div", { class: "result-head" },
-      r.card.emoji ? h("div", { class: "art small", "aria-hidden": "true" }, r.card.emoji) : null,
-      h("div", {}, h("div", { class: "result-name" }, r.card.name), h("div", { class: "caps sector" }, r.card.sector),
-        companyLink(r))),
-    h("div", { class: "block you" }, h("div", { class: "caps" }, "You said"), nums(r.you.scores, (v) => v)),
-    // Average of every other player's answer.
-    h("div", { class: "block crowd" }, h("div", { class: "caps" }, `Everyone · ${r.crowd.n}`),
-      nums(r.crowd.means, fmtAvg)));
+  const head = h("div", { class: "result-head" },
+    r.card.emoji ? h("div", { class: "art small", "aria-hidden": "true" }, r.card.emoji) : null,
+    h("div", {}, h("div", { class: "result-name" }, r.card.name), h("div", { class: "caps sector" }, r.card.sector),
+      companyLink(r)));
+  if (!isInvestor()) {
+    const nums = (scores, fmt) => h("div", { class: "nums" },
+      AXES.map((a) => h("div", {}, h("b", {}, fmt(scores && scores[a])), h("small", {}, AXIS[a]))));
+    return card(colorFor(i), head,
+      h("div", { class: "block you" }, h("div", { class: "caps" }, "You said"), nums(r.you.scores, (v) => v)),
+      // Average of every other player's answer.
+      h("div", { class: "block crowd" }, h("div", { class: "caps" }, `Everyone · ${r.crowd.n}`),
+        nums(r.crowd.means, fmtAvg)));
+  }
+  return card(colorFor(i), head,
+    OPINION_GROUPS.map(([group, title]) => {
+      const tiles = r.opinions.filter((t) => t.group === group);
+      return tiles.length ? h("section", { class: "op-group" }, h("div", { class: "caps op-title" }, title),
+        h("div", { class: "op-grid" }, tiles.map(opinionTile))) : null;
+    }),
+    opinionDetails(r.opinions));
 }
 
 async function showResults() {
@@ -315,7 +427,8 @@ function submitForm(wrap) {
 
 // --- account ----------------------------------------------------------------------------------------
 // Everyone plays as a guest until they log in. Guests get today's set; an account keeps history and stats
-// across devices, opens earlier sets, and counts for more in the crowd score.
+// across devices, opens earlier sets, and counts for more in the crowd score. A moderator approves every
+// sign-up before it can log in.
 
 // Back to whatever the player was doing, after an account screen.
 function resume() {
@@ -388,6 +501,8 @@ function accountMenu() {
   }
   const items = () => [
     item("Your history", () => { closeMenu(); showHistory(); }),
+    // Moderators' login opens the moderation page too, so this needs no second sign-in.
+    S.user.is_moderator ? item("Moderation ↗", () => { closeMenu(); window.open("/moderate", "_blank", "noopener"); }) : null,
     // Test account only (TEST_USERNAME in .env): start the game over without making a new account.
     S.user.is_test ? item("Reset my data", resetData) : null,
     item("Log out", logout),
@@ -413,45 +528,194 @@ function paperCard(title, ...kids) {
 }
 
 function showAuth(mode = "login") {
+  if (mode === "signup") return showSignup();
   closeMenu();
   S.overlay = true;
-  const signup = mode === "signup";
   const username = h("input", { name: "username", type: "text", required: true, minlength: 3, maxlength: 20,
     autocomplete: "username", autocapitalize: "none", spellcheck: "false", placeholder: "seaotter" });
   const password = h("input", { name: "password", type: "password", required: true, minlength: 4, maxlength: 200,
-    autocomplete: signup ? "new-password" : "current-password", placeholder: signup ? "at least 4 characters" : "" });
-  const send = h("button", { class: "pill block", type: "submit" }, signup ? "Create account" : "Log in");
+    autocomplete: "current-password" });
+  const send = h("button", { class: "pill block", type: "submit" }, "Log in");
+  // The right password on a sign-up that isn't approved (yet) is explained here, not in a passing toast.
+  const note = h("p", { class: "auth-note hidden", role: "status" });
   const field = (label, el) => h("label", { class: "submit-field" }, h("span", { class: "caps" }, label), el);
 
   const form = h("form", { novalidate: true },
     field("Username", username),
     field("Password", password),
+    note,
     h("div", { class: "actions" }, send));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (username.value.trim().length < 3) { username.focus(); return PD.toast("Username: at least 3 characters"); }
     if (password.value.length < 4) { password.focus(); return PD.toast("Password: at least 4 characters"); }
     send.disabled = true;
+    note.classList.add("hidden");
     try {
-      const r = await post(signup ? "/api/account/register" : "/api/account/login",
-        { username: username.value.trim(), password: password.value });
+      const r = await post("/api/account/login", { username: username.value.trim(), password: password.value });
       S.user = r.user;
       PD.toast(r.claimed ? `Hi ${r.user.username}! ${r.claimed} answer${r.claimed === 1 ? "" : "s"} saved` : `Hi ${r.user.username}!`);
       resume();
     } catch (err) {
-      PD.toast(err.message);
+      if (err.status === 403) {
+        note.textContent = err.message;
+        note.classList.remove("hidden");
+      } else {
+        PD.toast(err.message);
+      }
       send.disabled = false;
     }
   });
 
-  show(paperCard(signup ? "Sign up" : "Log in",
-    h("h1", { class: "account-head" }, signup ? "Keep your " : "Welcome ", h("span", { class: "hand" }, signup ? "streak" : "back")),
-    signup ? h("p", { class: "submit-intro" },
-      "Save your answers and stats, play earlier sets, and count for more in the crowd score. Whatever you played here as a guest comes with you.") : null,
+  show(paperCard("Log in",
+    h("h1", { class: "account-head" }, "Welcome ", h("span", { class: "hand" }, "back")),
     form,
-    h("button", { class: "switch-link", type: "button", onclick: () => showAuth(signup ? "login" : "signup") },
-      signup ? "Have an account? " : "New here? ", h("b", {}, signup ? "Log in" : "Create one"))));
+    h("button", { class: "switch-link", type: "button", onclick: () => showSignup() }, "New here? ", h("b", {}, "Sign up"))));
   setTimeout(() => username.focus(), 50);
+}
+
+// A player signs up with the first section alone and is in at once. An investor fills in all of it, which is what a
+// moderator judges them on. Mirrors PlayerSignUp and SignUp in app/main.py, which check all of it again.
+const LINK_KEYS = ["linkedin", "github", "portfolio", "cv", "other"];
+const SIGNUP_SECTIONS = [
+  { title: "Your account", fields: [
+    { key: "username", label: "Username", min: 3, max: 20, autocomplete: "username", placeholder: "seaotter",
+      attrs: { autocapitalize: "none", spellcheck: "false" } },
+    { key: "password", label: "Password", type: "password", min: 4, max: 200, autocomplete: "new-password",
+      placeholder: "at least 4 characters" },
+  ] },
+  { title: "About you", fields: [
+    { key: "full_name", label: "Full name", min: 2, max: 80, autocomplete: "name", placeholder: "Maija Virtanen" },
+    { key: "email", label: "Email", type: "email", max: 120, autocomplete: "email", placeholder: "maija@example.com" },
+    { key: "role", label: "What do you do?", options: PD.ROLES },
+    { key: "organisation", label: "Organisation", optional: true, max: 80, autocomplete: "organization",
+      placeholder: "company, fund or university" },
+    { key: "location", label: "Based in", optional: true, max: 80, placeholder: "Turku, Finland" },
+    { key: "expertise", label: "What you know well", optional: true, max: 160,
+      placeholder: "aquaculture, ship design, impact investing" },
+  ] },
+  { title: "Your links", note: "At least one, so a moderator can see who you are.", fields: [
+    { key: "linkedin", label: "LinkedIn", type: "url", max: 200, placeholder: "linkedin.com/in/…" },
+    { key: "github", label: "GitHub", type: "url", max: 200, placeholder: "github.com/…" },
+    { key: "portfolio", label: "Portfolio or website", type: "url", max: 200, placeholder: "yourname.com" },
+    { key: "cv", label: "CV", type: "url", max: 200, placeholder: "a link, e.g. Google Drive or Dropbox" },
+    { key: "other", label: "Anything else", type: "url", max: 200, placeholder: "Google Scholar, X, Wellfound…" },
+  ] },
+  { title: "Why join?", fields: [
+    { key: "motivation", label: "What would you bring?", short: "Why join", area: true, min: 20, max: 600,
+      placeholder: "A sentence or two is plenty." },
+  ] },
+];
+const sectionsFor = (kind) => (kind === "investor" ? SIGNUP_SECTIONS : SIGNUP_SECTIONS.slice(0, 1));
+
+// [field, message] for the first thing to fix before sending, or null.
+function signupProblem(body, kind) {
+  for (const f of sectionsFor(kind).flatMap((sec) => sec.fields)) {
+    const name = f.short || f.label;
+    if (f.options && !body[f.key]) return [f.key, `${name} Pick one.`];
+    if (f.min && body[f.key].length < f.min) return [f.key, `${name}: at least ${f.min} characters`];
+  }
+  if (kind !== "investor") return null;
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.email)) return ["email", "Email: that doesn't look like an address"];
+  if (!LINK_KEYS.some((k) => body[k])) return ["linkedin", "Add at least one link"];
+  return null;
+}
+
+// `typed` carries what was already filled in across a switch between player and investor.
+function showSignup(kind = "player", typed = {}) {
+  closeMenu();
+  S.overlay = true;
+  const investor = kind === "investor";
+  const sections = sectionsFor(kind);
+  const fields = sections.flatMap((sec) => sec.fields);
+  const inputs = {};
+  const clean = (v) => v.replace(/\s+/g, " ").trim();
+  const send = h("button", { class: "pill block", type: "submit" }, investor ? "Send for review" : "Create account");
+  const switchTo = (next) => {
+    if (next === kind) return;
+    showSignup(next, { ...typed, ...Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value])) });
+  };
+  const kindSwitch = h("div", { class: "kind-switch", role: "group", "aria-label": "I'm signing up as" },
+    [["player", "Player"], ["investor", "Investor"]].map(([k, label]) => h("button", {
+      type: "button", "aria-pressed": String(k === kind), onclick: () => switchTo(k) }, label)));
+
+  const fieldRow = (f) => {
+    const el = f.options
+      ? h("select", { name: f.key, required: true },
+        h("option", { value: "" }, "Choose one"), Object.entries(f.options).map(([v, t]) => h("option", { value: v }, t)))
+      : h(f.area ? "textarea" : "input", {
+        name: f.key, type: f.area ? null : (f.type || "text"), rows: f.area ? 4 : null,
+        required: !f.optional && f.type !== "url", maxlength: f.max, placeholder: f.placeholder,
+        autocomplete: f.autocomplete || "off", inputmode: f.type === "url" ? "url" : null, ...f.attrs });
+    const count = f.area ? h("span", { class: "count" }) : null;
+    if (count) {
+      const tally = () => { count.textContent = `${el.value.trim().length}/${f.max}`; };
+      el.addEventListener("input", tally);
+      tally();
+    }
+    if (typed[f.key]) el.value = typed[f.key];
+    inputs[f.key] = el;
+    return h("label", { class: "submit-field" },
+      h("span", { class: "row" }, h("span", { class: "caps" }, f.label),
+        f.optional ? h("span", { class: "optional" }, "optional") : null, h("span", { class: "spacer" }), count),
+      el);
+  };
+
+  const form = h("form", { novalidate: true },
+    sections.map((sec) => h("fieldset", { class: "form-section" },
+      h("legend", { class: "hand" }, sec.title),
+      sec.note ? h("p", { class: "section-note" }, sec.note) : null,
+      sec.fields.map(fieldRow))),
+    investor ? h("p", { class: "section-note privacy" }, "Only moderators see these details. Deleting your account deletes them too.") : null,
+    h("div", { class: "actions" }, send));
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    // The password as typed and the motivation with its line breaks; everything else as one tidy line.
+    const body = Object.fromEntries(fields.map((f) => {
+      const v = inputs[f.key].value;
+      return [f.key, f.type === "password" ? v : f.area ? v.trim() : clean(v)];
+    }));
+    const problem = signupProblem(body, kind);
+    if (problem) {
+      inputs[problem[0]].focus();
+      return PD.toast(problem[1]);
+    }
+    send.disabled = true;
+    try {
+      const r = await post("/api/account/register", { ...body, kind });
+      if (!investor) {
+        S.user = r.user;
+        PD.toast(r.claimed ? `Welcome, ${r.user.username}! ${r.claimed} answer${r.claimed === 1 ? "" : "s"} saved` : `Welcome, ${r.user.username}!`);
+        return resume();
+      }
+      showApplied(body.full_name);
+    } catch (err) {
+      PD.toast(err.message, 5000);
+      send.disabled = false;
+    }
+  });
+
+  show(paperCard("Sign up",
+    h("h1", { class: "account-head" }, "Keep your ", h("span", { class: "hand" }, "streak")),
+    kindSwitch,
+    h("p", { class: "submit-intro" }, investor
+      ? "For investors and others who back startups. A moderator reviews every investor sign-up. Once you're in, you rate the full card (facts, vision, and what A'Pelago, AI models and social media make of it), and your reads count the most in the crowd score."
+      : "Save your answers and stats, play earlier sets, and count for more in the crowd score than a guest. You're in straight away."),
+    h("p", { class: "submit-intro" }, "Whatever you play here as a guest comes with you."),
+    form,
+    h("button", { class: "switch-link", type: "button", onclick: () => showAuth("login") }, "Have an account? ", h("b", {}, "Log in"))));
+  setTimeout(() => inputs.username.focus(), 50);
+}
+
+function showApplied(fullName) {
+  document.querySelector(".toast")?.classList.add("hidden"); // an error fixed a moment ago shouldn't linger here
+  show(paperCard("Sign up",
+    h("div", { class: "big-mark" }, "✓"),
+    h("div", { class: "wait-title" }, `Thanks, ${fullName.split(" ")[0]}!`),
+    h("p", { class: "submit-intro applied" },
+      "A moderator will look at your sign-up, and you can log in once it's approved. Until then, keep playing as a guest: what you play on this device comes with you the first time you log in here."),
+    h("div", { class: "actions" }, pill("Back to the game →", resume))));
 }
 
 const dayLabel = (iso) => (iso ? new Date(`${iso}T00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "");

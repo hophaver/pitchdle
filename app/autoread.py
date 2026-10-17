@@ -1,0 +1,117 @@
+"""Automatic outside reads: a new card gets its AI ratings, and a real startup its social media read, as soon as it's
+added; cards from before get theirs when the app starts. Runs in a background thread, never on the game's path.
+
+Each run reads every card still missing a read this setup can make, each card once. Whatever fails (an error, a
+model down) stays missing for the next run instead of being retried in a loop. Reads typed in by hand, and
+platforms already searched without finding anything, count as done.
+
+Sample startups are made up, so they get AI ratings only: a social search could only find their namesakes.
+"""
+import logging
+import threading
+
+from . import opinions, reads
+from .db import connect, now
+from .service import get_setting, set_setting
+
+log = logging.getLogger("pitchdle")
+_state = threading.Lock()  # guards the two flags below; never held during a run
+_running = False
+_again = False  # a card arrived during a run: go round once more before stopping
+
+
+def START(fn) -> None:
+    """How a run is launched. Tests swap this for a direct call."""
+    threading.Thread(target=fn, daemon=True, name="pitchdle-autoread").start()
+
+
+def store(db, cid: int, results: dict) -> dict:
+    """Keep each read that came back. Returns what happened per source: done (with posts found), error or skipped."""
+    report = {}
+    for source, result in results.items():
+        if "scores" in result:
+            opinions.save(db, cid, source, result["scores"], result["note"], result["meta"] | {"by": "fetched"})
+            report[source] = {"done": True, "posts": result["meta"].get("posts")}
+        else:
+            report[source] = result
+    return report
+
+
+def gaps(db, comp) -> tuple[list[str], list[str]]:
+    """The AI models and social platforms a company has no read from yet, of those this setup can ask."""
+    have = {r["source"] for r in db.execute("SELECT source FROM opinions WHERE company_id = ?", (comp["id"],))}
+    ready = reads.setup()
+    ai = [key for key in opinions.AI if ready[key] and key not in have]
+    social = [p for p in opinions.SOCIAL if p not in have and reads.can_read(p)] if comp["is_real"] else []
+    return ai, social
+
+
+def fill(db) -> dict:
+    """One run: read every card that's missing something, including cards added while it runs."""
+    st = {"started_at": now(), "finished_at": None, "read": [], "errors": []}
+    set_setting(db, "autoread", st)
+    tried = set()
+    while True:
+        todo = []
+        for comp in db.execute("SELECT * FROM companies ORDER BY is_real DESC, id").fetchall():
+            if comp["id"] not in tried:
+                ai, social = gaps(db, comp)
+                if ai or social:
+                    todo.append((comp, ai, social))
+        if not todo:
+            break
+        for comp, ai, social in todo:
+            tried.add(comp["id"])
+            try:
+                results = (reads.rate_all(comp, only=ai) if ai else {}) | (reads.social_all(comp, only=social) if social else {})
+                report = store(db, comp["id"], results)
+            except Exception as e:  # noqa: BLE001 - e.g. the company was deleted meanwhile
+                st["errors"].append(f"{comp['name']}: {reads.short_error(e)}")
+                continue
+            st["read"].append(comp["name"])
+            st["errors"] += [f"{comp['name']}, {opinions.OUTSIDE[k]}: {r['error']}" for k, r in report.items() if "error" in r]
+            set_setting(db, "autoread", st)
+    st["finished_at"], st["errors"] = now(), st["errors"][-20:]
+    set_setting(db, "autoread", st)
+    return st
+
+
+def work() -> None:
+    global _running, _again
+    while True:
+        try:
+            conn = connect()
+            try:
+                fill(conn)
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 - the next run tries again
+            log.exception("Pitchdle: automatic reads failed")
+        with _state:
+            if not _again:
+                _running = False
+                return
+            _again = False
+
+
+def kick() -> bool:
+    """Read whatever is missing, in the background, if any model can be asked. Returns whether a run is on."""
+    global _running, _again
+    if not any(reads.setup().values()):
+        return False
+    with _state:
+        if _running:
+            _again = True
+            return True
+        _running = True
+    try:
+        START(work)
+    except Exception:
+        with _state:
+            _running = False
+        raise
+    return True
+
+
+def status(db) -> dict:
+    return (get_setting(db, "autoread") or {}) | {"running": _running}

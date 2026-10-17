@@ -3,7 +3,7 @@ import io
 
 
 from app import config
-from tests.conftest import new_player
+from tests.conftest import join, new_player, sign_up
 
 GUESS = {"novel": 3, "useful": 3, "plausible": 3, "investable": 3}
 
@@ -16,9 +16,23 @@ def answer(c, dive_id, cid, scores=GUESS):
     return c.post("/api/vote", json={"dive_id": dive_id, "company_id": cid, "scores": scores})
 
 
-def test_cards_show_only_the_pitch(client):
-    card = today(client)["cards"][0]
-    assert set(card) == {"id", "name", "emoji", "sector", "one_liner", "claim_ask", "is_real"}
+PROFILE_KEYS = {"id", "name", "emoji", "sector", "one_liner", "claim_ask", "is_real", "vision", "website", "stages",
+                "raised_eur", "investors"}
+
+
+def test_investors_get_the_full_card_but_not_the_crowd_or_the_engine(client):
+    investor = new_player(client)
+    sign_up(investor)
+    card = today(investor)["cards"][0]
+    assert set(card) == PROFILE_KEYS | {"opinions", "quiet"}
+    assert not any(t["key"] in ("you", "crowd") for t in card["opinions"])  # the crowd waits for the results
+
+
+def test_guests_and_players_get_the_simple_card(client):
+    assert set(today(client)["cards"][0]) == PROFILE_KEYS
+    player = new_player(client)
+    assert join(player).json()["user"]["kind"] == "player"
+    assert set(today(player)["cards"][0]) == PROFILE_KEYS
 
 
 def test_results_only_after_every_card(client):
@@ -33,8 +47,8 @@ def test_results_only_after_every_card(client):
     first = r["cards"][0]
     # "Everyone" leaves out the player's own answer, so a lone player has no one to compare with.
     assert first["crowd"]["n"] == 0 and first["crowd"]["means"] is None and first["lean"] is None
-    assert "engine" not in first  # players compare with the crowd only
-    assert "website" in first
+    assert "engine" not in first  # players never see the engine
+    assert [o["key"] for o in first["opinions"]] == ["you"]  # nobody else's read yet
     assert 0 < r["next_set_in"] <= 24 * 3600  # countdown to tomorrow's set
 
 
@@ -173,10 +187,6 @@ def test_submissions_need_admin(client):
 
 # --- accounts ---------------------------------------------------------------------------------------
 
-def sign_up(c, username="maija", password="pass1234"):
-    return c.post("/api/account/register", json={"username": username, "password": password})
-
-
 def earlier_daily(c, admin):
     return next(d for d in c.get("/api/host/dives", auth=admin).json() if d["mode"] == "daily" and d["label"] == "#1")
 
@@ -243,14 +253,16 @@ def test_delete_account_removes_its_answers(client):
     assert other.get(f"/api/dive/{data['dive']['id']}/results").json()["cards"][0]["crowd"]["n"] == 0
 
 
-def test_admin_lists_and_deletes_users(client, admin):
-    assert client.get("/api/admin/users").status_code == 401
+def test_moderators_list_and_delete_users(client, moderator):
+    assert client.get("/api/mod/users").status_code == 401
     sign_up(new_player(client), "a_user")
     sign_up(new_player(client), "b_user")
-    users = client.get("/api/admin/users", auth=admin).json()["users"]
-    assert {u["username"] for u in users} == {"a_user", "b_user"}
-    assert client.delete(f"/api/admin/users/{users[0]['id']}", auth=admin).status_code == 200
-    assert len(client.get("/api/admin/users", auth=admin).json()["users"]) == 1
+    names = lambda: {u["username"]: u["id"] for u in client.get("/api/mod/users", auth=moderator).json()["users"]}
+    users = names()
+    assert {"a_user", "b_user"} <= set(users)
+    assert client.delete(f"/api/mod/users/{users['a_user']}", auth=moderator).status_code == 200
+    assert "a_user" not in names() and "b_user" in names()
+    assert client.delete(f"/api/mod/users/{users['a_user']}", auth=moderator).status_code == 404
 
 
 def test_guests_count_for_less_than_signed_in_players(client):

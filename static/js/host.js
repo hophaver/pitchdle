@@ -1,10 +1,13 @@
 // Dashboard: the opportunity radar. Every tracked company and every new discovery as a card with a call
 // (back / watch / avoid), a lens on why (thesis, readiness, the game's crowd, the web), and its next move.
-// Details opens the full read: readiness levels, thesis fit, ranked investors, grants, partners and clients.
-const { h, api, post, fmt1 } = PD;
+// Details opens the full read: readiness levels, thesis fit, ranked investors, grants, partners and clients, and
+// everything an investor's game card shows: the profile and what A'Pelago, the AI models and social media make of it.
+const { h, api, post, fmt1, AXES, AXIS } = PD;
 const $app = document.getElementById("app");
 
-const LENSES = [["thesis", "Thesis"], ["readiness", "Readiness"], ["game", "Game"], ["web", "Web"]];
+const LENSES = [["thesis", "Thesis"], ["readiness", "Readiness"], ["game", "Game"], ["opinions", "Opinions"], ["web", "Web"]];
+const OPINION_GROUPS = [["people", "People"], ["ai", "AI models"], ["social", "Social media"]];
+const COUNT_WORD = { crowd: "answer", apelago: "reviewer" }; // social media counts posts
 const FILTERS = [["all", "All"], ["back", "Back"], ["watch", "Watch"], ["avoid", "Avoid"], ["evidence", "Needs evidence"], ["new", "New"]];
 const SORTS = [["redstone", "Redstone fit"], ["apelago", "A'Pelago fit"], ["readiness", "Readiness"], ["gap", "Crowd gap"]];
 const KIND_LABEL = { investor: "Investors", grant: "Grants", partner: "Partners", client: "Clients" };
@@ -63,6 +66,77 @@ function lean(p) {
   return h("span", { class: `lean ${p.lean}` }, h("i"), `${p.lean} · ${plural(p.items_total, "hit")}`);
 }
 
+// --- the startup's profile and outside opinions (what an investor's game card shows) ----------------
+
+// The average of an opinion's four calls, for one bar per source.
+const meanOf = (scores) => AXES.reduce((sum, a) => sum + scores[a], 0) / AXES.length;
+const groupMean = (tiles) => (tiles.length ? tiles.reduce((sum, t) => sum + meanOf(t.scores), 0) / tiles.length : null);
+
+// "€650k raised · Seed round · 3 investors": the card's facts on one line.
+function factLine(c) {
+  const invested = c.investors.filter((i) => i.status === "invested").length;
+  const facts = [
+    c.raised_eur === null || c.raised_eur === undefined ? null : `${PD.money(c.raised_eur)} raised`,
+    c.stages.length ? c.stages[c.stages.length - 1] : null,
+    invested ? plural(invested, "investor") : null,
+  ].filter(Boolean);
+  return facts.length ? h("div", { class: "facts-line" }, facts.map((f) => h("span", {}, f))) : null;
+}
+
+// One bar each for A'Pelago, the AI models and social media: the average of their four calls.
+function opinionBars(c) {
+  const of = (g) => c.opinions.filter((t) => t.group === g);
+  const ap = c.opinions.find((t) => t.key === "apelago");
+  const ai = of("ai");
+  const social = of("social");
+  if (!ap && !ai.length && !social.length) return [h("span", { class: "muted" }, "No outside opinions yet")];
+  return [
+    bar("A'Pelago", ap ? meanOf(ap.scores) : null),
+    bar("AI models", groupMean(ai)),
+    bar("Social", groupMean(social)),
+    h("span", { class: "muted" }, [ap ? plural(ap.count, "reviewer") : null, ai.length ? `${ai.map((t) => t.label).join(", ")}` : null,
+      social.length ? social.map((t) => t.label).join(", ") : null].filter(Boolean).join(" · ")),
+  ];
+}
+
+function profileSection(c) {
+  const invested = c.investors.filter((i) => i.status === "invested");
+  const box = (label, value) => h("div", { class: "fact-cell" }, h("small", {}, label), h("b", {}, value));
+  return [
+    h("h3", {}, "Profile"),
+    h("div", { class: "fact-cells" },
+      box("Raised", c.raised_eur === null || c.raised_eur === undefined ? "Not disclosed" : PD.money(c.raised_eur)),
+      box("Investors", invested.length ? String(invested.length) : "None yet"),
+      box("Stage", c.stages.length ? c.stages[c.stages.length - 1] : "Not given")),
+    c.vision ? h("div", { class: "vision small" }, c.vision.split(/\n{2,}/).map((para) => h("p", {}, para))) : null,
+    c.stages.length ? [h("div", { class: "sub-head" }, "Stages passed"),
+      h("ol", { class: "small" }, c.stages.map((s) => h("li", {}, s)))] : null,
+    c.investors.length ? [h("div", { class: "sub-head" }, "Investors"),
+      h("ul", { class: "small" }, c.investors.map((i) => h("li", {}, h("b", {}, i.name), " ",
+        i.status === "interested" ? h("span", { class: "muted" }, "interested")
+          : i.amount_eur ? PD.money(i.amount_eur) : "invested")))] : null,
+  ];
+}
+
+// The same rows an investor's game card shows: who, their four calls on 0–5, and why.
+function opinionsSection(c) {
+  const row = (t) => h("div", { class: "op-row" },
+    h("div", { class: "op-who" }, h("b", {}, t.label), t.count ? h("small", {}, plural(t.count, COUNT_WORD[t.key] || "post")) : null),
+    PD.opinionChart(t.scores, { labelled: true }),
+    t.note ? h("p", { class: "op-note" }, t.note) : null);
+  const social = c.opinions.filter((t) => t.group === "social");
+  return [
+    h("h3", {}, "What others make of it"),
+    OPINION_GROUPS.map(([g, title]) => {
+      const tiles = c.opinions.filter((t) => t.group === g);
+      return tiles.length ? [h("div", { class: "sub-head" }, title), tiles.map(row)] : null;
+    }),
+    !c.opinions.length ? h("p", { class: "muted small" }, "No opinions yet.") : null,
+    !c.is_real && !social.length ? h("p", { class: "muted small" }, "No social media: this startup is made up.")
+      : c.quiet.length ? h("p", { class: "muted small" }, `No posts found on ${c.quiet.join(", ")}.`) : null,
+  ];
+}
+
 const short = (label) => label.replace(/\s*\(.*\)\s*/, "").toLowerCase();
 const known = (c) => c.coverage && c.coverage.assessed > 0;
 const extremes = (c) => {
@@ -93,6 +167,7 @@ function lensBody(c) {
       ` · ${plural(c.crowd.n, "answer")}`),
     c.flags.length ? h("span", {}, c.flags.map((f) => f.label).join(" · ")) : null];
   }
+  if (state.lens === "opinions") return opinionBars(c);
   const p = c.pulse;
   if (!p) return h("span", { class: "muted" }, "Not checked");
   const top = p.top_hits[0];
@@ -121,6 +196,7 @@ function card(c) {
     h("div", { class: "meta" }, [c.sector, c.country].filter(Boolean).join(" · ") || " "),
     h("div", { class: "what" }, c.one_liner),
     c.claim_ask ? h("div", { class: "ask" }, c.claim_ask) : null,
+    factLine(c),
     h("div", { class: "lens" }, lensBody(c)),
     n && n.with ? h("div", { class: "next" }, h("b", {}, "Next: "), `${n.text} with `, nameLink(n.with, n.url)) : null,
     h("div", { class: "foot" }, h("button", { class: "btn", onclick: () => openDrawer(c.id) }, "Details")));
@@ -177,6 +253,8 @@ function renderDrawer() {
     h("div", { class: "muted small" }, [c.sector, c.country].filter(Boolean).join(" · ")),
     h("p", { class: "small", style: { margin: ".5rem 0 0" } }, c.one_liner, c.claim_ask ? h("span", { class: "muted" }, ` — ${c.claim_ask}`) : null),
 
+    profileSection(c),
+
     h("h3", {}, "Call"),
     h("div", { class: "row" }, callChip(c)),
     h("ul", { class: "small", style: { marginTop: ".4rem" } }, c.call.reasons.map((r) => h("li", {}, r))),
@@ -207,6 +285,8 @@ function renderDrawer() {
       `Crowd ${fmt1(c.crowd.composite)} · engine ${fmt1(c.engine.composite)} · ${plural(c.crowd.n, "answer")}`),
     c.flags.map((f) => h("div", { class: "small" }, `${f.label}: ${f.detail}`))]
       : h("p", { class: "muted small" }, "Not played yet."),
+
+    opinionsSection(c),
 
     h("h3", {}, "Web"),
     p ? [lean(p), h("ul", { class: "small", style: { marginTop: ".35rem" } }, p.top_hits.slice(0, 5).map((t) =>

@@ -34,15 +34,21 @@ function playersTab() {
       await refresh();
     } catch (e) { PD.toast(e.message); }
   }
-  const { users, guests } = S.users;
+  const { users, guests, guest_weight: gw, investor_weight: iw } = S.users;
+  // An investor's sign-up waits for a moderator; until then it can't play as an investor.
+  const kind = (u) => (u.kind === "investor" ? (u.status === "approved" ? "Investor" : `Investor · ${u.status === "rejected" ? "rejected" : "waiting"}`)
+    : "Player");
   return h("section", { class: "panel" },
     h("div", { class: "row", style: { marginBottom: ".6rem" } }, h("h2", { style: { margin: 0 } }, plural(users.length, "account")),
-      h("span", { class: "muted small" }, `+ ${plural(guests, "guest device")}`)),
+      h("span", { class: "muted small" }, `+ ${plural(guests, "guest device")}`), h("span", { class: "spacer" }),
+      h("span", { class: "muted small" }, `In crowd scores a guest counts ×${gw}, a player ×1 and an investor ×${iw}. `,
+        h("a", { href: "/moderate" }, "Review investors and badges on Moderation"))),
     users.length ? h("div", { class: "table-wrap" }, h("table", { class: "data" },
-      h("thead", {}, h("tr", {}, ["Username", "Joined", "Sets", "Answers", "Last played", ""].map((t, i) =>
-        h("th", { class: i >= 2 && i <= 3 ? "num" : "" }, t)))),
+      h("thead", {}, h("tr", {}, ["Username", "Kind", "Joined", "Sets", "Answers", "Last played", ""].map((t, i) =>
+        h("th", { class: i >= 3 && i <= 4 ? "num" : "" }, t)))),
       h("tbody", {}, users.map((u) => h("tr", {},
         h("td", {}, h("b", {}, u.username)),
+        h("td", {}, kind(u)),
         h("td", {}, (u.created_at || "").slice(0, 10)),
         h("td", { class: "num" }, u.sets),
         h("td", { class: "num" }, u.answers),

@@ -1,7 +1,9 @@
 """Player accounts: username + password, cookie sessions, and folding a guest's answers into an account.
 
-Deliberately light (no email, no reset). Accounts exist so a crowd score can trust signed-in players more
-than anonymous devices, and so players keep their history across days and devices.
+Deliberately light (no reset, nothing emailed). Accounts exist so a crowd score can trust signed-in players
+more than anonymous devices, and so players keep their history across days and devices. There are two kinds:
+a player signs up with a username and password and is in at once; an investor gives the full profile and waits
+for a moderator (see moderation.py), can't log in until one approves it, and then counts for more.
 """
 import hashlib
 import hmac
@@ -9,15 +11,28 @@ import re
 import secrets
 
 from . import config
-from .db import now
+from .db import dumps, now
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,20}$")
 PASSWORD_MIN = 4
 _ITERATIONS = 100_000
 
 
+KINDS = ("player", "investor")
+
+
 class AccountError(ValueError):
     pass
+
+
+class NotApproved(AccountError):
+    """The right password, but a moderator hasn't let the account in (yet)."""
+
+
+NOT_APPROVED = {
+    "pending": "Your sign-up is still waiting for a moderator. Keep playing as a guest until then.",
+    "rejected": "A moderator didn't approve this sign-up.",
+}
 
 
 def hash_password(password: str) -> str:
@@ -37,18 +52,24 @@ def is_test(user) -> bool:
 
 
 def public_user(user) -> dict:
-    return {"id": user["id"], "username": user["username"], "created_at": user["created_at"], "is_test": is_test(user)}
+    return {"id": user["id"], "username": user["username"], "created_at": user["created_at"], "is_test": is_test(user),
+            "is_moderator": bool(user["is_moderator"]), "kind": user["kind"] or "player"}
 
 
-def ensure_test_account(db) -> None:
-    """Create the TEST_USERNAME account from .env, or bring its password in line with TEST_PASSWORD."""
-    if not config.TEST_USERNAME or not config.TEST_PASSWORD:
-        return
-    user = db.execute("SELECT * FROM users WHERE username = ?", (config.TEST_USERNAME,)).fetchone()
-    if user is None:
-        register(db, config.TEST_USERNAME, config.TEST_PASSWORD)
-    elif not check_password(config.TEST_PASSWORD, user["password_hash"]):
-        db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(config.TEST_PASSWORD), user["id"]))
+def ensure_test_accounts(db) -> None:
+    """Create the test account and the test moderator from .env, or bring their passwords and standing in line."""
+    for username, password, moderator in ((config.TEST_USERNAME, config.TEST_PASSWORD, False),
+                                          (config.TEST_MODERATOR_USERNAME, config.TEST_MODERATOR_PASSWORD, True)):
+        if not username or not password:
+            continue
+        user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        if user is None:
+            user = register(db, username, password, status="approved")
+        elif not check_password(password, user["password_hash"]):
+            db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), user["id"]))
+        db.execute("UPDATE users SET status = 'approved' WHERE id = ?", (user["id"],))
+        if moderator:
+            db.execute("UPDATE users SET is_moderator = 1 WHERE id = ?", (user["id"],))
         db.commit()
 
 
@@ -70,7 +91,9 @@ def player_for(db, user):
     return row
 
 
-def register(db, username: str, password: str):
+def register(db, username: str, password: str, profile: dict | None = None, status: str = "pending",
+             kind: str = "player"):
+    """A new account. Investor sign-ups wait for a moderator; players and the test accounts start out approved."""
     username = username.strip()
     if not USERNAME_RE.match(username):
         raise AccountError("Username: 3-20 letters, numbers, dots, dashes or underscores.")
@@ -78,8 +101,11 @@ def register(db, username: str, password: str):
         raise AccountError(f"Password: at least {PASSWORD_MIN} characters.")
     if db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
         raise AccountError("That username is taken.")
-    uid = db.execute("INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-                     (username, hash_password(password), now())).lastrowid
+    if kind not in KINDS:
+        raise AccountError("Pick player or investor.")
+    uid = db.execute("INSERT INTO users (username, password_hash, status, profile, kind, created_at) "
+                     "VALUES (?, ?, ?, ?, ?, ?)",
+                     (username, hash_password(password), status, dumps(profile or {}), kind, now())).lastrowid
     db.commit()
     return db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
 
@@ -88,7 +114,18 @@ def authenticate(db, username: str, password: str):
     user = db.execute("SELECT * FROM users WHERE username = ?", (username.strip(),)).fetchone()
     if not user or not check_password(password, user["password_hash"]):
         raise AccountError("Wrong username or password.")
+    if user["status"] != "approved":
+        raise NotApproved(NOT_APPROVED.get(user["status"], NOT_APPROVED["pending"]))
     return user
+
+
+def moderator_login(db, username: str, password: str):
+    """The moderator account these credentials open, or None."""
+    try:
+        user = authenticate(db, username, password)
+    except AccountError:
+        return None
+    return user if user["is_moderator"] else None
 
 
 def start_session(db, user) -> str:
@@ -107,8 +144,8 @@ def end_session(db, token: str | None) -> None:
 def user_for_session(db, token: str | None):
     if not token:
         return None
-    return db.execute("SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?",
-                      (token,)).fetchone()
+    return db.execute("SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id "
+                      "WHERE s.token = ? AND u.status = 'approved'", (token,)).fetchone()
 
 
 def claim_guest(db, user, device_token: str | None) -> int:
@@ -131,9 +168,12 @@ def claim_guest(db, user, device_token: str | None) -> int:
 
 
 def delete_user(db, uid: int) -> bool:
-    """Remove an account with its answers and sessions. Its startup submissions stay, unattributed."""
-    if not db.execute("SELECT 1 FROM users WHERE id = ?", (uid,)).fetchone():
+    """Remove an account with its answers, sessions and any A'Pelago evaluations it gave as a moderator.
+    Its startup submissions stay, unattributed."""
+    user = db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+    if not user:
         return False
+    db.execute("DELETE FROM opinions WHERE source = 'apelago' AND author = ?", (user["username"],))
     db.execute("DELETE FROM sessions WHERE user_id = ?", (uid,))
     pids = [r["id"] for r in db.execute("SELECT id FROM players WHERE user_id = ?", (uid,))]
     for pid in pids:
@@ -146,8 +186,9 @@ def delete_user(db, uid: int) -> bool:
 
 
 def list_users(db) -> list[dict]:
+    """Every account with how much it has played, for the host's Players tab."""
     return [dict(r) for r in db.execute("""
-        SELECT u.id, u.username, u.created_at,
+        SELECT u.id, u.username, u.created_at, u.kind, u.status,
                COUNT(v.id) AS answers,
                COUNT(DISTINCT v.dive_id) AS sets,
                MAX(v.created_at) AS last_played

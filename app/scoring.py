@@ -30,26 +30,62 @@ def signed_in(vote) -> bool:
         return False
 
 
-def vote_weights(votes: list) -> list[float]:
-    """How much each vote counts towards a crowd score, to blunt guest bot farms.
+def badge_of(vote) -> str:
+    """The voter's moderator badge: '' for none (and for guests), or high, low or muted."""
+    try:
+        return vote["badge"] or ""
+    except (KeyError, IndexError):
+        return ""
 
-    Signed-in players count 1. Guests count GUEST_WEIGHT each, shrinking further as guests pile up so that
-    together they never make up more than GUEST_MAX_SHARE of the total. With nobody signed in (or nobody
-    a guest) every vote counts the same: there's nothing to weigh them against.
+
+def badge_weight(badge: str) -> float:
+    return {"high": config.HIGH_PRIORITY_WEIGHT, "low": config.LOW_PRIORITY_WEIGHT, "muted": 0.0}.get(badge, 1.0)
+
+
+def kind_of(vote) -> str:
+    """The voter's account kind: player or investor ('' for guests)."""
+    try:
+        return vote["kind"] or ""
+    except (KeyError, IndexError):
+        return ""
+
+
+def kind_weight(kind: str) -> float:
+    return config.INVESTOR_WEIGHT if kind == "investor" else 1.0
+
+
+def member_weight(vote) -> float:
+    return kind_weight(kind_of(vote)) * badge_weight(badge_of(vote))
+
+
+def vote_weights(votes: list) -> list[float]:
+    """How much each vote counts towards a crowd score: guests least, players 1, investors most.
+
+    A player counts 1 and an investor INVESTOR_WEIGHT, either scaled by the badge a moderator gave them (high or
+    low priority; muted is 0). Guests count GUEST_WEIGHT each, shrinking further as guests pile up so that together
+    they never make up more than GUEST_MAX_SHARE of the total. With no member weight to weigh them against, guests
+    count 1 each.
     """
-    users = sum(signed_in(v) for v in votes)
-    guests = len(votes) - users
-    if not users or not guests:
-        return [1.0] * len(votes)
+    members = [member_weight(v) if signed_in(v) else None for v in votes]
+    member_total = sum(w for w in members if w is not None)
+    guests = members.count(None)
+    if not guests or not member_total:
+        return [1.0 if w is None else w for w in members]
     share = min(max(config.GUEST_MAX_SHARE, 0.0), 0.99)
-    guest = min(config.GUEST_WEIGHT, share / (1 - share) * users / guests)
-    return [1.0 if signed_in(v) else guest for v in votes]
+    guest = min(config.GUEST_WEIGHT, share / (1 - share) * member_total / guests)
+    return [guest if w is None else w for w in members]
 
 
 def crowd(votes: list, weighted: bool = True) -> dict:
-    """Aggregate votes (rows or dicts with the four axis columns), guests weighted down unless weighted=False."""
+    """Aggregate votes (rows or dicts with the four axis columns).
+
+    Weighted, guests count for less, investors for more, and members by their badge; unweighted counts everyone alike, as a live
+    room does. Either way a muted member's answers are left out entirely, from the counts too.
+    """
+    weights = vote_weights(votes) if weighted else [0.0 if badge_of(v) == "muted" else 1.0 for v in votes]
+    counted = [(v, w) for v, w in zip(votes, weights) if w > 0]
+    votes, weights = [v for v, _ in counted], [w for _, w in counted]
     n = len(votes)
-    weights = vote_weights(votes) if weighted else [1.0] * n
     dist = {a: [0.0] * 6 for a in AXES}
     for v, w in zip(votes, weights):
         for a in AXES:

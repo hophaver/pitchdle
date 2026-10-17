@@ -10,7 +10,7 @@ import sqlite3
 import threading
 from urllib.parse import urlsplit
 
-from . import config, seed
+from . import autoread, config, seed
 from .crawler import discovery, pitch, pulse, website
 from .db import connect, dumps, j, name_key, now
 from .service import get_mode, get_setting, set_setting
@@ -275,6 +275,7 @@ def based_in(row) -> str:
 def link(db, cand_id: int, cid: int) -> int:
     db.execute("UPDATE candidates SET status = 'approved', company_id = ? WHERE id = ?", (cid, cand_id))
     db.commit()
+    autoread.kick()  # its AI ratings and social media read
     return cid
 
 

@@ -20,13 +20,15 @@ Open http://localhost:8000/play. The first run creates `.venv`, installs `requir
 
 | Page | What it's for | Password |
 |---|---|---|
-| `/play` | The game: today's set (5 cards), results at the end | – |
-| `/host` | Dashboard: the radar. Find startups, call, lenses (thesis, readiness, game, web), details with ranked next steps | admin |
+| `/play` | The game: today's set (5 cards), results at the end. Players get the simple card, investors the full one | – |
+| `/host` | Dashboard: the radar. Find startups, call, lenses (thesis, readiness, game, opinions, web), details with the profile, outside opinions and ranked next steps | admin |
 | `/game` | Players, past games (crowd vs engine), next games queued | admin |
-| `/admin` | Which companies are in the game, player submissions, exports and resets | admin |
+| `/admin` | Which companies are in the game, each one's profile and outside opinions, player submissions, exports and resets | admin |
+| `/moderate` | Review investor sign-ups, set member badges, make moderators; give A'Pelago's read of each startup | moderator account or admin |
 
 Host and admin pages use a browser login prompt. Any username works; the password is
-`ADMIN_PASSWORD` (default `admin`).
+`ADMIN_PASSWORD` (default `admin`). `/moderate` takes the admin password too, and moderators sign in with their
+own account: already logged in on `/play`, or with their username and password at the prompt.
 
 ### Play on your phone before it's on Proxmox
 
@@ -45,6 +47,8 @@ Copy `.env.example` to `.env` to override any of these:
 |---|---|---|
 | `DB_PATH` | `./data/pitchdle.db` | |
 | `ADMIN_PASSWORD` | `admin` | A warning is logged while it's the default |
+| `TEST_MODERATOR_USERNAME` / `TEST_MODERATOR_PASSWORD` | empty | A moderator account made on startup, for testing. Keep it off public deployments |
+| `GUEST_WEIGHT` / `INVESTOR_WEIGHT` | `0.5` / `2` | How much a guest's and an investor's answer count next to a player's (1) |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | |
 | `APP_MODE` | `demo` | Starting mode on a fresh database; the Admin toggle overrides it |
 | `DISCOVER_AUTO` | `1` | Search for real startups when Live mode is switched on |
@@ -103,16 +107,92 @@ Found startups carry only what discovery can show: a tech stage, when their site
 
 Engine weights are in `weights.json`. After editing them, run `.venv/bin/python -m app.seed --rescore`.
 
-## Accounts and guests
+## Accounts: players and investors
 
-Everyone plays as a guest (a device cookie) until they sign up or log in with a username and password.
-Guests get today's set only; an account keeps history, stats and streaks, and opens earlier daily sets.
-Logging in moves whatever the device played as a guest onto the account. Players delete their account from
-the menu under their username; the host can list and delete accounts in `/game` → Players.
+Everyone plays as a guest (a device cookie) until they log in. Signing up starts with a toggle:
 
-To blunt bot farms, crowd scores (player results, host dashboard, exports) weigh guests down: each guest
-answer counts `GUEST_WEIGHT` (0.5) of a signed-in one, and once anyone signed in has answered a card, all
-guests together make up at most `GUEST_MAX_SHARE` (40%) of its score.
+- **Player:** a username and password, and you're in at once. Players rate the simple card: the pitch and the
+  four calls, then their read next to everyone else's.
+- **Investor:** a username and password plus what a moderator needs to judge the person: full name, email, what
+  they do, optionally organisation, location and expertise, at least one link (LinkedIn, GitHub, portfolio, CV or
+  another), and why they want to join. An investor sign-up waits on `/moderate` until a moderator approves it;
+  until then it can't log in and plays on as a guest. Investors rate the full card (below), and their results set
+  their read beside A'Pelago's, the AI models' and social media's.
+
+The first login moves whatever that device played as a guest onto the account. Guests get today's set only; an
+account keeps history, stats and streaks, and opens earlier daily sets. Players delete their own account from the
+menu under their username; moderators can delete any member's account, and the host can in `/game` → Players.
+
+Moderators are members an admin has promoted: on `/moderate` → Members, open a row → **Make moderator**. Each
+review and badge records who did it (the admin login shows as "admin"). Only admins make or remove moderators or
+change a moderator's account (badge, deletion), a moderator's own included. A moderator's account menu on
+`/play` links to the moderation page.
+
+### How much an answer counts
+
+Guests count least, players 1, investors most:
+
+| Who | An answer counts |
+|---|---|
+| Guest | `GUEST_WEIGHT` (0.5), and all guests together at most `GUEST_MAX_SHARE` (40%) of a card once members have answered it |
+| Player | 1 |
+| Investor | `INVESTOR_WEIGHT` (2) |
+
+A moderator can give any member a badge, which multiplies that: **High priority** ×`HIGH_PRIORITY_WEIGHT` (2),
+none ×1, **Low priority** ×`LOW_PRIORITY_WEIGHT` (0.5), **Muted** ×0 (left out everywhere). A high-priority
+investor counts 4. The Members tab shows how each one plays: answers, how far their reads sit from the engine's
+on average, and how often they give all four calls the same number. Badges are only shown to moderators. These
+weights apply to player results, the dashboard and exports. Accounts from before account kinds count as players.
+
+## The startup card and its opinions
+
+Investors see a card with everything there is to weigh before rating it, and the dashboard shows the same on
+every startup (the facts on the card, the **Opinions** lens, and all of it under **Details**). On a wide screen
+the investor's card fills nearly the whole window, with the facts left and the opinions right; on a phone the
+sections stack.
+
+- **The pitch:** picture, sector, one line, the ask, the name and a link to the startup's page.
+- **The facts:** money raised, the investor count and the latest stage; every incubation programme or funding
+  round passed; and the investors, with how much each put in, or marked as only interested.
+- **The vision**, up to 400 words.
+- **What others make of it**, each as a small bar chart of the same four calls on 0–5 with its reason beside it:
+  **A'Pelago**, the **AI models** (Claude, GPT, Grok) and **social media** (X, Threads, LinkedIn, Reddit,
+  Bluesky).
+
+The profile and outside opinions are edited in `/admin` → a company's **Profile & opinions**. The crowd's read is
+the one thing a card holds back: each result card then sets you and everyone else beside all the opinions above.
+
+- **A'Pelago** is the average of its representatives' evaluations: moderators and admins rate each startup on
+  `/moderate` → Startups, as representatives rather than players. A representative sees the average there only
+  after giving their own, their comment stays with the team, and deleting an account removes its evaluations.
+- **AI models** rate the card's profile.
+- **Social media**: Grok searches X itself and Claude searches each other platform's own site. A platform's read
+  only counts posts the model cited on that platform; with none it shows as "no posts found".
+
+The AI and social reads happen by themselves: a card gets them in the background as soon as it's added (in Admin,
+from a player's submission or by discovery), and every card still missing one gets it when the app starts. Sample
+startups are made up, so they get AI ratings only; a social search could only find their namesakes. Admin → Data
+shows the last run, with a **Read missing now** button; per company, **Ask the AIs** and **Read social media**
+read it again, and any read can be typed in or corrected by hand, e.g. without a key. A failed read stays missing
+until the next run.
+
+These are paid APIs, never on the game's path: per card, three short model calls, and for a real startup up to 4
+web searches per platform (Claude bills web search at $10 per 1,000) or X posts fetched by Grok ($5 per 1,000),
+plus tokens. The first start with a key reads every card already there.
+
+Keys go in `.env`, one of two ways:
+
+- **One key for all three:** `OPENROUTER_API_KEY`. Every model call and social read goes through
+  [OpenRouter](https://openrouter.ai), with each model's own search engine, and the provider keys below are
+  ignored. Cited posts are checked against the platform's site; OpenRouter doesn't return the full search
+  results, so they can't also be checked against what the search found. Claude's server-side refusal fallback is
+  only on the direct route.
+- **A key per provider:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`. A model without its key is
+  skipped.
+
+`CLAUDE_MODEL` / `GPT_MODEL` / `GROK_MODEL` pick other models. Left blank they default to `claude-opus-5-5`,
+`gpt-6-astra` and `grok-4.7` directly, or `anthropic/claude-opus-5.5`, `openai/gpt-6-astra` and `x-ai/grok-4.7`
+on OpenRouter, which names models differently.
 
 ## Rehearsing the demo
 
@@ -136,7 +216,9 @@ All 12 seed companies are **fictional**. Real startups come from discovery in Li
 
 They cover the engine (including both demo cases), crowd maths, a full solo set with results locked until
 the last card, discovery screening and exclusions, the demo/live pool rule, landscape matching, the call and the
-next move. No network needed.
+next move, player and investor sign-up, investor review with moderator access, vote weights and badges, the card
+profile and every kind of opinion. The AI and social reads run against canned API answers through the real SDKs.
+No network needed.
 
 ## Layout
 
@@ -146,7 +228,12 @@ app/
   service.py     player results (you vs crowd), host overview, the call and the next move
   landscape.py   matches startups to landscape.json (investors, grants, partners, clients)
   engine.py      evidence → per-axis engine read + coverage (weights.json)
-  scoring.py     crowd stats and lean (higher / with / lower)
+  scoring.py     crowd stats, vote weights (guests, players, investors, badges) and lean (higher / with / lower)
+  accounts.py    sign-up (player or investor), login, sessions, guests' answers moving onto an account
+  moderation.py  investor sign-up review, member badges, how each member plays
+  opinions.py    A'Pelago's, AI models' and social media's opinions, as the cards show them
+  reads.py       asking the AI models and reading social media (never on the game's path)
+  autoread.py    reading each new card in the background, and cards missing reads on startup
   seed.py        seed / reset / rescore CLI and demo votes
   seed_data.py   the fictional seed companies and sets
   crawler/       optional website + news hints for admins; never on the game path

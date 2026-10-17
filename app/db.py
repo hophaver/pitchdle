@@ -108,6 +108,22 @@ CREATE TABLE IF NOT EXISTS candidates (
   company_id    INTEGER REFERENCES companies(id) ON DELETE SET NULL,
   created_at    TEXT
 );
+-- Opinions on a startup besides the players': A'Pelago's own (one row per representative), AI models' and
+-- social media's (one row each). Scores are 0-5 per axis; a social search that found nothing leaves them NULL.
+CREATE TABLE IF NOT EXISTS opinions (
+  id          INTEGER PRIMARY KEY,
+  company_id  INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  source      TEXT NOT NULL,           -- apelago | claude | gpt | grok | x | threads | linkedin | reddit | bluesky
+  author      TEXT NOT NULL DEFAULT '', -- apelago: the representative (a moderator's username, or "admin")
+  novel       REAL,
+  useful      REAL,
+  plausible   REAL,
+  investable  REAL,
+  note        TEXT DEFAULT '',         -- the model's reason, what people say, or the representative's comment
+  meta        TEXT DEFAULT '{}',       -- how it was made: model, posts found, links, by hand or fetched
+  updated_at  TEXT,
+  UNIQUE (company_id, source, author)
+);
 -- Small key/value store for runtime switches: the demo/live mode and the autofill status.
 CREATE TABLE IF NOT EXISTS settings (
   key    TEXT PRIMARY KEY,
@@ -153,6 +169,23 @@ MIGRATIONS = [
     ("candidates", "screen", "TEXT"),       # the relevance screen's verdict for the last search that saw it
     ("candidates", "card", "TEXT"),         # the AI-written card, kept from the moment the host queues it
     ("candidates", "card_error", "TEXT DEFAULT ''"),  # why there's no card: needs a manual pass
+    # Sign-up review. Accounts from before it count as approved; new sign-ups are inserted as 'pending'.
+    ("users", "status", "TEXT DEFAULT 'approved'"),  # pending | approved | rejected
+    ("users", "profile", "TEXT DEFAULT '{}'"),  # what they told moderators when signing up
+    ("users", "reviewed_by", "TEXT"),
+    ("users", "reviewed_at", "TEXT"),
+    ("users", "badge", "TEXT DEFAULT ''"),  # '' | high | low | muted: how much their answers count
+    ("users", "badge_by", "TEXT"),
+    ("users", "badge_at", "TEXT"),
+    ("users", "is_moderator", "INTEGER DEFAULT 0"),  # set by an admin on /moderate
+    # player: signs up with a username and password, in at once, plays the simple cards. investor: signs up with
+    # the full profile, waits for a moderator, rates the full cards and counts INVESTOR_WEIGHT in crowd scores.
+    ("users", "kind", "TEXT DEFAULT 'player'"),
+    # The startup's profile on its card. vision stays NULL until first saved, so seed profiles can fill it in.
+    ("companies", "vision", "TEXT"),
+    ("companies", "stages", "TEXT DEFAULT '[]'"),  # incubation programmes and rounds passed, in order
+    ("companies", "raised_eur", "INTEGER"),  # NULL: not disclosed
+    ("companies", "investors", "TEXT DEFAULT '[]'"),  # [{name, status: invested | interested, amount_eur}]
 ]
 
 

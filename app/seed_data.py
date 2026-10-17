@@ -334,3 +334,129 @@ DIVES = [
 ]
 
 DEMO_BIAS = {c["name"]: c["demo_bias"] for c in COMPANIES}
+
+# The profile on each sample card: the vision behind "Read more", stages passed, money raised (euros, None when
+# not disclosed) and investors. Fictional like the companies; the investor names are made up too.
+PROFILES = {
+    "TideLedger": {
+        "vision": "Every bottle on a beach is a small deposit nobody has claimed. TideLedger wants to turn beach "
+                  "clean-ups into a worldwide game: scan a bottle with your phone, prove you picked it up, and earn a "
+                  "token that local shops and brands redeem. We believe a liquid market for collected plastic will pay "
+                  "people to clean coastlines faster than any charity can. First 40 countries next year, then every coast.",
+        "stages": ["Idea", "Friends and family round"],
+        "raised_eur": 50000,
+        "investors": [{"name": "Two family angels", "status": "invested", "amount_eur": 50000},
+                      {"name": "Blockwave Ventures", "status": "interested", "amount_eur": None}],
+    },
+    "Rakko Feed": {
+        "vision": "Cows are one of the biggest sources of methane on the planet, and the Baltic grows more seaweed than "
+                  "anyone uses. Rakko Feed dries red seaweed harvested off the Finnish coast and mixes it into everyday "
+                  "cattle feed. In two university trials, cows on our feed burped 12-18% less methane without eating less "
+                  "or giving less milk. Three dairy co-ops already buy every month. Next: double the drying plant and "
+                  "reach every Nordic co-op.",
+        "stages": ["University spin-off", "Incubator programme", "Seed"],
+        "raised_eur": 650000,
+        "investors": [{"name": "Lumi Seed Fund", "status": "invested", "amount_eur": 400000},
+                      {"name": "Kantele Angels", "status": "invested", "amount_eur": 250000},
+                      {"name": "Green Herd Capital", "status": "interested", "amount_eur": None}],
+    },
+    "BrineWorks": {
+        "vision": "Small islands live on shipped and bottled water that costs a fortune and burns diesel to deliver. "
+                  "BrineWorks builds solar rafts that float off the shore and turn seawater into drinking water for a "
+                  "village of a few hundred people, with no grid and no fuel. One raft has run for nine months in the "
+                  "archipelago. Ten more will prove the economics through a season of storms, ice and summer peaks.",
+        "stages": ["Pre-seed", "Municipal pilot"],
+        "raised_eur": 300000,
+        "investors": [{"name": "Skerry Impact Angels", "status": "invested", "amount_eur": 300000},
+                      {"name": "Brackish Ventures", "status": "interested", "amount_eur": None}],
+    },
+    "Simpukka Farms": {
+        "vision": "Farm runoff feeds the algae blooms that choke the Baltic every summer. Mussels filter that nitrogen "
+                  "and phosphorus out of the water while they grow. Simpukka Farms runs mussel lines in nutrient-heavy "
+                  "bays, sells the harvest as feed-grade mussel meal, and plans to sell verified nutrient-removal credits "
+                  "to towns and farms. Two lines have harvested 40 tonnes; three more would make the first bay "
+                  "measurably cleaner.",
+        "stages": ["Pre-seed", "EU-funded pilot"],
+        "raised_eur": 450000,
+        "investors": [{"name": "Myrsky Blue Fund", "status": "invested", "amount_eur": 450000},
+                      {"name": "Merikoski Family Office", "status": "interested", "amount_eur": None}],
+    },
+    "Barnacle Buster": {
+        "vision": "A ship with a fouled hull can burn a tenth more fuel. Barnacle Buster is a robot that crawls over a "
+                  "hull while the ship sits in port, scrubbing off growth before it hardens and catching the debris "
+                  "instead of releasing it into the harbour. Two ferry operators are paying for trials, and we hold "
+                  "in-water cleaning permits in two ports, which are hard to get. Five more port pilots, then cleaning "
+                  "as a service, per vessel.",
+        "stages": ["Seed", "Paid pilots"],
+        "raised_eur": 1100000,
+        "investors": [{"name": "Harbourline Capital", "status": "invested", "amount_eur": 800000},
+                      {"name": "Kestrel Angels", "status": "invested", "amount_eur": 300000},
+                      {"name": "Quayside Ventures", "status": "interested", "amount_eur": None}],
+    },
+    "WaveWhisper": {
+        "vision": "Thousands of ocean sensors go dark every year because their batteries run out long before the "
+                  "sensor does. WaveWhisper is a buoy the size of a football that turns small waves into a steady "
+                  "trickle of power, so a sensor can stay out for years instead of months. The design has worked at "
+                  "1:20 scale in a wave tank. Next is a full-size buoy at sea for one winter.",
+        "stages": ["Research project", "Pre-seed grant"],
+        "raised_eur": 150000,
+        "investors": [{"name": "University innovation fund", "status": "invested", "amount_eur": 150000},
+                      {"name": "Tidepool Seed Partners", "status": "interested", "amount_eur": None}],
+    },
+    "Fishfluencer": {
+        "vision": "Fish are the most underrepresented creators on social media. Fishfluencer runs Instagram accounts "
+                  "on behalf of individual fish, posting their daily lives, and will sell sponsorships to aquarium "
+                  "brands. Our first three fish have 41 followers between them. With €2M we will sign 10,000 fish and "
+                  "become the leading fish talent agency.",
+        "stages": [],
+        "raised_eur": 0,
+        "investors": [],
+    },
+    "Krakenomics": {
+        "vision": "Squid catches swing wildly from year to year, and nobody can bet on them. Krakenomics lets anyone "
+                  "stake our token on next year's squid catch and win if they call it right. We will raise €5M in our "
+                  "own token sale and open the market the day the token goes live.",
+        "stages": [],
+        "raised_eur": None,
+        "investors": [],
+    },
+    "SeaSpa Pods": {
+        "vision": "Remote work needs better views. SeaSpa Pods are glass coworking pods anchored on the Baltic seabed, "
+                  "where you rent a desk and watch the fish while you answer email. The first pod will hold twelve "
+                  "desks. The renders are done and we are ready to build.",
+        "stages": [],
+        "raised_eur": 0,
+        "investors": [],
+    },
+    "FrostWatch": {
+        "vision": "Icebreakers and winter ferries still guess where the ice is weakest. FrostWatch puts strain sensors "
+                  "on ferry hulls, so every crossing measures the ice it breaks and adds to a live map of where it is "
+                  "safe and cheap to pass. Four ferries have run it for two winters, and their operators pay €150k a "
+                  "year for it. We want twenty ferries feeding the map by next winter.",
+        "stages": ["Seed", "Two winters in commercial use"],
+        "raised_eur": 900000,
+        "investors": [{"name": "Polar Route Ventures", "status": "invested", "amount_eur": 600000},
+                      {"name": "A ferry operator's venture arm", "status": "invested", "amount_eur": 300000}],
+    },
+    "GreenGlug": {
+        "vision": "Shipping needs a fuel that works in today's engines and doesn't come out of the ground. GreenGlug "
+                  "grows algae and turns it into a marine fuel meant to replace diesel by 2030. Our lab batches burn "
+                  "cleanly in a test engine; they still cost about fifty times as much as diesel, and a demonstration "
+                  "refinery is how we bring that cost down.",
+        "stages": ["Lab research", "Public research grants"],
+        "raised_eur": 300000,
+        "investors": [{"name": "Public research grants", "status": "invested", "amount_eur": 300000},
+                      {"name": "Seafuel Transition Fund", "status": "interested", "amount_eur": None}],
+    },
+    "ShipShape Routing": {
+        "vision": "A ship that takes the right route at the right speed burns less fuel and still arrives on time. "
+                  "ShipShape Routing plans voyages around weather, currents and port slots, and updates the plan as "
+                  "conditions change. Seven operators pay for it today, and a classification society audited 6-9% "
+                  "fuel savings on their ships. Now we want to sell to German shipping companies directly, from Hamburg.",
+        "stages": ["Seed", "Series A in preparation"],
+        "raised_eur": 2200000,
+        "investors": [{"name": "Nordic SaaS Partners", "status": "invested", "amount_eur": 1500000},
+                      {"name": "Kantele Angels", "status": "invested", "amount_eur": 700000},
+                      {"name": "Elbe Maritime Ventures", "status": "interested", "amount_eur": None}],
+    },
+}

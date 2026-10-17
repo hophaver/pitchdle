@@ -3,7 +3,7 @@ import random
 import sqlite3
 from datetime import date, datetime, time, timedelta
 
-from . import config, landscape, scoring
+from . import config, landscape, opinions, scoring
 from .db import dumps, j, name_key, now
 from .engine import AXES, composite_of, full_score as engine_full
 
@@ -56,11 +56,20 @@ def get_company(db: sqlite3.Connection, cid: int):
 
 
 def public_card(row) -> dict:
-    """What a player sees: the pitch, nothing about scores."""
+    """What a player sees: the pitch and the startup's profile, nothing about anyone's scores."""
     return {
         "id": row["id"], "name": row["name"], "emoji": row["emoji"] or "", "sector": row["sector"],
         "one_liner": row["one_liner"], "claim_ask": row["claim_ask"], "is_real": bool(row["is_real"]),
+        "vision": row["vision"] or "", "website": row["website"] or "", "stages": j(row["stages"], []),
+        "raised_eur": row["raised_eur"], "investors": j(row["investors"], []),
     }
+
+
+def play_card(db, row) -> dict:
+    """The card a player rates: the pitch, the profile, and what A'Pelago, the AI models and social media make of it,
+    so the call is a weighed one. The crowd's read waits for the results, and the engine stays off the phones."""
+    return public_card(row) | {"opinions": opinions.for_card(db, row["id"], None, None),
+                               "quiet": opinions.quiet(db, row["id"])}
 
 
 def get_dive(db, did: int):
@@ -131,8 +140,10 @@ def scores_of(vote) -> dict:
     return {a: vote[a] for a in AXES}
 
 
-# Votes with the voter's user_id alongside, so crowd scores can weigh guests and signed-in players apart.
-VOTES_WITH_USER = "SELECT v.*, p.user_id FROM votes v LEFT JOIN players p ON p.id = v.player_id"
+# Votes with the voter's user_id, badge and account kind alongside, so crowd scores can weigh guests, players and
+# investors apart.
+VOTES_WITH_USER = ("SELECT v.*, p.user_id, u.badge, u.kind FROM votes v LEFT JOIN players p ON p.id = v.player_id "
+                   "LEFT JOIN users u ON u.id = p.user_id")
 
 
 def card_votes(db, dive_id: int, cid: int) -> list:
@@ -166,11 +177,11 @@ def results(db, dive, pid: int) -> dict:
             leans[lean] += 1
         cards.append({
             "card": public_card(comp),
-            # Only shown after answering, so the link can't give the pitch away mid-game.
-            "website": comp["website"] or "",
             "you": {"scores": you, "composite": you_composite},
             "crowd": {"n": others["n"], "means": others["means"], "composite": others["composite"]},
             "lean": lean,
+            # A'Pelago's, the AI models' and social media's reads, only now that the player has given theirs.
+            "opinions": opinions.for_card(db, comp["id"], you, others),
         })
     return {
         "dive": dive_payload(dive),
@@ -376,6 +387,12 @@ def company_insight(db, comp, real_only: bool) -> dict:
                   "composite": room["composite"], "consensus": room["consensus"]},
         "gap": gap, "flags": flags, "actions": actions,
         "pulse": pulse, "verdict": verdict, "verdict_reason": verdict_reason,
+        # What an investor's card shows: the profile, and what the crowd, A'Pelago, the AI models and social media
+        # make of it.
+        "emoji": comp["emoji"] or "", "vision": comp["vision"] or "", "stages": j(comp["stages"], []),
+        "raised_eur": comp["raised_eur"], "investors": j(comp["investors"], []),
+        "opinions": opinions.for_card(db, comp["id"], None, room if room["n"] else None),
+        "quiet": opinions.quiet(db, comp["id"]),
     }
     return out | {"call": call(out), "next": next_move(out)}
 

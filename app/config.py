@@ -26,13 +26,33 @@ def _csv(value: str | None) -> list[str]:
 DB_PATH = os.environ.get("DB_PATH") or str(ROOT / "data" / "pitchdle.db")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or "admin"
 MIN_VOTES = int(os.environ.get("MIN_VOTES") or 5)
-# How much a guest's answer counts next to a signed-in player's (1.0), and the most of any card's crowd
-# score guests together can make up once signed-in players have answered it. See scoring.vote_weights.
 # Optional test account, created (or its password reset) on startup. Only it gets "Reset my data".
 TEST_USERNAME = (os.environ.get("TEST_USERNAME") or "").strip()
 TEST_PASSWORD = os.environ.get("TEST_PASSWORD") or ""
+# Optional test moderator, created (or its password reset) on startup like the test account. Keep it off
+# anything public: moderators see every sign-up's details.
+TEST_MODERATOR_USERNAME = (os.environ.get("TEST_MODERATOR_USERNAME") or "").strip()
+TEST_MODERATOR_PASSWORD = os.environ.get("TEST_MODERATOR_PASSWORD") or ""
+# How much a guest's answer counts next to a player account's (1.0), and the most of any card's crowd
+# score guests together can make up once members have answered it. See scoring.vote_weights.
 GUEST_WEIGHT = float(os.environ.get("GUEST_WEIGHT") or 0.5)
 GUEST_MAX_SHARE = float(os.environ.get("GUEST_MAX_SHARE") or 0.4)
+# How much an investor account's answer counts next to a player account's (1.0).
+INVESTOR_WEIGHT = max(0.0, float(os.environ.get("INVESTOR_WEIGHT") or 2.0))
+# A badge multiplies a member's weight: high or low priority (no badge is ×1, muted is 0).
+HIGH_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("HIGH_PRIORITY_WEIGHT") or 2.0))
+LOW_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("LOW_PRIORITY_WEIGHT") or 0.5))
+# Outside reads, run from Admin and never on the game's path: AI models rate each startup, and AI searches
+# read what people say about it on social media. One OpenRouter key runs all three models; otherwise each needs
+# its own key, and a model without one is skipped.
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") or ""
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or ""
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or ""
+XAI_API_KEY = os.environ.get("XAI_API_KEY") or ""
+# Blank means the default for the route in use (see reads.MODELS): OpenRouter names models differently.
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL") or ""
+GPT_MODEL = os.environ.get("GPT_MODEL") or ""
+GROK_MODEL = os.environ.get("GROK_MODEL") or ""
 WEIGHTS_PATH = ROOT / "weights.json"
 CRAWL_CACHE = ROOT / "data" / "crawl_cache"
 STATIC_DIR = ROOT / "static"

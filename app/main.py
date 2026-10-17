@@ -7,18 +7,19 @@ import secrets
 import sqlite3
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from . import accounts, autofill, config, scoring, seed, service
+from . import accounts, autofill, autoread, config, moderation, opinions, reads, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, name_key, now
 from .crawler import pitch
 from .engine import AXES, full_score as engine_full
@@ -32,14 +33,19 @@ async def lifespan(_app: FastAPI):
     init_db(db)
     if seed.seed_if_empty(db):
         log.warning("Pitchdle: empty database, loaded seed data into %s", config.DB_PATH)
-    accounts.ensure_test_account(db)
+    seed.fill_profiles(db)  # sample companies from before card profiles get theirs
+    accounts.ensure_test_accounts(db)
     fixed = autofill.tidy(db)
     if fixed["removed"]:
         log.warning("Pitchdle: removed excluded names discovery had filed as startups: %s", ", ".join(fixed["removed"]))
     autofill.maybe_start(db)  # live mode tops itself up in the background; demo mode does nothing
+    autoread.kick()  # cards still missing AI ratings or a social media read get them, in the background
     db.close()
     if config.ADMIN_PASSWORD == "admin":
         log.warning("Pitchdle: ADMIN_PASSWORD is the default 'admin'. Set it before exposing this beyond localhost.")
+    if config.TEST_MODERATOR_USERNAME and config.TEST_MODERATOR_PASSWORD:
+        log.warning("Pitchdle: test moderator '%s' is set up from .env. Before exposing this beyond localhost, unset "
+                    "TEST_MODERATOR_* and delete the account on /moderate.", config.TEST_MODERATOR_USERNAME)
     yield
 
 
@@ -72,6 +78,23 @@ YEAR = 365 * 24 * 3600
 
 def current_user(request: Request, db=Depends(get_db)):
     return accounts.user_for_session(db, request.cookies.get(SESSION_COOKIE))
+
+
+mod_basic = HTTPBasic(realm="Moderation", auto_error=False)
+
+
+def require_moderator(creds: HTTPBasicCredentials | None = Depends(mod_basic), user=Depends(current_user),
+                      db=Depends(get_db)) -> moderation.Staff:
+    """The admin password at the browser prompt, or a moderator's own account: already logged in on /play, or their
+    username and password at the prompt. Returns who's acting, which goes on each review and badge."""
+    if creds and secrets.compare_digest(creds.password.encode(), config.ADMIN_PASSWORD.encode()):
+        return moderation.Staff("admin", admin=True)
+    if not (user and user["is_moderator"]) and creds:
+        user = accounts.moderator_login(db, creds.username, creds.password)
+    if user and user["is_moderator"]:
+        return moderation.Staff(user["username"])
+    raise HTTPException(401, "Log in with a moderator account or the admin password.",
+                        headers={"WWW-Authenticate": 'Basic realm="Moderation"'})
 
 
 def get_player(request: Request, response: Response, db=Depends(get_db), user=Depends(current_user)):
@@ -125,6 +148,11 @@ def admin_page():
     return page("admin.html")
 
 
+@app.get("/moderate", include_in_schema=False, dependencies=[Depends(require_moderator)])
+def moderate_page():
+    return page("moderate.html")
+
+
 # --- player API ------------------------------------------------------------------------------------
 
 @app.get("/api/me")
@@ -133,12 +161,121 @@ def me(player=Depends(get_player), user=Depends(current_user)):
     return {"ok": True, "user": accounts.public_user(user) if user else None}
 
 
+# --- text from players ----------------------------------------------------------------------------
+
+def clean_text(value: str) -> str:
+    """One line of plain text: no control characters, single spaces."""
+    return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", value)).strip()
+
+
+def clean_paragraph(value: str) -> str:
+    """Plain text that keeps its line breaks, with at most one blank line in a row."""
+    lines = [clean_text(line) for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def web_link(value: str, label: str = "link") -> str:
+    """A plain http(s) address, with https:// added when it's left off."""
+    value = value.strip()
+    if value and "://" not in value:
+        value = "https://" + value
+    parts = urlsplit(value)
+    host = parts.hostname or ""
+    if (len(value) > 200 or parts.scheme not in ("http", "https") or "." not in host
+            or parts.username or parts.password or re.search(r"\s", value)):
+        raise ValueError(f"{label} must be a web address like https://example.com")
+    return value
+
+
 # --- accounts --------------------------------------------------------------------------------------
-# Everyone starts as a guest. Logging in (or signing up) moves the guest's answers onto the account.
+# Everyone starts as a guest. A player signs up with a username and password and is logged in at once. An
+# investor gives the full profile below and waits for a moderator on /moderate. Either way, the first login moves
+# the guest's answers onto the account.
 
 class Credentials(BaseModel):
     username: str = Field(max_length=40)
     password: str = Field(max_length=200)
+
+
+# What a sign-up tells the moderators. Mirrored by SIGNUP_SECTIONS in play.js, and ROLES by PD.ROLES.
+SIGNUP_TEXT = {  # field: (name in messages, min, max)
+    "full_name": ("name", 2, 80), "organisation": ("organisation", 0, 80), "location": ("location", 0, 80),
+    "expertise": ("what you know well", 0, 160), "motivation": ("why you want to join", 20, 600),
+}
+ROLES = ("founder", "investor", "industry", "research", "engineer", "public", "student", "other")
+# Profile links, and the site each one has to be on (None: anywhere). At least one is needed.
+LINKS = {"linkedin": "linkedin.com", "github": "github.com", "portfolio": None, "cv": None, "other": None}
+LINK_NAMES = {"linkedin": "LinkedIn", "github": "GitHub", "cv": "CV"}
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+MAX_PENDING_SIGNUPS = 500
+
+
+class PlayerSignUp(Credentials):
+    kind: str = Field("player", pattern="^player$")
+
+
+class SignUp(Credentials):
+    """An investor's sign-up."""
+    kind: str = Field("investor", pattern="^investor$")
+    full_name: str
+    email: str
+    role: str
+    organisation: str = ""
+    location: str = ""
+    expertise: str = ""
+    motivation: str
+    linkedin: str = ""
+    github: str = ""
+    portfolio: str = ""
+    cv: str = ""
+    other: str = ""
+
+    @field_validator(*SIGNUP_TEXT)
+    @classmethod
+    def plain_text(cls, value: str, info) -> str:
+        value = clean_paragraph(value) if info.field_name == "motivation" else clean_text(value)
+        label, lo, hi = SIGNUP_TEXT[info.field_name]
+        if not lo <= len(value) <= hi:
+            raise ValueError(f"{label} must be {lo}-{hi} characters" if lo else f"{label} must be at most {hi} characters")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def email_shape(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) > 120 or not EMAIL_RE.match(value):
+            raise ValueError("email must look like name@example.com")
+        return value
+
+    @field_validator("role")
+    @classmethod
+    def known_role(cls, value: str) -> str:
+        if value not in ROLES:
+            raise ValueError("pick what you do from the list")
+        return value
+
+    @field_validator(*LINKS)
+    @classmethod
+    def profile_link(cls, value: str, info) -> str:
+        if not value.strip():
+            return ""
+        name = LINK_NAMES.get(info.field_name, info.field_name)
+        value = web_link(value, f"{name} link")
+        site, host = LINKS[info.field_name], urlsplit(value).hostname
+        if site and host != site and not host.endswith("." + site):
+            raise ValueError(f"{name} link must be on {site}")
+        return value
+
+    @model_validator(mode="after")
+    def has_a_link(self):
+        if not any(getattr(self, key) for key in LINKS):
+            raise ValueError("add at least one link so a moderator can see who you are")
+        return self
+
+    def profile(self) -> dict:
+        """What moderators see: everything but the credentials, with only the links that were given."""
+        out = self.model_dump(exclude={"username", "password", "kind", *LINKS})
+        return out | {"links": {key: getattr(self, key) for key in LINKS if getattr(self, key)}}
 
 
 def sign_in(request: Request, response: Response, db, user) -> dict:
@@ -148,18 +285,35 @@ def sign_in(request: Request, response: Response, db, user) -> dict:
 
 
 @app.post("/api/account/register")
-def register(body: Credentials, request: Request, response: Response, db=Depends(get_db)):
+def register(request: Request, response: Response, payload: dict = Body(...), db=Depends(get_db)):
+    """A player is in at once and logged in. An investor's sign-up waits for a moderator and doesn't log in: until
+    it's approved, they play on as a guest."""
+    investor = payload.get("kind") == "investor"
     try:
-        user = accounts.register(db, body.username, body.password)
+        body = (SignUp if investor else PlayerSignUp).model_validate(payload)
+    except ValidationError as e:
+        raise RequestValidationError(e.errors(include_url=False, include_context=False))
+    if not investor:
+        try:
+            user = accounts.register(db, body.username, body.password, status="approved")
+        except accounts.AccountError as e:
+            raise HTTPException(400, str(e))
+        return {"status": "approved"} | sign_in(request, response, db, user)
+    if db.execute("SELECT COUNT(*) FROM users WHERE status = 'pending'").fetchone()[0] >= MAX_PENDING_SIGNUPS:
+        raise HTTPException(503, "Sign-ups are paused while the moderators catch up. Try again later.")
+    try:
+        accounts.register(db, body.username, body.password, body.profile(), kind="investor")
     except accounts.AccountError as e:
         raise HTTPException(400, str(e))
-    return sign_in(request, response, db, user)
+    return {"status": "pending"}
 
 
 @app.post("/api/account/login")
 def login(body: Credentials, request: Request, response: Response, db=Depends(get_db)):
     try:
         user = accounts.authenticate(db, body.username, body.password)
+    except accounts.NotApproved as e:
+        raise HTTPException(403, str(e))
     except accounts.AccountError as e:
         raise HTTPException(401, str(e))
     return sign_in(request, response, db, user)
@@ -196,30 +350,36 @@ def account_history(player=Depends(get_player), db=Depends(get_db)):
     return service.history(db, player["id"])
 
 
-def set_response(db, dive, player) -> dict:
+def is_investor(user) -> bool:
+    return bool(user) and user["kind"] == "investor"
+
+
+def set_response(db, dive, player, user) -> dict:
+    """Investors rate the full card (profile and outside opinions); players and guests the pitch alone."""
     comps = service.dive_companies(db, dive)
     done = service.answered(db, player["id"], dive["id"])
+    card = service.play_card if is_investor(user) else lambda _db, c: service.public_card(c)
     return {
         "dive": service.dive_payload(dive),
-        "cards": [service.public_card(c) for c in comps],
+        "cards": [card(db, c) for c in comps],
         "answered": [c["id"] for c in comps if c["id"] in done],
         "notice": None if comps else service.pool_notice(db, dive["pool"]),
     }
 
 
 @app.get("/api/dive/today")
-def dive_today(player=Depends(get_player), db=Depends(get_db)):
-    return set_response(db, service.todays_dive(db), player)
+def dive_today(player=Depends(get_player), user=Depends(current_user), db=Depends(get_db)):
+    return set_response(db, service.todays_dive(db), player, user)
 
 
 @app.get("/api/dive/{dive_id}")
-def dive_by_id(dive_id: int, player=Depends(get_player), db=Depends(get_db)):
+def dive_by_id(dive_id: int, player=Depends(get_player), user=Depends(current_user), db=Depends(get_db)):
     dive = service.get_dive(db, dive_id)
     if not dive or not service.in_mode(db, dive):
         raise HTTPException(404, "No such set.")
     if is_guest(player) and service.guest_locked(db, dive, player["id"]):
         raise HTTPException(401, "Log in to play earlier sets.")
-    return set_response(db, dive, player)
+    return set_response(db, dive, player, user)
 
 
 class Scores(BaseModel):
@@ -278,11 +438,6 @@ MAX_PENDING_PER_DEVICE = 3
 MAX_PENDING_TOTAL = 200
 
 
-def clean_text(value: str) -> str:
-    """One line of plain text: no control characters, single spaces."""
-    return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", value)).strip()
-
-
 class SubmissionIn(BaseModel):
     name: str
     sector: str
@@ -305,15 +460,7 @@ class SubmissionIn(BaseModel):
     @field_validator("website")
     @classmethod
     def plain_web_link(cls, value: str) -> str:
-        value = value.strip()
-        if value and "://" not in value:
-            value = "https://" + value
-        parts = urlsplit(value)
-        host = parts.hostname or ""
-        if (len(value) > 200 or parts.scheme not in ("http", "https") or "." not in host
-                or parts.username or parts.password or re.search(r"\s", value)):
-            raise ValueError("link must be a web address like https://example.com")
-        return value
+        return web_link(value)
 
 
 @app.post("/api/submit")
@@ -375,11 +522,149 @@ def host_dive(dive_id: int, db=Depends(get_db)):
     return service.dive_payload(dive) | {"cards": cards}
 
 
+# --- moderation ------------------------------------------------------------------------------------
+# Sign-ups wait on /moderate until a moderator lets them in. A member's badge sets how much their answers count.
+
+BADGE_PATTERN = f"^({'|'.join(moderation.BADGES)})$"
+
+
+def mod_user(db, uid: int):
+    user = moderation.get_user(db, uid)
+    if not user:
+        raise HTTPException(404, "No such user.")
+    return user
+
+
+@contextmanager
+def refusals():
+    """A moderation action's refusals as HTTP errors: admins only (403), or not possible as things stand (409)."""
+    try:
+        yield
+    except moderation.NotAllowed as e:
+        raise HTTPException(403, str(e))
+    except moderation.ModerationError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.get("/api/mod/users")
+def mod_users(staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    return moderation.overview(db) | {"viewer": {"name": staff.name, "admin": staff.admin}}
+
+
+class ReviewIn(BaseModel):
+    status: str = Field(pattern="^(approved|rejected)$")
+    badge: str = Field("", pattern=BADGE_PATTERN)
+
+
+@app.post("/api/mod/users/{uid}/review")
+def mod_review(uid: int, body: ReviewIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    with refusals():
+        moderation.review(db, mod_user(db, uid), body.status, body.badge, staff)
+    return moderation.member(db, uid)
+
+
+class BadgeIn(BaseModel):
+    badge: str = Field(pattern=BADGE_PATTERN)
+
+
+@app.put("/api/mod/users/{uid}/badge")
+def mod_badge(uid: int, body: BadgeIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    with refusals():
+        moderation.set_badge(db, mod_user(db, uid), body.badge, staff)
+    return moderation.member(db, uid)
+
+
+class ModeratorIn(BaseModel):
+    moderator: bool
+
+
+@app.put("/api/mod/users/{uid}/moderator")
+def mod_moderator(uid: int, body: ModeratorIn, staff: moderation.Staff = Depends(require_moderator),
+                  db=Depends(get_db)):
+    with refusals():
+        moderation.set_moderator(db, mod_user(db, uid), body.moderator, staff)
+    return moderation.member(db, uid)
+
+
+@app.delete("/api/mod/users/{uid}")
+def mod_delete_user(uid: int, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    with refusals():
+        moderation.check_manageable(mod_user(db, uid), staff)
+    accounts.delete_user(db, uid)
+    return {"ok": True}
+
+
+# A'Pelago's own opinion: moderators and admins evaluate as A'Pelago representatives, not as players. Each keeps
+# one evaluation per startup and can change it; the card shows the average of all of them.
+
+def evaluation_card(db, comp, staff: moderation.Staff) -> dict:
+    mine = db.execute("SELECT * FROM opinions WHERE company_id = ? AND source = ? AND author = ?",
+                      (comp["id"], opinions.APELAGO, staff.name)).fetchone()
+    return service.public_card(comp) | {
+        "active": bool(comp["active"]),
+        "mine": {"scores": opinions.scores_of(mine), "note": mine["note"], "updated_at": mine["updated_at"]} if mine else None,
+        # The team's average shows once you've given your own, so it can't steer yours.
+        "apelago": opinions.apelago(db, comp["id"]) if mine else None,
+    }
+
+
+def evaluated_company(db, cid: int):
+    comp = service.get_company(db, cid)
+    if not comp:
+        raise HTTPException(404, "No such company.")
+    return comp
+
+
+@app.get("/api/mod/evaluations")
+def mod_evaluations(staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    """The current mode's startups (sample ones in demo, real ones in live), those in the game first."""
+    mode = service.get_mode(db)
+    comps = db.execute("SELECT * FROM companies WHERE is_real = ? ORDER BY active DESC, name",
+                       (service.pool_is_real(mode),)).fetchall()
+    return {"mode": mode, "companies": [evaluation_card(db, c, staff) for c in comps]}
+
+
+class EvaluationIn(BaseModel):
+    scores: Scores
+    note: str = Field("", max_length=600)  # stays with the staff; players only see the scores
+
+
+@app.put("/api/mod/evaluations/{cid}")
+def mod_evaluate(cid: int, body: EvaluationIn, staff: moderation.Staff = Depends(require_moderator),
+                 db=Depends(get_db)):
+    comp = evaluated_company(db, cid)
+    opinions.save(db, cid, opinions.APELAGO, body.scores.model_dump(), clean_paragraph(body.note), author=staff.name)
+    return evaluation_card(db, comp, staff)
+
+
+@app.delete("/api/mod/evaluations/{cid}")
+def mod_withdraw_evaluation(cid: int, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    comp = evaluated_company(db, cid)
+    opinions.remove(db, cid, opinions.APELAGO, staff.name)
+    return evaluation_card(db, comp, staff)
+
+
 # --- admin -----------------------------------------------------------------------------------------
 
 class Fact(BaseModel):
     label: str
     value: str
+
+
+class Investor(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    status: str = Field("invested", pattern="^(invested|interested)$")
+    amount_eur: int | None = Field(None, ge=0)  # what an investor has put in; none for the interested
+
+    @field_validator("name")
+    @classmethod
+    def one_line(cls, value: str) -> str:
+        if not clean_text(value):
+            raise ValueError("an investor needs a name")
+        return clean_text(value)
+
+
+VISION_WORDS = 400
 
 
 class CompanyIn(BaseModel):
@@ -400,18 +685,39 @@ class CompanyIn(BaseModel):
     # (Active) leave them out, so ticking a box never passes an auto-estimate or an unchecked card off as checked.
     evidence_reviewed: bool = False
     card_reviewed: bool = False
+    # The profile on the card: the vision behind "Read more", the stages passed, money raised and investors.
+    vision: str = Field("", max_length=4000)
+    stages: list[str] = Field([], max_length=12)
+    raised_eur: int | None = Field(None, ge=0)
+    investors: list[Investor] = Field([], max_length=30)
+
+    @field_validator("vision")
+    @classmethod
+    def vision_fits(cls, value: str) -> str:
+        value = clean_paragraph(value)
+        if len(value.split()) > VISION_WORDS:
+            raise ValueError(f"the vision must be {VISION_WORDS} words or fewer")
+        return value
+
+    @field_validator("stages")
+    @classmethod
+    def stage_names(cls, value: list[str]) -> list[str]:
+        return [stage for stage in (clean_text(v)[:60] for v in value) if stage]
 
 
 def admin_company(db, row) -> dict:
     out = dict(row)
     for key, default in (("facts", []), ("evidence", {}), ("engine_axes", {}), ("engine_coverage", {}), ("crawl", None),
-                         ("pulse", None)):
+                         ("pulse", None), ("stages", []), ("investors", [])):
         out[key] = j(row[key], default)
+    out["vision"] = row["vision"] or ""
     out["opportunities"] = [dict(o) for o in db.execute("SELECT * FROM opportunities WHERE company_id = ? ORDER BY fit DESC",
                                                         (row["id"],))]
     out["votes"] = db.execute("SELECT COUNT(*) FROM votes WHERE company_id = ? AND round = 1", (row["id"],)).fetchone()[0]
     out["theses"] = {k: {"label": t["label"], "score": t["score"]}
                      for k, t in engine_full(out["evidence"])["theses"].items()}
+    out["opinions"] = opinions.outside(db, row["id"])
+    out["apelago"] = opinions.apelago(db, row["id"])
     return out
 
 
@@ -437,6 +743,7 @@ def save_company(db, body: CompanyIn, cid: int | None, evidence_status: str = "c
     an update keeps the stored status unless the host reviewed the evidence. A company's pool (real or sample)
     is set when it's created and never changes, so no edit can slip a sample company into live mode or a
     real one into demo mode."""
+    new = cid is None
     name = body.name.strip()
     if cid is None:
         is_real = body.is_real if body.is_real is not None else bool(service.pool_is_real(service.get_mode(db)))
@@ -444,17 +751,19 @@ def save_company(db, body: CompanyIn, cid: int | None, evidence_status: str = "c
         is_real = bool(service.get_company(db, cid)["is_real"])
     values = (name, name_key(name), body.emoji.strip(), body.sector, body.one_liner, body.claim_ask, body.website,
               dumps([f.model_dump() for f in body.facts]), dumps(body.evidence), body.evidence_note,
-              int(is_real), int(body.active))
+              int(is_real), int(body.active), body.vision, dumps(body.stages), body.raised_eur,
+              dumps([i.model_dump() for i in body.investors]))
     try:
         if cid is None:
             cid = db.execute(
                 "INSERT INTO companies (name, name_key, emoji, sector, one_liner, claim_ask, website, facts, evidence, "
-                "evidence_note, is_real, active, evidence_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "evidence_note, is_real, active, vision, stages, raised_eur, investors, evidence_status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 values + (evidence_status, now())).lastrowid
         else:
             db.execute("UPDATE companies SET name = ?, name_key = ?, emoji = ?, sector = ?, one_liner = ?, claim_ask = ?, "
-                       "website = ?, facts = ?, evidence = ?, evidence_note = ?, is_real = ?, active = ? WHERE id = ?",
-                       values + (cid,))
+                       "website = ?, facts = ?, evidence = ?, evidence_note = ?, is_real = ?, active = ?, vision = ?, "
+                       "stages = ?, raised_eur = ?, investors = ? WHERE id = ?", values + (cid,))
             if body.evidence_reviewed:
                 db.execute("UPDATE companies SET evidence_status = 'confirmed' WHERE id = ?", (cid,))
             if body.card_reviewed:
@@ -464,6 +773,8 @@ def save_company(db, body: CompanyIn, cid: int | None, evidence_status: str = "c
         raise HTTPException(409, f"There's already a real company called {name}.")
     seed.score_company(db, cid)
     db.commit()
+    if new:
+        autoread.kick()  # a new card gets its AI ratings and social media read in the background
     return cid
 
 
@@ -519,7 +830,8 @@ def admin_reject_submission(sid: int, db=Depends(get_db)):
 @app.get("/api/admin/users", dependencies=[Depends(require_admin)])
 def admin_users(db=Depends(get_db)):
     return {"users": accounts.list_users(db), "guests": accounts.guest_count(db),
-            "guest_weight": config.GUEST_WEIGHT, "guest_max_share": config.GUEST_MAX_SHARE}
+            "guest_weight": config.GUEST_WEIGHT, "guest_max_share": config.GUEST_MAX_SHARE,
+            "investor_weight": config.INVESTOR_WEIGHT}
 
 
 @app.delete("/api/admin/users/{uid}", dependencies=[Depends(require_admin)])
@@ -559,6 +871,62 @@ def admin_recrawl(cid: int, db=Depends(get_db)):
     db.execute("UPDATE companies SET crawl = ? WHERE id = ?", (dumps(result), cid))
     db.commit()
     return result
+
+
+# --- outside opinions: AI models and social media (fetched from Admin, never on the game's path) ----------
+
+@app.post("/api/admin/companies/{cid}/reads/{kind}", dependencies=[Depends(require_admin)])
+def admin_reads(cid: int, kind: str, db=Depends(get_db)):
+    """Ask the AI models (kind=ai) or read social media (kind=social) about one company, and keep the results."""
+    comp = service.get_company(db, cid)
+    if not comp or kind not in ("ai", "social"):
+        raise HTTPException(404, "No such company or read.")
+    results = reads.rate_all(comp) if kind == "ai" else reads.social_all(comp)
+    return {"report": autoread.store(db, cid, results), "company": admin_company(db, service.get_company(db, cid))}
+
+
+@app.post("/api/admin/autoread", dependencies=[Depends(require_admin)])
+def admin_autoread(db=Depends(get_db)):
+    """Read every card still missing AI ratings or a social media read, in the background (also done on startup)."""
+    return {"started": autoread.kick(), "status": autoread.status(db)}
+
+
+class OpinionScores(BaseModel):
+    novel: float = Field(ge=0, le=5)
+    useful: float = Field(ge=0, le=5)
+    plausible: float = Field(ge=0, le=5)
+    investable: float = Field(ge=0, le=5)
+
+
+class OpinionIn(BaseModel):
+    scores: OpinionScores
+    note: str = Field("", max_length=600)
+    links: list[str] = Field([], max_length=10)  # for social media: posts the read rests on
+
+    @field_validator("links")
+    @classmethod
+    def web_links(cls, value: list[str]) -> list[str]:
+        return [web_link(v) for v in value if v.strip()]
+
+
+@app.put("/api/admin/companies/{cid}/opinions/{source}", dependencies=[Depends(require_admin)])
+def admin_set_opinion(cid: int, source: str, body: OpinionIn, db=Depends(get_db)):
+    """An AI model's or a platform's read, entered by hand (or corrected): when there's no key, or no search found it."""
+    if source not in opinions.OUTSIDE or not service.get_company(db, cid):
+        raise HTTPException(404, "No such company or source.")
+    meta = {"by": "hand", "links": body.links}
+    if source in opinions.SOCIAL:
+        meta["posts"] = len(body.links) or None
+    opinions.save(db, cid, source, body.scores.model_dump(), clean_paragraph(body.note), meta)
+    return admin_company(db, service.get_company(db, cid))
+
+
+@app.delete("/api/admin/companies/{cid}/opinions/{source}", dependencies=[Depends(require_admin)])
+def admin_clear_opinion(cid: int, source: str, db=Depends(get_db)):
+    if source not in opinions.OUTSIDE or not service.get_company(db, cid):
+        raise HTTPException(404, "No such company or source.")
+    opinions.remove(db, cid, source)
+    return admin_company(db, service.get_company(db, cid))
 
 
 # --- web pulse (host hint only: never feeds engine scores or player routes) ---------------------------
@@ -745,7 +1113,9 @@ def mode_payload(db) -> dict:
     return {"mode": service.get_mode(db), "autofill": autofill.status(db), "discover": autofill.settings_payload(),
             "counts": {k: counts[k] or 0 for k in ("demo", "live_active", "live_pending")},
             "candidates": {"new": cands["new"] or 0, "queued": cands["queued"] or 0,
-                           "submissions": db.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]}}
+                           "submissions": db.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]},
+            "reads": {"ready": reads.setup(), "models": reads.models(), "route": reads.route(),
+                      "auto": autoread.status(db)}}
 
 
 class ModeIn(BaseModel):
@@ -804,6 +1174,7 @@ class ResetIn(BaseModel):
 def admin_reset(body: ResetIn, db=Depends(get_db)):
     if body.scope == "everything":
         seed.reset(db)
+        accounts.ensure_test_accounts(db)  # the test account and test moderator from .env come straight back
         return {"ok": True}
     if body.scope in ("seed", "all"):
         db.execute("DELETE FROM votes WHERE is_seed = 1")
