@@ -248,3 +248,10 @@ def test_openrouter_reads_x_with_grok_search(oai, monkeypatch):
     assert out["scores"] is None and out["meta"]["posts"] == 0  # nothing cited: a quiet platform
     body = rec.requests[0]["body"]
     assert body["model"] == "x-ai/grok-4.7" and body["tools"][0]["parameters"]["x_search"] == {}
+
+
+def test_cited_posts_about_a_namesake_are_no_read():
+    """The model cited the platform but found only namesakes, so its JSON has no scores: a quiet platform."""
+    got = reads.social_result('Only posts about another company. {"posts": 0}', ["https://www.threads.com/@x/post/1"],
+                              "Claude search", "claude")
+    assert got["scores"] is None and got["meta"]["posts"] == 0

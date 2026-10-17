@@ -144,3 +144,20 @@ def test_a_used_up_key_says_so(monkeypatch):
         REAL_POST("profile", profile.SCHEMA, [], task="profile")
     assert "Key limit exceeded" in str(err.value)
     assert reads.short_error(err.value).startswith("Out of credit")
+
+
+def test_an_empty_answer_says_why(monkeypatch):
+    """A reasoning model that spends max_tokens thinking answers with no content: a clear error, not None."""
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": None}, "finish_reason": "length"}]}).encode()
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(pitch.urllib.request, "urlopen", lambda req, timeout: Resp())
+    with pytest.raises(RuntimeError, match="didn't fit"):
+        REAL_POST("profile", profile.SCHEMA, [], task="profile")

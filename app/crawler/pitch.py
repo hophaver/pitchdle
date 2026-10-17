@@ -97,7 +97,9 @@ def _post(schema_name: str, schema: dict, messages: list[dict], task: str = "car
     """One structured chat completion on OPENROUTER_MODEL: the only network call here. Tests block it outright."""
     body = {"model": config.OPENROUTER_MODEL, "messages": messages, "temperature": 0.2,
             "max_tokens": MAX_TOKENS[task],
-            "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "strict": True, "schema": schema}}}
+            "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "strict": True, "schema": schema}},
+            # Little thinking, none of it sent back: a reasoning model can otherwise spend max_tokens before answering.
+            "reasoning": {"effort": "low", "exclude": True}}
     req = urllib.request.Request(URL, data=json.dumps(body).encode(), method="POST", headers={
         "Authorization": f"Bearer {config.OPENROUTER_API_KEY}", "Content-Type": "application/json",
         "X-Title": "Pitchdle"})
@@ -106,11 +108,19 @@ def _post(schema_name: str, schema: dict, messages: list[dict], task: str = "car
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         raise OpenRouterError(e.code, e.read()) from None
-    content = data["choices"][0]["message"]["content"]
-    if not isinstance(content, str):
+    choice = data["choices"][0]
+    content = choice["message"].get("content")
+    if isinstance(content, dict):
         return content
+    if not content:
+        if choice.get("finish_reason") == "length":
+            raise RuntimeError(f"the answer didn't fit in {MAX_TOKENS[task]} tokens")
+        raise RuntimeError(choice["message"].get("refusal") or "the model gave no answer")
     # Some models wrap JSON in a code fence even when asked for structured output.
-    return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip()))
+    answer = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip()))
+    if not isinstance(answer, dict):
+        raise ValueError("the answer wasn't a JSON object")
+    return answer
 
 
 def complete(messages: list[dict]) -> dict:

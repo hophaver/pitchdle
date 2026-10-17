@@ -158,6 +158,8 @@ def social_result(text: str, posts: list[str], via: str, model: str) -> dict:
     if not posts:
         return {"scores": None, "note": "", "meta": meta}
     data = last_json(text)
+    if data.get("posts") == 0 or any(a not in data for a in AXES):  # it cited the platform, but found only namesakes
+        return {"scores": None, "note": "", "meta": meta | {"posts": 0}}
     return {"scores": clamp_scores(data), "note": note_of(data.get("summary")), "meta": meta}
 
 
