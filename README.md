@@ -24,7 +24,9 @@ The first run creates `.venv`, installs dependencies and seeds `data/pitchdle.db
 | `/admin` | Background AI jobs, exports, resets | admin |
 | `/moderate` | Approve investors, manage members, A'Pelago's ratings, vote weights | moderator or admin |
 
-Admin pages use a browser login: any username, password `ADMIN_PASSWORD` (default `admin`).
+Admin pages use a browser login: any username, password `ADMIN_PASSWORD` (default `admin`). An admin can also make
+members **admins** (every page) or **moderators** (`/moderate` only), or both, from `/moderate` → Members; they then
+sign in with their own account.
 
 ## Config
 

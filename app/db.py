@@ -178,6 +178,7 @@ MIGRATIONS = [
     ("users", "badge_by", "TEXT"),
     ("users", "badge_at", "TEXT"),
     ("users", "is_moderator", "INTEGER DEFAULT 0"),  # set by an admin on /moderate
+    ("users", "is_admin", "INTEGER DEFAULT 0"),  # set by an admin on /moderate: the whole tool, like the admin password
     # player: signs up with a username and password, in at once, plays the simple cards. investor: signs up with
     # the full profile, waits for a moderator, rates the full cards and counts INVESTOR_WEIGHT in crowd scores.
     ("users", "kind", "TEXT DEFAULT 'player'"),

@@ -53,7 +53,8 @@ def is_test(user) -> bool:
 
 def public_user(user) -> dict:
     return {"id": user["id"], "username": user["username"], "created_at": user["created_at"], "is_test": is_test(user),
-            "is_moderator": bool(user["is_moderator"]), "kind": user["kind"] or "player"}
+            "is_moderator": bool(user["is_moderator"]), "is_admin": bool(user["is_admin"]),
+            "kind": user["kind"] or "player"}
 
 
 def ensure_test_accounts(db) -> None:
@@ -128,13 +129,13 @@ def authenticate(db, username: str, password: str):
     return user
 
 
-def moderator_login(db, username: str, password: str):
-    """The moderator account these credentials open, or None."""
+def staff_login(db, username: str, password: str):
+    """The moderator or admin account these credentials open, or None."""
     try:
         user = authenticate(db, username, password)
     except AccountError:
         return None
-    return user if user["is_moderator"] else None
+    return user if user["is_moderator"] or user["is_admin"] else None
 
 
 def start_session(db, user) -> str:

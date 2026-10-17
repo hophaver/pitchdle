@@ -1,4 +1,4 @@
-"""Moderators: a password reset for any member, and the whole host tool from their normal login."""
+"""Staff accounts: moderators reset members' passwords and moderate; admins get the whole host tool from their login."""
 from fastapi.testclient import TestClient
 
 from tests.conftest import join, new_player, staff, user_id
@@ -31,11 +31,50 @@ def test_only_an_admin_resets_a_moderators_password(client, moderator):
     assert client.put(f"/api/mod/users/{uid}/password", json={"password": "x1234"}).status_code == 401
 
 
-def test_a_logged_in_moderator_gets_the_whole_tool(client, admin, moderator):
+HOST_TOOL = ("/host", "/game", "/admin", "/api/host/radar", "/api/admin/companies")
+
+
+def promote(client, username, role, on=True, auth=None):
+    return client.put(f"/api/mod/users/{user_id(client, username)}/{role}", json={role: on}, auth=auth or staff())
+
+
+def test_a_moderator_gets_moderation_only(client, moderator):
     mod = TestClient(client.app)
     assert mod.post("/api/account/login", json={"username": moderator[0], "password": moderator[1]}).status_code == 200
-    for path in ("/host", "/game", "/admin", "/api/host/radar", "/api/admin/companies"):
-        assert mod.get(path).status_code == 200, path
+    assert mod.get("/moderate").status_code == 200
+    for path in HOST_TOOL:
+        assert mod.get(path).status_code == 401, path
+
+
+def test_an_admin_account_gets_the_whole_tool(client):
+    join(new_player(client), "ada", "adapass1")
+    assert promote(client, "ada", "admin").json()["is_admin"] is True
+    ada = TestClient(client.app)
+    r = ada.post("/api/account/login", json={"username": "ada", "password": "adapass1"})
+    assert r.json()["user"]["is_admin"] is True and r.json()["user"]["is_moderator"] is False
+    for path in HOST_TOOL:
+        assert ada.get(path).status_code == 200, path
+        assert client.get(path, auth=("ada", "adapass1")).status_code == 200, path  # or at the prompt
+    # On /moderate an admin account has the admin's powers, under its own name.
+    assert ada.get("/api/mod/users").json()["viewer"] == {"name": "ada", "admin": True}
+    join(new_player(client), "bodil")
+    assert promote(client, "bodil", "moderator", auth=("ada", "adapass1")).status_code == 200
+    # Taking it away ends their access at once.
+    promote(client, "ada", "admin", on=False)
+    assert ada.get("/host").status_code == 401 and ada.get("/api/mod/users").status_code == 401
+
+
+def test_roles_are_independent_and_only_admins_grant_them(client, moderator):
+    join(new_player(client), "both")
+    promote(client, "both", "moderator")
+    r = promote(client, "both", "admin")
+    assert r.json()["is_admin"] is True and r.json()["is_moderator"] is True
+    assert promote(client, "both", "moderator", on=False).json()["is_admin"] is True
+    join(new_player(client), "pia")
+    assert promote(client, "pia", "admin", auth=moderator).status_code == 403
+    # A moderator can't touch an admin's account either.
+    uid = user_id(client, "both")
+    assert client.put(f"/api/mod/users/{uid}/password", json={"password": "x1234"}, auth=moderator).status_code == 403
 
 
 def test_players_and_guests_still_get_the_password_prompt(client):

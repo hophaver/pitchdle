@@ -537,9 +537,10 @@ function accountMenu() {
   }
   const items = () => [
     item("Your history", () => { closeMenu(); showHistory(); }),
-    // Moderators' login opens the dashboard and the moderation page too, so neither needs a second sign-in.
-    S.user.is_moderator ? item("Dashboard ↗", () => { closeMenu(); window.open("/host", "_blank", "noopener"); }) : null,
-    S.user.is_moderator ? item("Moderation ↗", () => { closeMenu(); window.open("/moderate", "_blank", "noopener"); }) : null,
+    // Staff logins open their pages too, so neither needs a second sign-in: admins the dashboard and moderation,
+    // moderators moderation only.
+    S.user.is_admin ? item("Dashboard ↗", () => { closeMenu(); window.open("/host", "_blank", "noopener"); }) : null,
+    S.user.is_moderator || S.user.is_admin ? item("Moderation ↗", () => { closeMenu(); window.open("/moderate", "_blank", "noopener"); }) : null,
     // Test account only (TEST_USERNAME in .env): start the game over without making a new account.
     S.user.is_test ? item("Reset my data", resetData) : null,
     item("Log out", logout),

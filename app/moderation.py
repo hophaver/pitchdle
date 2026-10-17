@@ -1,8 +1,8 @@
 """Moderation: every investor sign-up waits for a moderator (players are in at once). How much a member's answers
 count in crowd scores follows from their account kind (scoring.vote_weights).
 
-Moderators are members an admin has promoted, and sign in with their own account; admins get in with the
-admin password. Whoever acts is recorded on each review.
+Moderators and admins are members an admin has promoted (either role, or both), and sign in with their own
+account; the admin password is an admin too. Whoever acts is recorded on each review.
 """
 from dataclasses import dataclass
 from statistics import fmean
@@ -14,8 +14,8 @@ from .engine import AXES, composite_of
 
 @dataclass(frozen=True)
 class Staff:
-    """Who is acting on /moderate: a moderator's own account, or the admin login."""
-    name: str  # a moderator's username, or "admin"
+    """Who is acting on /moderate: a moderator's or admin's own account, or the admin password."""
+    name: str  # their username, or "admin"
     admin: bool = False
 
 
@@ -32,9 +32,9 @@ def get_user(db, uid: int):
 
 
 def check_manageable(user, staff: Staff) -> None:
-    """Moderator accounts, a moderator's own included, are changed by admins only."""
-    if user["is_moderator"] and not staff.admin:
-        raise NotAllowed("Only an admin can change a moderator's account.")
+    """Moderator and admin accounts, a moderator's own included, are changed by admins only."""
+    if (user["is_moderator"] or user["is_admin"]) and not staff.admin:
+        raise NotAllowed("Only an admin can change a moderator's or admin's account.")
 
 
 def review(db, user, status: str, staff: Staff) -> None:
@@ -53,6 +53,16 @@ def set_moderator(db, user, moderator: bool, staff: Staff) -> None:
     if user["status"] != "approved":
         raise ModerationError("Only members can moderate. Approve the sign-up first.")
     db.execute("UPDATE users SET is_moderator = ? WHERE id = ?", (int(moderator), user["id"]))
+    db.commit()
+
+
+def set_admin(db, user, admin: bool, staff: Staff) -> None:
+    """Admins make members admins (the whole tool), or take it back. Independent of moderating."""
+    if not staff.admin:
+        raise NotAllowed("Only an admin can make or remove admins.")
+    if user["status"] != "approved":
+        raise ModerationError("Only members can be admins. Approve the sign-up first.")
+    db.execute("UPDATE users SET is_admin = ? WHERE id = ?", (int(admin), user["id"]))
     db.commit()
 
 
@@ -92,7 +102,7 @@ def user_payload(user, played: dict | None) -> dict:
         "id": user["id"], "username": user["username"], "created_at": user["created_at"],
         "status": user["status"], "kind": user["kind"] or "player", "profile": j(user["profile"], {}),
         "reviewed_by": user["reviewed_by"], "reviewed_at": user["reviewed_at"],
-        "is_moderator": bool(user["is_moderator"]), "is_test": accounts.is_test(user),
+        "is_moderator": bool(user["is_moderator"]), "is_admin": bool(user["is_admin"]), "is_test": accounts.is_test(user),
         **(played or NO_ACTIVITY),
     }
 

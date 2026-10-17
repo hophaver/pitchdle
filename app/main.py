@@ -77,11 +77,15 @@ def current_user(request: Request, db=Depends(get_db)):
     return accounts.user_for_session(db, request.cookies.get(SESSION_COOKIE))
 
 
-def require_admin(creds: HTTPBasicCredentials | None = Depends(basic), user=Depends(current_user)) -> None:
-    """The admin password at the browser prompt, or a moderator already logged in on /play (they get the whole tool)."""
-    if user and user["is_moderator"]:
+def require_admin(creds: HTTPBasicCredentials | None = Depends(basic), user=Depends(current_user),
+                  db=Depends(get_db)) -> None:
+    """The admin password at the browser prompt, or an admin account: already logged in on /play, or their username
+    and password at the prompt."""
+    if user and user["is_admin"]:
         return
     if creds and secrets.compare_digest(creds.password.encode(), config.ADMIN_PASSWORD.encode()):
+        return
+    if creds and (u := accounts.staff_login(db, creds.username, creds.password)) and u["is_admin"]:
         return
     raise HTTPException(401, "Wrong password", headers={"WWW-Authenticate": 'Basic realm="Host"'})
 
@@ -91,15 +95,15 @@ mod_basic = HTTPBasic(realm="Moderation", auto_error=False)
 
 def require_moderator(creds: HTTPBasicCredentials | None = Depends(mod_basic), user=Depends(current_user),
                       db=Depends(get_db)) -> moderation.Staff:
-    """The admin password at the browser prompt, or a moderator's own account: already logged in on /play, or their
-    username and password at the prompt. Returns who's acting, which goes on each review."""
+    """The admin password at the browser prompt, or a moderator's or admin's own account: already logged in on /play,
+    or their username and password at the prompt. Returns who's acting, which goes on each review."""
     if creds and secrets.compare_digest(creds.password.encode(), config.ADMIN_PASSWORD.encode()):
         return moderation.Staff("admin", admin=True)
-    if not (user and user["is_moderator"]) and creds:
-        user = accounts.moderator_login(db, creds.username, creds.password)
-    if user and user["is_moderator"]:
-        return moderation.Staff(user["username"])
-    raise HTTPException(401, "Log in with a moderator account or the admin password.",
+    if not (user and (user["is_moderator"] or user["is_admin"])) and creds:
+        user = accounts.staff_login(db, creds.username, creds.password)
+    if user and (user["is_moderator"] or user["is_admin"]):
+        return moderation.Staff(user["username"], admin=bool(user["is_admin"]))
+    raise HTTPException(401, "Log in with a moderator or admin account, or the admin password.",
                         headers={"WWW-Authenticate": 'Basic realm="Moderation"'})
 
 
@@ -603,6 +607,17 @@ def mod_moderator(uid: int, body: ModeratorIn, staff: moderation.Staff = Depends
                   db=Depends(get_db)):
     with refusals():
         moderation.set_moderator(db, mod_user(db, uid), body.moderator, staff)
+    return moderation.member(db, uid)
+
+
+class AdminIn(BaseModel):
+    admin: bool
+
+
+@app.put("/api/mod/users/{uid}/admin")
+def mod_admin(uid: int, body: AdminIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    with refusals():
+        moderation.set_admin(db, mod_user(db, uid), body.admin, staff)
     return moderation.member(db, uid)
 
 

@@ -1,6 +1,6 @@
 // Moderation: every investor sign-up waits here until a moderator lets it in (players are in at once), and every
-// member's profile and play is here. Moderators sign in with their own account; admins (the admin password) also make
-// and remove moderators and change moderators' accounts.
+// member's profile and play is here. Moderators sign in with their own account; admins (an admin account or the admin
+// password) also make and remove moderators and admins and change their accounts.
 // Both also give A'Pelago's own read of each startup, as its representatives.
 const { h, api, post, fmt1, ROLES, AXES, AXIS } = PD;
 const $app = document.getElementById("app");
@@ -25,14 +25,15 @@ const KIND = { player: "Player", investor: "Investor" };
 // A player counts 1 and an investor more.
 const weight = (u) => (u.kind === "investor" ? data.weights.investor : data.weights.player);
 const times = (w) => `×${Number(w)}`;
-// Moderator accounts, the viewer's own included, are changed by admins only (the server checks this too).
-const locked = (u) => u.is_moderator && !data.viewer.admin;
+// Moderator and admin accounts, the viewer's own included, are changed by admins only (the server checks this too).
+const locked = (u) => (u.is_moderator || u.is_admin) && !data.viewer.admin;
 
 function who(u) {
   const p = u.profile;
   const meta = [ROLES[p.role], p.organisation, p.location].filter(Boolean).join(" · ");
   return h("div", {},
     h("div", { class: "co-name" }, p.full_name ? [p.full_name, " ", h("span", { class: "handle" }, `@${u.username}`)] : u.username,
+      u.is_admin ? h("span", { class: "chip" }, "admin") : null,
       u.is_moderator ? h("span", { class: "chip" }, "moderator") : null, u.is_test ? h("span", { class: "chip" }, "test account") : null),
     meta ? h("div", { class: "co-meta" }, meta) : null);
 }
@@ -169,7 +170,7 @@ function memberRows(u) {
   return [row, h("tr", { class: "detail" }, h("td", { colspan: COLUMNS.length }, profileBody(u, accountBox(u))))];
 }
 
-// Password and moderator rights, each on its own line. Nothing for a moderator a moderator can't change.
+// Password, moderator and admin rights, each on its own line. Nothing for staff a moderator can't change.
 function accountBox(u) {
   if (locked(u)) return null;
   return h("section", { class: "pf-box pf-account" }, h("div", { class: "pf-title" }, "Account"),
@@ -177,20 +178,25 @@ function accountBox(u) {
     data.viewer.admin ? h("div", { class: "pf-action" },
       h("button", { class: "btn small", onclick: () => setModerator(u, !u.is_moderator) }, u.is_moderator ? "Remove moderator" : "Make moderator"),
       h("span", { class: "muted small" }, u.is_moderator ? "They keep their account and go back to being a member."
-        : "They sign in here with their own username and password.")) : null);
+        : "They sign in here with their own username and password.")) : null,
+    data.viewer.admin ? h("div", { class: "pf-action" },
+      h("button", { class: "btn small", onclick: () => setAdmin(u, !u.is_admin) }, u.is_admin ? "Remove admin" : "Make admin"),
+      h("span", { class: "muted small" }, u.is_admin ? "They lose the dashboard, game and admin pages."
+        : "The whole tool: dashboard, game, admin, and everything here.")) : null);
 }
 
 // All members, or only investors or only players.
 function kindSeg(list) {
-  const n = (k) => (k === "all" ? list.length : list.filter((u) => (k === "mods" ? u.is_moderator : u.kind === k)).length);
+  const n = (k) => (k === "all" ? list.length : list.filter((u) => (k === "mods" ? u.is_moderator : k === "admins" ? u.is_admin : u.kind === k)).length);
   return h("div", { class: "seg", role: "group", "aria-label": "Show accounts" },
-    [["all", "All"], ["investor", "Investors"], ["player", "Players"], ["mods", "Moderators"]].map(([k, label]) => h("button", { type: "button",
+    [["all", "All"], ["investor", "Investors"], ["player", "Players"], ["mods", "Moderators"], ["admins", "Admins"]].map(([k, label]) => h("button", { type: "button",
       "aria-pressed": String(state.kind === k), onclick: () => { state.kind = k; render(); } }, `${label} (${n(k)})`)));
 }
 
 function membersView(list) {
   const q = search.value.trim().toLowerCase();
-  const shown = sorted(list.filter((u) => (state.kind === "all" || (state.kind === "mods" ? u.is_moderator : u.kind === state.kind))
+  const shown = sorted(list.filter((u) => (state.kind === "all" || (state.kind === "mods" ? u.is_moderator
+    : state.kind === "admins" ? u.is_admin : u.kind === state.kind))
     && (!q || [u.username, u.profile.full_name, u.profile.email, u.profile.organisation].join(" ").toLowerCase().includes(q))));
   return [
     h("div", { class: "toolbar" }, kindSeg(list), search, h("span", { class: "muted small" }, `${shown.length} of ${list.length}`)),
@@ -200,7 +206,7 @@ function membersView(list) {
         : h("tr", {}, h("td", { colspan: COLUMNS.length, class: "muted" }, list.length ? "No members match." : "No members yet."))))),
     h("p", { class: "muted small", style: { margin: ".7rem 0 0" } },
       "Vs engine and Flat are hints for judging a member's reads; hover the headers for what they measure. Click a row for the profile",
-      data.viewer.admin ? ", and to make them a moderator." : "."),
+      data.viewer.admin ? ", and to make them a moderator or admin." : "."),
   ];
 }
 
@@ -276,6 +282,14 @@ async function setModerator(u, on) {
   try {
     await post(`/api/mod/users/${u.id}/moderator`, { moderator: on }, "PUT");
     PD.toast(on ? `${u.username} can moderate now` : `${u.username} isn't a moderator any more`);
+  } catch (e) { PD.toast(e.message); }
+  await refresh();
+}
+
+async function setAdmin(u, on) {
+  try {
+    await post(`/api/mod/users/${u.id}/admin`, { admin: on }, "PUT");
+    PD.toast(on ? `${u.username} is an admin now` : `${u.username} isn't an admin any more`);
   } catch (e) { PD.toast(e.message); }
   await refresh();
 }
@@ -429,7 +443,8 @@ function render() {
     h("span", { class: "spacer" }),
     reviewing && startups.mode !== "live" ? h("span", { class: "chip" }, "Sample startups (demo mode)") : null,
     reviewing ? h("span", { class: "chip" }, toRate ? `${toRate} to rate` : "All rated") : null,
-    h("span", { class: "chip" }, data.viewer.admin ? "Signed in as admin" : `Signed in as ${data.viewer.name}`)),
+    h("span", { class: "chip" }, data.viewer.name === "admin" ? "Signed in as admin"
+      : `Signed in as ${data.viewer.name}${data.viewer.admin ? " (admin)" : ""}`)),
     ...(reviewing ? [startupsView()] : peopleView()));
   window.scrollTo({ top: scroll });
 }
