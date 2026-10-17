@@ -232,7 +232,8 @@ def fill(db, comp) -> dict:
     found = clean(complete([{"role": "system", "content": SYSTEM}, {"role": "user", "content": text}]))
     updates = {}
     if found["vision"] and not (comp["vision"] or "").strip():
-        updates["vision"] = found["vision"]
+        from .. import money
+        updates["vision"] = money.in_euros(found["vision"])
     if found["country"] and not (comp["country"] or "").strip():
         updates["country"] = found["country"]
     if found["raised_eur"] is not None and comp["raised_eur"] is None:

@@ -13,7 +13,7 @@ import logging
 import re
 import threading
 
-from . import brief, opinions, reads
+from . import brief, money, opinions, reads
 from .crawler import checklist, gate, pitch, profile
 from .db import connect, now
 from .service import get_setting, set_setting
@@ -84,6 +84,7 @@ def fill(db) -> dict:
     it runs."""
     st = {"started_at": now(), "finished_at": None, "read": [], "errors": []}
     set_setting(db, "autoread", st)
+    money.tidy(db)  # cards added since (a player's suggestion, a hand edit) get their amounts in euros, for free
     write_find_cards(db, st)
     tried = set()
     while True:

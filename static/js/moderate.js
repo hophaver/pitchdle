@@ -281,47 +281,74 @@ async function withdrawEvaluation(c) {
   await refresh();
 }
 
-function evaluationCard(c) {
+// Each startup as the dashboard's opened card: its colour, the pitch big, the facts in boxes, and your four calls as the
+// game's rows of 0-5 buttons.
+function evaluationCard(c, i) {
   const d = draftOf(c);
   const complete = AXES.every((a) => d.scores[a] !== undefined);
-  const rows = AXES.map((a) => h("div", { class: "eval-row" },
-    h("span", { class: "eval-axis" }, AXIS[a]),
-    h("div", { class: "seg", role: "group", "aria-label": AXIS[a] }, [0, 1, 2, 3, 4, 5].map((n) => h("button", {
-      class: `btn small${d.scores[a] === n ? " primary" : ""}`, "aria-pressed": String(d.scores[a] === n),
-      onclick: () => { d.scores[a] = n; render(); } }, n)))));
-  const note = h("textarea", { rows: 2, maxlength: 600, placeholder: "A comment for the team (players don't see it)",
-    oninput: (e) => { d.note = e.target.value; } });
+  const site = safeLink(c.website);
+  const invested = c.investors.filter((x) => x.status === "invested");
+  const sect = (title, ...kids) => h("section", { class: "sect" }, h("div", { class: "caps sect-title" }, title), ...kids);
+  const subTitle = (text) => h("div", { class: "caps sub-title" }, text);
+  const box = (label, value, cls = "") => h("div", { class: `fact-box ${cls}` }, h("small", { class: "caps" }, label), h("b", {}, value));
+  const note = h("textarea", { rows: 3, maxlength: 600, placeholder: "A comment for the team (players don't see it)",
+    "aria-label": `Comment on ${c.name}`, oninput: (e) => { d.note = e.target.value; } });
   note.value = d.note;
   const ap = c.apelago;
-  return h("article", { class: "signup evaluation" },
-    h("div", { class: "signup-head" },
-      h("div", {}, h("div", { class: "co-name" }, c.emoji ? `${c.emoji} ` : "", c.name,
-        c.active ? null : h("span", { class: "chip" }, "not in the game")),
-      h("div", { class: "co-meta" }, [c.sector, c.one_liner].filter(Boolean).join(" · "))),
-      h("span", { class: "spacer" }),
-      h("span", { class: "co-meta" }, c.mine ? `You rated it ${day(c.mine.updated_at)}` : "Not rated by you yet")),
-    PD.profile(c),
-    h("div", { class: "eval-grid" }, rows),
-    note,
-    h("div", { class: "signup-actions" },
-      ap ? h("figure", { class: "op" },
-        h("figcaption", {}, h("b", {}, "A'Pelago"), h("small", {}, `${plural(ap.n, "reviewer")}: ${ap.reps.join(", ")}`)),
-        PD.opinionChart(ap.means, { labelled: true })) : null,
-      h("span", { class: "spacer" }),
-      c.mine ? h("button", { class: "btn danger", onclick: () => withdrawEvaluation(c) }, "Withdraw") : null,
-      h("button", { class: "btn primary", disabled: !complete, onclick: () => saveEvaluation(c),
-        title: complete ? null : "Give all four calls first" }, c.mine ? "Update" : "Save evaluation")));
+  return h("article", { class: "card dossier eval-card", style: { "--card": PD.colorFor(i) } },
+    h("header", { class: "dossier-head" },
+      h("div", { class: "pitch" },
+        h("div", { class: "name-row" }, c.emoji ? h("div", { class: "art small", "aria-hidden": "true" }, c.emoji) : null,
+          h("div", {}, h("h2", {}, c.name),
+            h("div", { class: "row meta" },
+              h("span", { class: `tag${c.active ? " in" : ""}` }, c.active ? "In game" : "Not in the game"),
+              c.sector ? h("span", { class: "caps sector" }, c.sector) : null,
+              site ? h("a", { class: "site", href: site, target: "_blank", rel: "noopener noreferrer nofollow" }, `${PD.hostOf(site)} ↗`) : null))),
+        c.one_liner ? h("p", { class: "pitch-line" }, c.one_liner) : null,
+        c.claim_ask ? h("p", { class: "ask" }, c.claim_ask) : null),
+      h("section", { class: "sect call-box" },
+        h("div", { class: "caps sect-title" }, "A'Pelago's read"),
+        ap ? [h("p", { class: "note" }, `${plural(ap.n, "reviewer")}: ${ap.reps.join(", ")}`), PD.opinionChart(ap.means, { labelled: true })]
+          : h("p", { class: "note" }, "The team's average shows here once you've given yours."))),
+    h("div", { class: "dossier-grid" },
+      h("div", { class: "col" },
+        sect("The startup",
+          h("div", { class: "fact-grid" },
+            box("Raised so far", c.raised_eur === null || c.raised_eur === undefined ? "Not given" : PD.money(c.raised_eur)),
+            box("Investors", invested.length ? String(invested.length) : "None yet"),
+            box("Stage", c.stages.length ? c.stages[c.stages.length - 1] : "Not given", "wide")),
+          c.stages.length ? [subTitle("Stages passed"), h("ol", { class: "stage-list" }, c.stages.map((st) => h("li", {}, st)))] : null,
+          c.investors.length ? [subTitle("Investors"),
+            h("ul", { class: "investor-list" }, c.investors.map((x) => h("li", {}, h("b", {}, x.name), " ",
+              x.status === "interested" ? h("span", { class: "interested" }, "interested")
+                : x.amount_eur ? PD.money(x.amount_eur) : "invested")))] : null),
+        c.vision ? sect("Vision", h("div", { class: `vision-text${c.vision.split(/\s+/).length > 110 ? " long" : ""}` },
+          c.vision.split(/\n{2,}/).map((para) => h("p", { class: "vision" }, para)))) : null),
+      h("div", { class: "col" },
+        h("section", { class: "sect eval-call" },
+          h("div", { class: "eval-call-head" }, h("span", { class: "caps sect-title" }, "Your read"),
+            h("span", { class: "note" }, c.mine ? `You rated it ${day(c.mine.updated_at)}` : "Not rated by you yet")),
+          AXES.map((a) => h("div", { class: "eval-axis-row" },
+            h("div", { class: "caps axis-label" }, AXIS[a]),
+            h("div", { class: "taps", role: "group", "aria-label": AXIS[a] }, [0, 1, 2, 3, 4, 5].map((n) => h("button", {
+              type: "button", class: d.scores[a] === n ? "on" : "", "aria-pressed": String(d.scores[a] === n),
+              onclick: () => { d.scores[a] = n; render(); } }, n))))),
+          note,
+          h("div", { class: "eval-actions" },
+            c.mine ? h("button", { class: "pill small ghost", onclick: () => withdrawEvaluation(c) }, "Withdraw") : null,
+            h("button", { class: "pill small", disabled: !complete, onclick: () => saveEvaluation(c),
+              title: complete ? null : "Give all four calls first" }, c.mine ? "Update" : "Save evaluation"))))));
 }
 
 function startupsView() {
   const list = [...startups.companies].sort((a, b) => !!a.mine - !!b.mine); // yours to do first
-  return h("section", { class: "panel" },
+  return h("section", { class: "evals" },
     h("div", { class: "panel-head" }, h("h2", {}, "A'Pelago's read"), h("span", { class: "spacer" }),
-      h("span", { class: "chip" }, startups.mode === "live" ? "Real startups" : "Sample startups (demo mode)")),
+      startups.mode === "live" ? null : h("span", { class: "chip" }, "Sample startups (demo mode)")),
     h("p", { class: "muted small", style: { marginTop: 0 } },
       "Rate each startup as an A'Pelago representative, not as a player. Players see the average of every ",
       "representative's read next to their own, after answering; you see it once you've given yours. Comments stay with the team."),
-    list.length ? h("div", { class: "signups" }, list.map(evaluationCard))
+    list.length ? h("div", { class: "eval-list" }, list.map(evaluationCard))
       : h("p", { class: "muted", style: { margin: 0 } }, "No startups in this mode yet."));
 }
 

@@ -158,7 +158,8 @@ def write_card(sources: str) -> dict:
     }
     if card["is_startup"] and not card["one_liner"]:
         raise ValueError("model returned an empty pitch")
-    return card
+    from .. import money  # money reads profile's rates; imported here so the crawler modules load in any order
+    return money.card(card)
 
 
 # --- screening raw feed hits -------------------------------------------------------------------------

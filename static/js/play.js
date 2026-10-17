@@ -111,35 +111,36 @@ function cardFacts(c) {
           : i.amount_eur ? PD.money(i.amount_eur) : "invested")))] : null);
 }
 
-function cardVision(c) {
-  if (!c.vision) return null;
-  return h("section", { class: "sect g-vision" }, h("div", { class: "caps sect-title" }, "Vision"),
-    c.vision.split(/\n{2,}/).map((para) => h("p", { class: "vision" }, para)));
-}
-
-// One row per opinion: who, their four calls on the 0–5 scale, and why.
-function opinionRow(t) {
-  const count = t.count ? plural(t.count, COUNT_WORD[t.key] || "post") : null;
-  return h("div", { class: "op-row" },
-    h("div", { class: "op-who" }, h("b", {}, t.label), count ? h("small", {}, count) : null),
-    PD.opinionChart(t.scores, { labelled: true }),
-    t.note ? h("p", { class: "op-note" }, t.note) : null);
-}
-
+// What others make of it, drawn like the results: one row per read, the same four bars in each. A'Pelago only once
+// its people have rated it, each AI model, and social media as one average with the posts behind it. Why each
+// thinks so opens over the box rather than under it, so the card never grows; a click anywhere on it closes it.
 function cardOpinions(c) {
   const group = (g) => c.opinions.filter((t) => t.group === g);
-  const empty = (text) => h("p", { class: "op-empty" }, text);
-  const [apelago, ai, social] = [group("people"), group("ai"), group("social")];
-  return h("section", { class: "sect g-opinions" },
+  const [people, ai, social] = [group("people"), group("ai"), group("social")];
+  const posts = social.reduce((n, t) => n + (t.count || 0), 0);
+  const socialSub = social.length ? `${plural(social.length, "platform")} · ${plural(posts, "post")}` : null;
+  const socialNone = !c.is_real ? "Made up: no posts" : c.quiet.length ? "No posts found" : "Not read yet";
+  const notes = c.opinions.filter((t) => t.note);
+  const box = h("section", { class: "sect g-opinions" });
+  const toggle = (open) => {
+    box.classList.toggle("why-open", open);
+    box.querySelector(".op-why").hidden = !open;
+    box.querySelector(".op-why-btn").setAttribute("aria-expanded", String(open));
+  };
+  box.append(
     h("div", { class: "caps sect-title" }, "What others make of it"),
-    apelago.length ? apelago.map(opinionRow) : empty("A'Pelago hasn't rated it yet."),
-    h("div", { class: "caps sect-title" }, "AI models"),
-    ai.length ? ai.map(opinionRow) : empty("No AI ratings yet."),
-    h("div", { class: "caps sect-title" }, "Social media"),
-    social.map(opinionRow),
-    !c.is_real && !social.length ? empty("None: this startup is made up.")
-      : c.quiet.length ? empty(`No posts found on ${c.quiet.join(", ")}.`)
-        : social.length ? null : empty("Not read yet."));
+    h("div", { class: "rs" },
+      h("div", { class: "rs-row rs-axes", "aria-hidden": "true" }, h("span"), h("div", { class: "rs-axis" }, AXES.map((a) => h("span", {}, AXIS[a])))),
+      people.map((t) => resultRow(t.label, t.count ? plural(t.count, COUNT_WORD[t.key] || "reviewer") : null, t.scores)),
+      ai.length ? ai.map((t) => resultRow(t.label, null, t.scores)) : resultRow("AI models", null, null, { none: "No ratings yet" }),
+      resultRow("Social media", socialSub, averageOf(social), { none: socialNone })),
+    notes.length ? h("button", { class: "op-why-btn", type: "button", "aria-expanded": "false", onclick: () => toggle(true) }, "Why they think so ▸") : null,
+    notes.length ? h("div", { class: "op-why", hidden: true, role: "dialog", "aria-label": "Why they think so", title: "Click to close",
+      onclick: () => toggle(false) },
+      h("div", { class: "op-why-head" }, h("span", { class: "caps" }, "Why they think so"),
+        h("button", { type: "button", class: "op-why-x", "aria-label": "Close" }, "×")),
+      h("ul", {}, notes.map((t) => h("li", {}, h("b", {}, t.label), h("p", {}, t.note))))) : null);
+  return box;
 }
 
 function showCard(c, index, total) {
@@ -201,7 +202,6 @@ function fullCard(c, index, total, rows, lock) {
       rel: "noopener noreferrer nofollow" }, `${hostOf(site)} ↗`)] : null),
     h("div", { class: "card-grid" },
       cardFacts(c),
-      cardVision(c),
       cardOpinions(c),
       // Leads into the four calls: "Is this… novel? useful? …"
       h("section", { class: "sect g-call" },

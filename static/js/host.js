@@ -611,7 +611,7 @@ function searchRow() {
   }
   const btn = h("button", { class: "btn primary", disabled: state.searching, onclick: find }, state.searching ? "Finding…" : "Find startups");
   [country, field].forEach((el) => el.addEventListener("keydown", (e) => { if (e.key === "Enter") find(); }));
-  return data.mode === "live" ? h("div", { class: "row" }, scopeSeg, country, field, btn) : null;
+  return data.mode === "live" ? h("div", { class: "search" }, scopeSeg, country, field, btn) : null;
 }
 
 function render() {
@@ -633,8 +633,8 @@ function render() {
     h("button", { type: "button", "aria-pressed": String(cur === k), onclick: () => pick(k) }, label)));
 
   $app.replaceChildren(...[
-    h("div", { class: "head" }, h("h1", {}, "Dashboard"), h("span", { class: "spacer" }), searchRow(), updateButton()),
-    h("div", { class: "toolbar" },
+    h("div", { class: "dash-head" }, h("h1", {}, "Dashboard"), h("span", { class: "spacer" }), searchRow(), updateButton()),
+    h("div", { class: "dash-bar" },
       h("div", { class: "chips", role: "group", "aria-label": "Show" }, FILTERS.filter(([k]) => k === "all" || count[k]).map(([k, label]) =>
         h("button", { "aria-pressed": String(state.filter === k), onclick: () => { state.filter = k; render(); } }, label, h("b", {}, count[k] || 0)))),
       h("span", { class: "spacer" }),

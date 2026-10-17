@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Moderation</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("pd.theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); } catch { /* light */ }</script>
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body class="tool">
@@ -18,6 +19,7 @@
         <a href="/moderate" data-nav="/moderate">Moderation</a>
       </nav>
       <span class="spacer"></span>
+      <div class="mode-switch theme-switch" id="theme-switch" role="group" aria-label="Theme"></div>
       <a class="ext" href="/play" target="_blank">Play ↗</a>
     </header>
     <main id="app"><p class="muted">Loading…</p></main>

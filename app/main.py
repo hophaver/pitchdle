@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from . import accounts, autofill, autoread, brief, config, engine, moderation, opinions, reads, refresh, scoring, seed, service
+from . import accounts, autofill, autoread, brief, config, engine, moderation, money, opinions, reads, refresh, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, name_key, now
 from .crawler import checklist, pitch
 from .engine import AXES, full_score as engine_full
@@ -36,6 +36,7 @@ async def lifespan(_app: FastAPI):
         log.warning("Pitchdle: empty database, loaded seed data into %s", config.DB_PATH)
     seed.fill_profiles(db)  # sample companies from before card profiles get theirs
     accounts.ensure_test_accounts(db)
+    money.tidy(db)  # amounts on stored cards in euros (no model call)
     fixed = autofill.tidy(db)
     if fixed["removed"]:
         log.warning("Pitchdle: removed excluded names discovery had filed as startups: %s", ", ".join(fixed["removed"]))

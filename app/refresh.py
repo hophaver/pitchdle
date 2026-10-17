@@ -15,7 +15,7 @@ import logging
 import re
 import threading
 
-from . import autoread, brief, config, opinions, reads
+from . import autoread, brief, config, money, opinions, reads
 from .crawler import checklist, pitch, profile, pulse
 from .db import connect, dumps, j, now
 from .service import get_setting, set_setting
@@ -111,7 +111,7 @@ def patches(comp, found: dict) -> dict:
            for i in found.get("investors") or [] if (i.get("name") or "").strip() and i["name"].lower() not in names]
     if new:
         out["investors"] = dumps((have + new)[:profile.MAX_INVESTORS])
-    vision = " ".join((found.get("vision") or "").split())
+    vision = money.in_euros(" ".join((found.get("vision") or "").split()))
     if vision and vision != (comp["vision"] or ""):
         out["vision"] = vision
     return out

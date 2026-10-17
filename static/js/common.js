@@ -132,3 +132,38 @@ const PD = (() => {
 
   return { AXES, AXIS, ROLES, colorFor, api, post, h, fmt1, toast, bars, money, opinionChart, safeLink, hostOf, plural, profile };
 })();
+
+// Light / dark on the host pages: a sun and a moon in the nav. The page's <head> sets the theme before it paints
+// (the saved choice, else the system's); this only draws the switch and remembers a pick.
+(() => {
+  const el = document.getElementById("theme-switch");
+  if (!el) return;
+  const ns = "http://www.w3.org/2000/svg";
+  const ICONS = {
+    light: '<circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/>',
+    dark: '<path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7z"/>',
+  };
+  const icon = (key) => {
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = ICONS[key];
+    return svg;
+  };
+  function paint() {
+    const now = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+    el.replaceChildren(...["light", "dark"].map((key) => PD.h("button", { type: "button", "aria-pressed": String(now === key),
+      "aria-label": key === "light" ? "Light mode" : "Dark mode", title: key === "light" ? "Light" : "Dark",
+      onclick: () => {
+        document.documentElement.dataset.theme = key;
+        try { localStorage.setItem("pd.theme", key); } catch { /* private mode */ }
+        paint();
+      } }, icon(key))));
+  }
+  paint();
+})();
