@@ -99,4 +99,3 @@ static/          plain HTML/CSS/JS, no build step
 tests/
 ```
 
-Docker/Proxmox deployment is planned (step 10 in `plan.md`); nothing in the code depends on it.
