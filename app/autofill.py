@@ -8,7 +8,7 @@ recorded in the status rather than raised.
 import re
 import threading
 
-from . import config, seed
+from . import autoread, config, seed
 from .crawler import discovery, pulse
 from .db import connect, dumps, j, now
 from .service import get_mode, get_setting, set_setting
@@ -72,6 +72,7 @@ def approve_candidate(db, row, origin: str = "") -> int:
     seed.score_company(db, cid)
     db.execute("UPDATE candidates SET status = 'approved', company_id = ? WHERE id = ?", (cid, row["id"]))
     db.commit()
+    autoread.kick()  # its AI ratings and social media read
     return cid
 
 

@@ -16,10 +16,11 @@ def answer(c, dive_id, cid, scores=GUESS):
     return c.post("/api/vote", json={"dive_id": dive_id, "company_id": cid, "scores": scores})
 
 
-def test_cards_show_the_pitch_and_profile_but_no_scores(client):
+def test_cards_show_everything_but_the_crowd_and_the_engine(client):
     card = today(client)["cards"][0]
     assert set(card) == {"id", "name", "emoji", "sector", "one_liner", "claim_ask", "is_real",
-                         "vision", "website", "stages", "raised_eur", "investors"}
+                         "vision", "website", "stages", "raised_eur", "investors", "opinions", "quiet"}
+    assert not any(t["key"] in ("you", "crowd") for t in card["opinions"])  # the crowd waits for the results
 
 
 def test_results_only_after_every_card(client):

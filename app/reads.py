@@ -1,8 +1,12 @@
 """Outside reads of a startup: AI models' own ratings, and what people say about it on social media, found and
-read by AI search. Run from Admin, never on the game's path; a model without its API key is skipped.
+read by AI search. Run from Admin, never on the game's path.
 
-Every read comes back on the players' four calls, 0-5. A social read only counts posts the search returned and
-the model cited, so it can't rest on posts that don't exist; with none, the platform is recorded as quiet.
+Two routes: with OPENROUTER_API_KEY, OpenRouter runs all three models on one key; otherwise each model goes to its
+own provider with its own key, and a model without one is skipped.
+
+Every read comes back on the players' four calls, 0-5. A social read only counts posts the model cited on that
+platform (and, on Anthropic's own API, that its search actually returned), so it can't rest on posts that don't
+exist; with none, the platform is recorded as quiet.
 """
 import json
 import os
@@ -16,7 +20,27 @@ from .engine import AXES
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"  # a declined request is retried server-side on another model
 XAI_BASE_URL = "https://api.x.ai/v1"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 TIMEOUT = 180  # seconds per request; a web search loop takes a while
+
+# The model each route asks unless CLAUDE_MODEL, GPT_MODEL or GROK_MODEL says otherwise.
+MODELS = {
+    "direct": {"claude": "claude-opus-5-5", "gpt": "gpt-6-astra", "grok": "grok-4.7"},
+    "openrouter": {"claude": "anthropic/claude-opus-5.5", "gpt": "openai/gpt-6-astra", "grok": "x-ai/grok-4.7"},
+}
+MODEL_NAMES = {"claude": "Claude", "gpt": "GPT", "grok": "Grok"}
+
+
+def route() -> str:
+    return "openrouter" if config.OPENROUTER_API_KEY else "direct"
+
+
+def model(key: str) -> str:
+    return getattr(config, f"{key.upper()}_MODEL") or MODELS[route()][key]
+
+
+def models() -> dict[str, str]:
+    return {key: model(key) for key in MODEL_NAMES}
 
 # Where each platform's posts live. X is searched by Grok when it has a key, since it searches X directly.
 PLATFORMS = {
@@ -147,7 +171,7 @@ def openai_client(api_key: str, base_url: str | None = None):
 
 def claude_rate(profile: str) -> dict:
     response = claude_client().beta.messages.create(
-        model=config.CLAUDE_MODEL,
+        model=model("claude"),
         max_tokens=16000,
         betas=[FALLBACK_BETA],
         fallbacks="default",
@@ -163,7 +187,7 @@ def claude_rate(profile: str) -> dict:
 
 def gpt_rate(profile: str) -> dict:
     response = openai_client(config.OPENAI_API_KEY).responses.create(
-        model=config.GPT_MODEL,
+        model=model("gpt"),
         instructions=RATE_SYSTEM,
         input=profile,
         text={"format": {"type": "json_schema", "name": "startup_read", "strict": True, "schema": SCORE_SCHEMA}},
@@ -174,7 +198,7 @@ def gpt_rate(profile: str) -> dict:
 
 def grok_rate(profile: str) -> dict:
     response = openai_client(config.XAI_API_KEY, XAI_BASE_URL).responses.create(
-        model=config.GROK_MODEL,
+        model=model("grok"),
         input=[{"role": "system", "content": f"{RATE_SYSTEM}\n{RATE_FORMAT}"}, {"role": "user", "content": profile}],
     )
     data = last_json(response.output_text)
@@ -190,7 +214,7 @@ def claude_social(platform: str, comp) -> dict:
     # The basic search tool hands back every result it found, so cited posts can be checked against them.
     for _ in range(3):
         response = client.beta.messages.create(
-            model=config.CLAUDE_MODEL, max_tokens=16000, betas=[FALLBACK_BETA], fallbacks="default",
+            model=model("claude"), max_tokens=16000, betas=[FALLBACK_BETA], fallbacks="default",
             output_config={"effort": "medium"}, system=SOCIAL_SYSTEM, messages=messages, tools=tools)
         if response.stop_reason == "refusal":
             raise RuntimeError("Claude declined to search for it")
@@ -209,7 +233,7 @@ def claude_social(platform: str, comp) -> dict:
 def grok_social(comp) -> dict:
     """Grok's own X search."""
     response = openai_client(config.XAI_API_KEY, XAI_BASE_URL).responses.create(
-        model=config.GROK_MODEL,
+        model=model("grok"),
         input=[{"role": "system", "content": SOCIAL_SYSTEM}, {"role": "user", "content": social_request("x", comp)}],
         tools=[{"type": "x_search"}],
     )
@@ -220,13 +244,61 @@ def grok_social(comp) -> dict:
     return social_result(response.output_text, posts, "Grok X search", response.model)
 
 
+# --- all three through OpenRouter -------------------------------------------------------------------------
+
+def openrouter_client():
+    return openai_client(config.OPENROUTER_API_KEY, OPENROUTER_BASE_URL)
+
+
+def answer_text(response) -> str:
+    message = response.choices[0].message
+    if not message.content:
+        raise RuntimeError(getattr(message, "refusal", None) or "the model gave no answer")
+    return message.content
+
+
+def openrouter_rate(key: str, profile: str) -> dict:
+    response = openrouter_client().chat.completions.create(
+        model=model(key),
+        messages=[{"role": "system", "content": RATE_SYSTEM}, {"role": "user", "content": profile}],
+        response_format={"type": "json_schema",
+                         "json_schema": {"name": "startup_read", "strict": True, "schema": SCORE_SCHEMA}},
+        extra_body={"provider": {"require_parameters": True}},  # only endpoints that enforce the schema
+    )
+    data = json.loads(answer_text(response))
+    return {"scores": clamp_scores(data), "note": note_of(data["reason"]),
+            "meta": {"model": response.model, "via": "OpenRouter"}}
+
+
+def openrouter_social(platform: str, comp) -> dict:
+    """OpenRouter's web search with each model's own search engine, kept to the platform's site. X is read by Grok
+    with its X search on; every other platform by Claude. Only citations come back, not the full results, so a post
+    counts when the model cited it on the platform itself."""
+    reader, domains = ("grok" if platform == "x" else "claude"), PLATFORMS[platform]
+    search = {"engine": "native", "max_uses": 4, "max_results": 5, "allowed_domains": domains}
+    if platform == "x":
+        search["x_search"] = {}
+    response = openrouter_client().chat.completions.create(
+        model=model(reader),
+        messages=[{"role": "system", "content": SOCIAL_SYSTEM},
+                  {"role": "user", "content": social_request(platform, comp)}],
+        tools=[{"type": "openrouter:web_search", "parameters": search}],
+    )
+    message = response.choices[0].message
+    cited = [a.url_citation.url for a in (message.annotations or []) if a.type == "url_citation"]
+    posts = [u for u in dict.fromkeys(cited) if on_platform(u, domains)]
+    return social_result(message.content or "", posts, f"{MODEL_NAMES[reader]} search via OpenRouter", response.model)
+
+
 # --- running them ----------------------------------------------------------------------------------------
 
 KEY_NAMES = {"claude": "ANTHROPIC_API_KEY", "gpt": "OPENAI_API_KEY", "grok": "XAI_API_KEY"}
 
 
 def setup() -> dict[str, bool]:
-    """Which models can be asked. Claude also runs on an ANTHROPIC_AUTH_TOKEN."""
+    """Which models can be asked: all three with an OpenRouter key. Claude also runs on an ANTHROPIC_AUTH_TOKEN."""
+    if route() == "openrouter":
+        return dict.fromkeys(MODEL_NAMES, True)
     return {"claude": bool(config.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_AUTH_TOKEN")),
             "gpt": bool(config.OPENAI_API_KEY), "grok": bool(config.XAI_API_KEY)}
 
@@ -248,22 +320,38 @@ def run(jobs: dict) -> dict:
     return out
 
 
-def rate_all(comp) -> dict:
-    """Ask every model that has a key. Returns {source: result | {"error"} | {"skipped"}}."""
+def can_read(platform: str) -> bool:
+    """Whether this setup can read a platform: X needs Grok or Claude, the rest Claude."""
+    ready = setup()
+    return ready["claude"] or (platform == "x" and ready["grok"])
+
+
+def rate_all(comp, only: list[str] | None = None) -> dict:
+    """Ask every model that has a key, or just those in `only`. Returns {source: result | {"error"} | {"skipped"}}."""
     ready, profile = setup(), profile_text(comp)
-    raters = {"claude": claude_rate, "gpt": gpt_rate, "grok": grok_rate}
-    out = run({key: (lambda fn=fn: fn(profile)) for key, fn in raters.items() if ready[key]})
-    return out | {key: {"skipped": f"no {KEY_NAMES[key]}"} for key in raters if not ready[key]}
+    if route() == "openrouter":
+        raters = {key: (lambda key=key: openrouter_rate(key, profile)) for key in MODEL_NAMES}
+    else:
+        direct = {"claude": claude_rate, "gpt": gpt_rate, "grok": grok_rate}
+        raters = {key: (lambda fn=fn: fn(profile)) for key, fn in direct.items()}
+    raters = {key: fn for key, fn in raters.items() if only is None or key in only}
+    out = run({key: fn for key, fn in raters.items() if ready[key]})
+    return out | {key: {"skipped": f"no {KEY_NAMES[key]} or OPENROUTER_API_KEY"} for key in raters if not ready[key]}
 
 
-def social_all(comp) -> dict:
-    """Read every platform: X with Grok's own search when it has a key, the rest with Claude's web search."""
+def social_all(comp, only: list[str] | None = None) -> dict:
+    """Read every platform, or just those in `only`: X with Grok's own search when it has a key, the rest with
+    Claude's web search."""
+    platforms = [p for p in PLATFORMS if only is None or p in only]
+    if route() == "openrouter":
+        return run({platform: (lambda p=platform: openrouter_social(p, comp)) for platform in platforms})
     ready, jobs, out = setup(), {}, {}
-    for platform in PLATFORMS:
+    for platform in platforms:
         if platform == "x" and ready["grok"]:
             jobs[platform] = lambda: grok_social(comp)
         elif ready["claude"]:
             jobs[platform] = lambda p=platform: claude_social(p, comp)
         else:
-            out[platform] = {"skipped": "no ANTHROPIC_API_KEY" + (" or XAI_API_KEY" if platform == "x" else "")}
+            out[platform] = {"skipped": "no ANTHROPIC_API_KEY" + (", XAI_API_KEY" if platform == "x" else "")
+                                        + " or OPENROUTER_API_KEY"}
     return run(jobs) | out

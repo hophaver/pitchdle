@@ -5,10 +5,13 @@ from app import config
 
 
 @pytest.fixture(autouse=True)
-def no_test_accounts(monkeypatch):
-    """Tests don't depend on a local .env: no test account or test moderator unless a test sets its own."""
-    for name in ("TEST_USERNAME", "TEST_PASSWORD", "TEST_MODERATOR_USERNAME", "TEST_MODERATOR_PASSWORD"):
+def no_local_settings(monkeypatch):
+    """Tests don't depend on a local .env: no test accounts, no API keys and default models, unless a test sets its own."""
+    for name in ("TEST_USERNAME", "TEST_PASSWORD", "TEST_MODERATOR_USERNAME", "TEST_MODERATOR_PASSWORD",
+                 "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
+                 "CLAUDE_MODEL", "GPT_MODEL", "GROK_MODEL"):
         monkeypatch.setattr(config, name, "")
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
 
 
 @pytest.fixture

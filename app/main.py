@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import accounts, autofill, config, live, moderation, opinions, reads, scoring, seed, service
+from . import accounts, autofill, autoread, config, live, moderation, opinions, reads, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, now
 from .engine import AXES
 
@@ -33,6 +33,7 @@ async def lifespan(_app: FastAPI):
     seed.fill_profiles(db)  # sample companies from before card profiles get theirs
     accounts.ensure_test_accounts(db)
     autofill.maybe_start(db)  # live mode tops itself up in the background; demo mode does nothing
+    autoread.kick()  # cards still missing AI ratings or a social media read get them, in the background
     db.close()
     if config.ADMIN_PASSWORD == "admin":
         log.warning("Pitchdle: ADMIN_PASSWORD is the default 'admin'. Set it before exposing this beyond localhost.")
@@ -349,7 +350,7 @@ def set_response(db, dive, player) -> dict:
     done = service.answered(db, player["id"], dive["id"])
     return {
         "dive": service.dive_payload(dive),
-        "cards": [service.public_card(c) for c in comps],
+        "cards": [service.play_card(db, c) for c in comps],
         "answered": [c["id"] for c in comps if c["id"] in done],
         "notice": None if comps else service.pool_notice(db, dive["pool"]),
     }
@@ -493,7 +494,7 @@ def live_base(db, st: dict) -> dict:
         "phase": st["phase"],
         "dive": service.dive_payload(dive) | {"total": total} if dive else None,
         "card_index": st["card_index"],
-        "card": service.public_card(comp) if comp and st["phase"] in ("open", "locked", "revealed") else None,
+        "card": service.play_card(db, comp) if comp and st["phase"] in ("open", "locked", "revealed") else None,
         "remaining": live.remaining(st),
         "seconds": config.LIVE_SECONDS,
         "joined": joined_count(db),
@@ -780,6 +781,7 @@ def admin_factors():
 
 
 def save_company(db, body: CompanyIn, cid: int | None) -> int:
+    new = cid is None
     values = (body.name.strip(), body.emoji.strip(), body.sector, body.one_liner, body.claim_ask, body.website,
               dumps([f.model_dump() for f in body.facts]), dumps(body.evidence), body.evidence_note,
               int(body.is_real), int(body.active), body.vision, dumps(body.stages), body.raised_eur,
@@ -795,6 +797,8 @@ def save_company(db, body: CompanyIn, cid: int | None) -> int:
                    "investors = ? WHERE id = ?", values + (cid,))
     seed.score_company(db, cid)
     db.commit()
+    if new:
+        autoread.kick()  # a new card gets its AI ratings and social media read in the background
     return cid
 
 
@@ -876,18 +880,6 @@ def admin_recrawl(cid: int, db=Depends(get_db)):
 
 # --- outside opinions: AI models and social media (fetched from Admin, never on the game's path) ----------
 
-def store_reads(db, cid: int, results: dict) -> dict:
-    """Keep each read that came back. Returns what happened per source: done (with posts found), error or skipped."""
-    report = {}
-    for source, result in results.items():
-        if "scores" in result:
-            opinions.save(db, cid, source, result["scores"], result["note"], result["meta"] | {"by": "fetched"})
-            report[source] = {"done": True, "posts": result["meta"].get("posts")}
-        else:
-            report[source] = result
-    return report
-
-
 @app.post("/api/admin/companies/{cid}/reads/{kind}", dependencies=[Depends(require_admin)])
 def admin_reads(cid: int, kind: str, db=Depends(get_db)):
     """Ask the AI models (kind=ai) or read social media (kind=social) about one company, and keep the results."""
@@ -895,7 +887,13 @@ def admin_reads(cid: int, kind: str, db=Depends(get_db)):
     if not comp or kind not in ("ai", "social"):
         raise HTTPException(404, "No such company or read.")
     results = reads.rate_all(comp) if kind == "ai" else reads.social_all(comp)
-    return {"report": store_reads(db, cid, results), "company": admin_company(db, service.get_company(db, cid))}
+    return {"report": autoread.store(db, cid, results), "company": admin_company(db, service.get_company(db, cid))}
+
+
+@app.post("/api/admin/autoread", dependencies=[Depends(require_admin)])
+def admin_autoread(db=Depends(get_db)):
+    """Read every card still missing AI ratings or a social media read, in the background (also done on startup)."""
+    return {"started": autoread.kick(), "status": autoread.status(db)}
 
 
 class OpinionScores(BaseModel):
@@ -1068,8 +1066,8 @@ def mode_payload(db) -> dict:
         "SUM(is_real = 1 AND active = 0) AS live_pending FROM companies").fetchone()
     return {"mode": service.get_mode(db), "autofill": autofill.status(db), "discover": autofill.settings_payload(),
             "counts": {k: counts[k] or 0 for k in ("demo", "live_active", "live_pending")},
-            "reads": {"ready": reads.setup(), "models": {"claude": config.CLAUDE_MODEL, "gpt": config.GPT_MODEL,
-                                                         "grok": config.GROK_MODEL}}}
+            "reads": {"ready": reads.setup(), "models": reads.models(), "route": reads.route(),
+                      "auto": autoread.status(db)}}
 
 
 class ModeIn(BaseModel):

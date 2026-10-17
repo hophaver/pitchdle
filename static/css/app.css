@@ -143,6 +143,49 @@ h1, h2, h3 { margin: 0; line-height: 1.05; letter-spacing: -0.02em; }
 .bars-x { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; font-size: .65rem; text-align: center; opacity: .75; margin-top: 3px; }
 .bars-x .you { opacity: 1; font-weight: 800; }
 
+/* the card being rated: everything to weigh at once, nearly the whole screen when there's room */
+.shell.wide { max-width: 1180px; }
+.card.full { min-height: calc(100vh - 36px); }
+.card-grid { display: grid; gap: 14px; margin-top: 22px; }
+@media (min-width: 900px) {
+  .card.full { padding: 30px 34px 34px; }
+  /* The opinions span the right; the left reads facts, vision, then your call. A last 1fr row takes any slack. */
+  .card-grid { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); grid-template-rows: auto auto 1fr; gap: 18px;
+    grid-template-areas: "facts opinions" "vision opinions" "call opinions"; align-items: start; }
+  .g-facts { grid-area: facts; }
+  .g-vision { grid-area: vision; }
+  .g-opinions { grid-area: opinions; }
+  .g-call { grid-area: call; }
+  .g-call .taps { grid-template-columns: repeat(6, minmax(0, 56px)); gap: 12px; }
+}
+.who a { color: inherit; text-underline-offset: 3px; }
+.sect { background: rgba(0, 0, 0, .14); border-radius: 20px; padding: 16px 18px; min-width: 0; }
+.sect-title { opacity: .85; margin-bottom: 8px; }
+.sect > :not(:first-child).sect-title { margin-top: 18px; }
+.fact-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.fact-box { background: var(--soft); border-radius: 14px; padding: 10px 12px; min-width: 0; }
+.fact-box small { display: block; font-size: .6rem; opacity: .85; }
+.fact-box b { display: block; margin-top: 4px; font-size: 1.1rem; font-weight: 800; line-height: 1.15; overflow-wrap: break-word; }
+@media (max-width: 560px) {
+  .fact-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fact-box.wide { grid-column: 1 / -1; }
+}
+.vision { margin: 0 0 10px; line-height: 1.5; }
+.vision:last-child { margin-bottom: 0; }
+.op-row { display: grid; grid-template-columns: 6.5rem 8rem minmax(0, 1fr); gap: 6px 16px; align-items: center;
+  padding: 10px 0; border-top: 1px solid var(--soft); }
+.sect-title + .op-row { border-top: 0; padding-top: 0; }
+.op-who b { display: block; font-weight: 800; }
+.op-who small { display: block; font-size: .72rem; opacity: .8; }
+.op-row .opc-plot { height: 58px; padding-top: 15px; }
+.op-note { margin: 0; font-size: .86rem; line-height: 1.35; }
+.op-empty { margin: 2px 0 0; font-size: .9rem; opacity: .8; }
+@media (max-width: 560px) {
+  .op-row { grid-template-columns: 6rem minmax(0, 9rem); }
+  .op-note { grid-column: 1 / -1; }
+}
+.g-call .is-this { margin-top: 0; }
+
 /* opinions on a result card: one small chart per source, all on the same 0–5 scale and baseline */
 .op-group { margin-top: 18px; }
 .op-title { opacity: .8; margin-bottom: 8px; }

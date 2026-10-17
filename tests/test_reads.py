@@ -74,7 +74,7 @@ def test_claude_rates_with_structured_output_and_fallback(claude):
                    "note": "Real revenue.", "meta": {"model": "claude-opus-5-5"}}  # clamped, to the nearest half
     req = rec.requests[0]
     assert req["headers"]["anthropic-beta"] == reads.FALLBACK_BETA and req["body"]["fallbacks"] == "default"
-    assert req["body"]["model"] == config.CLAUDE_MODEL
+    assert req["body"]["model"] == "claude-opus-5-5"
     assert req["body"]["output_config"]["format"]["schema"] == reads.SCORE_SCHEMA
 
 
@@ -90,7 +90,7 @@ def test_gpt_rates_with_a_strict_schema(oai):
     assert out["scores"] == {"novel": 2.0, "useful": 3.0, "plausible": 4.0, "investable": 1.0}
     body = rec.requests[0]["body"]
     assert rec.requests[0]["url"] == "https://api.openai.com/v1/responses"
-    assert body["model"] == config.GPT_MODEL and body["text"]["format"]["strict"] is True
+    assert body["model"] == "gpt-6-astra" and body["text"]["format"]["strict"] is True
 
 
 def test_grok_rates_through_xai(oai):
@@ -171,7 +171,72 @@ def test_only_models_with_a_key_are_asked(monkeypatch):
     monkeypatch.setattr(config, "XAI_API_KEY", "")
     monkeypatch.setattr(reads, "gpt_rate", lambda profile: (_ for _ in ()).throw(RuntimeError("boom")))
     out = reads.rate_all(PROFILE)
-    assert out["claude"] == {"skipped": "no ANTHROPIC_API_KEY"} and out["grok"] == {"skipped": "no XAI_API_KEY"}
+    assert out["claude"] == {"skipped": "no ANTHROPIC_API_KEY or OPENROUTER_API_KEY"}
+    assert out["grok"] == {"skipped": "no XAI_API_KEY or OPENROUTER_API_KEY"}
     assert out["gpt"] == {"error": "RuntimeError: boom"}  # a failure stays with its own model
     social = reads.social_all(PROFILE)
     assert set(social) == set(reads.PLATFORMS) and all("skipped" in r for r in social.values())
+
+
+# --- one OpenRouter key for all three ------------------------------------------------------------------------
+
+def chat_answer(content, annotations=(), model="anthropic/claude-opus-5.5"):
+    return {"id": "gen_1", "object": "chat.completion", "created": 0, "model": model,
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                "role": "assistant", "content": content, "annotations": list(annotations)}}]}
+
+
+def url_citation(url):
+    return {"type": "url_citation", "url_citation": {"url": url, "title": "post", "start_index": 0, "end_index": 4}}
+
+
+def test_one_openrouter_key_runs_all_three(oai, monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "sk-or-test")
+    assert reads.setup() == {"claude": True, "gpt": True, "grok": True}
+    assert reads.models() == {"claude": "anthropic/claude-opus-5.5", "gpt": "openai/gpt-6-astra", "grok": "x-ai/grok-4.7"}
+    answer = json.dumps({"novel": 3, "useful": 4, "plausible": 2, "investable": 3, "reason": "Solid."})
+    rec = oai(*(chat_answer(answer, model=m) for m in reads.models().values()))
+    out = reads.rate_all(PROFILE)
+    assert set(out) == {"claude", "gpt", "grok"} and all(r["scores"]["useful"] == 4.0 for r in out.values())
+    assert {r["body"]["model"] for r in rec.requests} == set(reads.models().values())
+    req = rec.requests[0]
+    assert req["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert req["body"]["response_format"]["json_schema"]["strict"] is True
+    assert req["body"]["provider"] == {"require_parameters": True}
+
+
+def test_models_can_be_overridden(monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(config, "GPT_MODEL", "openai/gpt-6-sol")
+    assert reads.model("gpt") == "openai/gpt-6-sol" and reads.model("claude") == "anthropic/claude-opus-5.5"
+
+
+def test_an_empty_openrouter_answer_is_an_error(oai, monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "sk-or-test")
+    oai(chat_answer(None))
+    with pytest.raises(RuntimeError, match="no answer"):
+        reads.openrouter_rate("claude", "profile")
+
+
+def test_openrouter_reads_a_platform_with_native_search(oai, monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "sk-or-test")
+    post = "https://www.linkedin.com/posts/someone_rakko-feed-123"
+    rec = oai(chat_answer('People in the trade like it. {"posts": 4, "novel": 3, "useful": 4.5, "plausible": 4, '
+                          '"investable": 3.5, "summary": "Practical."}',
+                          [url_citation(post), url_citation("https://news.example/story")]))
+    out = reads.openrouter_social("linkedin", PROFILE)
+    assert out["meta"]["links"] == [post] and out["meta"]["posts"] == 1  # cited on the platform itself
+    assert out["meta"]["via"] == "Claude search via OpenRouter" and out["scores"]["useful"] == 4.5
+    body = rec.requests[0]["body"]
+    assert body["model"] == "anthropic/claude-opus-5.5"
+    assert body["tools"] == [{"type": "openrouter:web_search", "parameters": {
+        "engine": "native", "max_uses": 4, "max_results": 5, "allowed_domains": ["linkedin.com"]}}]
+
+
+def test_openrouter_reads_x_with_grok_search(oai, monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "sk-or-test")
+    rec = oai(chat_answer('{"posts": 0}', model="x-ai/grok-4.7"))
+    out = reads.openrouter_social("x", PROFILE)
+    assert out["scores"] is None and out["meta"]["posts"] == 0  # nothing cited: a quiet platform
+    body = rec.requests[0]["body"]
+    assert body["model"] == "x-ai/grok-4.7" and body["tools"][0]["parameters"]["x_search"] == {}

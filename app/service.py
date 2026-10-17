@@ -65,6 +65,13 @@ def public_card(row) -> dict:
     }
 
 
+def play_card(db, row) -> dict:
+    """The card a player rates: the pitch, the profile, and what A'Pelago, the AI models and social media make of it,
+    so the call is a weighed one. The crowd's read waits for the results, and the engine stays off the phones."""
+    return public_card(row) | {"opinions": opinions.for_card(db, row["id"], None, None),
+                               "quiet": opinions.quiet(db, row["id"])}
+
+
 def get_dive(db, did: int):
     return db.execute("SELECT * FROM dives WHERE id = ?", (did,)).fetchone()
 

@@ -57,9 +57,9 @@ async function load() {
   [companies, dives, factors, submissions, candidates, modeInfo] = await Promise.all([
     api("/api/admin/companies"), api("/api/host/dives"), factors ? factors : api("/api/admin/factors"),
     api("/api/admin/submissions"), api(`/api/admin/discover${qs ? `?${qs}` : ""}`), api("/api/admin/mode")]);
-  // Keep polling while a background discovery run is going, so its results show up on their own.
+  // Keep polling while discovery or the automatic reads run in the background, so results show up on their own.
   clearTimeout(autofillPoll);
-  if (modeInfo.autofill.running) autofillPoll = setTimeout(refresh, 3000);
+  if (modeInfo.autofill.running || modeInfo.reads.auto.running) autofillPoll = setTimeout(refresh, 3000);
 }
 
 const AUTOFILL_START = {
@@ -109,7 +109,33 @@ function modeSection() {
       h("p", { class: "muted small" },
         `Searching ${d.fields.join(", ") || "(no fields)"}${d.region ? ` in ${d.region}` : ""} · depth ${d.depth} per field · `,
         `${af.found}/${d.max} auto-found${d.exclude.length ? ` · skipping ${d.exclude.join(", ")}` : ""}`,
-        `${d.auto ? "" : " · auto-run off"}. Edit DISCOVER_* in .env and restart.`)] : null);
+        `${d.auto ? "" : " · auto-run off"}. Edit DISCOVER_* in .env and restart.`)] : null,
+    autoReadRow());
+}
+
+// Every card gets its AI ratings (and a real startup its social media read) by itself, when it's added and on
+// startup. This shows the last run and starts one by hand.
+function autoReadRow() {
+  const { ready, auto } = modeInfo.reads;
+  const errors = auto.errors || [];
+  async function readMissing() {
+    try {
+      const r = await post("/api/admin/autoread", {});
+      PD.toast(r.started ? "Reading cards that are missing something…" : "No model has a key: set OPENROUTER_API_KEY in .env");
+    } catch (e) { PD.toast(e.message); }
+    await refresh();
+  }
+  return [
+    h("div", { class: "row", style: { marginTop: ".6rem" } },
+      h("span", { class: "small" }, h("b", {}, "AI and social reads: "),
+        auto.running ? "reading new cards…"
+          : auto.finished_at ? `last run ${auto.finished_at.slice(0, 16).replace("T", " ")}, ${auto.read.length} card${auto.read.length === 1 ? "" : "s"} read${errors.length ? `, ${errors.length} error${errors.length === 1 ? "" : "s"}` : ""}`
+            : Object.values(ready).some(Boolean) ? "not run yet" : "off until a key is set (OPENROUTER_API_KEY)"),
+      h("span", { class: "spacer" }),
+      h("button", { class: `btn small${auto.running ? " busy" : ""}`, disabled: auto.running || !Object.values(ready).some(Boolean),
+        onclick: readMissing, title: "Read every card still missing AI ratings or a social media read" }, "Read missing now")),
+    errors.length ? h("p", { class: "thin small" }, errors.slice(-5).join(" · ")) : null,
+  ];
 }
 
 const LEAN_SHORT = { positive: "pos", negative: "neg", mixed: "mixed", neutral: "neutral", silent: "silent" };
@@ -467,7 +493,7 @@ function opinionRow(c, key) {
 }
 
 function opinionsPanel(c) {
-  const { ready, models } = modeInfo.reads;
+  const { ready, models, route } = modeInfo.reads;
   async function fetchReads(kind) {
     fetching = kind;
     render();
@@ -486,14 +512,15 @@ function opinionsPanel(c) {
     h("div", { class: "panel-head" }, h("h2", {}, `Outside opinions on ${c.name}`)),
     h("p", { class: "muted small", style: { marginTop: 0 } },
       "Players see each one as a chart next to their own read, after answering. Fetch them, or type them in when there's no key or a search came up empty."),
-    h("p", { class: "small" }, AI_SOURCES.map((k, i) => [i ? " · " : "", h("b", {}, OUTSIDE[k]), " ",
-      ready[k] ? h("span", { class: "muted" }, models[k]) : h("span", { class: "thin" }, `not set up (${KEY_NAMES[k]})`)])),
+    h("p", { class: "small" }, route === "openrouter" ? "All three through OpenRouter: " : null,
+      AI_SOURCES.map((k, i) => [i ? " · " : "", h("b", {}, OUTSIDE[k]), " ", ready[k] ? h("span", { class: "muted" }, models[k])
+        : h("span", { class: "thin" }, `not set up (${KEY_NAMES[k]} or OPENROUTER_API_KEY)`)])),
     h("div", { class: "btns", style: { marginTop: 0 } },
       h("button", { class: `btn${fetching === "ai" ? " busy" : ""}`, disabled: !!fetching || !AI_SOURCES.some((k) => ready[k]),
         onclick: () => fetchReads("ai") }, fetching === "ai" ? "Asking the AIs… (up to a minute)" : "Ask the AIs"),
       h("button", { class: `btn${fetching === "social" ? " busy" : ""}`, disabled: !!fetching || !(ready.claude || ready.grok),
         onclick: () => fetchReads("social"),
-        title: "Claude searches each platform; Grok searches X itself when it has a key" },
+        title: "Claude searches each platform's site; Grok searches X itself" },
       fetching === "social" ? "Reading social media… (a minute or two)" : "Read social media")),
     lastReport && lastReport.cid === c.id ? reportView(lastReport.report) : null,
     h("div", { class: "table-wrap" }, h("table", { class: "data opinions" },

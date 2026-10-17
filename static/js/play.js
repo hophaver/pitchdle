@@ -15,6 +15,7 @@ const S = {
 };
 
 function show(...nodes) {
+  $app.classList.remove("wide"); // only the card being rated takes the whole screen
   $app.replaceChildren(...nodes.flat().filter(Boolean));
   window.scrollTo({ top: 0 });
 }
@@ -54,6 +55,57 @@ function showStart() {
 }
 
 // --- one card -------------------------------------------------------------------------------------
+// Everything there is to weigh, from the start: the pitch, the facts and the vision, and what A'Pelago, the AI models
+// and social media make of it. On a wide screen the facts, vision and your four calls sit left and the opinions
+// right; on a phone they stack in that order, opinions before the calls. The crowd's read waits for the results.
+
+function cardFacts(c) {
+  const invested = c.investors.filter((i) => i.status === "invested");
+  const box = (label, value, cls = "") => h("div", { class: `fact-box ${cls}` }, h("small", { class: "caps" }, label),
+    h("b", {}, value));
+  return h("section", { class: "sect g-facts" },
+    h("div", { class: "fact-grid" },
+      box("Raised so far", c.raised_eur === null || c.raised_eur === undefined ? "Not disclosed" : PD.money(c.raised_eur)),
+      box("Investors", invested.length ? String(invested.length) : "None yet"),
+      box("Stage", c.stages.length ? c.stages[c.stages.length - 1] : "Not given", "wide")),
+    c.stages.length ? [h("div", { class: "caps sect-title" }, "Stages passed"),
+      h("ol", { class: "stage-list" }, c.stages.map((stage) => h("li", {}, stage)))] : null,
+    c.investors.length ? [h("div", { class: "caps sect-title" }, "Investors"),
+      h("ul", { class: "investor-list" }, c.investors.map((i) => h("li", {}, h("b", {}, i.name), " ",
+        i.status === "interested" ? h("span", { class: "interested" }, "interested")
+          : i.amount_eur ? PD.money(i.amount_eur) : "invested")))] : null);
+}
+
+function cardVision(c) {
+  if (!c.vision) return null;
+  return h("section", { class: "sect g-vision" }, h("div", { class: "caps sect-title" }, "Vision"),
+    c.vision.split(/\n{2,}/).map((para) => h("p", { class: "vision" }, para)));
+}
+
+// One row per opinion: who, their four calls on the 0–5 scale, and why.
+function opinionRow(t) {
+  const count = t.count ? plural(t.count, COUNT_WORD[t.key] || "post") : null;
+  return h("div", { class: "op-row" },
+    h("div", { class: "op-who" }, h("b", {}, t.label), count ? h("small", {}, count) : null),
+    PD.opinionChart(t.scores, { labelled: true }),
+    t.note ? h("p", { class: "op-note" }, t.note) : null);
+}
+
+function cardOpinions(c) {
+  const group = (g) => c.opinions.filter((t) => t.group === g);
+  const empty = (text) => h("p", { class: "op-empty" }, text);
+  const [apelago, ai, social] = [group("people"), group("ai"), group("social")];
+  return h("section", { class: "sect g-opinions" },
+    h("div", { class: "caps sect-title" }, "What others make of it"),
+    apelago.length ? apelago.map(opinionRow) : empty("A'Pelago hasn't rated it yet."),
+    h("div", { class: "caps sect-title" }, "AI models"),
+    ai.length ? ai.map(opinionRow) : empty("No AI ratings yet."),
+    h("div", { class: "caps sect-title" }, "Social media"),
+    social.map(opinionRow),
+    !c.is_real && !social.length ? empty("None: this startup is made up.")
+      : c.quiet.length ? empty(`No posts found on ${c.quiet.join(", ")}.`)
+        : social.length ? null : empty("Not read yet."));
+}
 
 function showCard(c, index, total, { live = false } = {}) {
   const values = {};
@@ -72,6 +124,7 @@ function showCard(c, index, total, { live = false } = {}) {
     return h("div", {}, h("div", { class: "caps axis-label" }, AXIS[axis]), h("div", { class: "taps" }, buttons));
   });
 
+  const site = safeLink(c.website);
   const el = card(colorFor(index),
     cardTop(index, total, live ? h("span", { class: "timer", dataset: { timer: "1" } }, "") : null),
     h("div", { class: "pitch-head" },
@@ -79,13 +132,18 @@ function showCard(c, index, total, { live = false } = {}) {
         h("p", { class: "pitch-line" }, c.one_liner || (c.vision || "").split(/(?<=[.!?])\s/)[0])),
       c.emoji ? h("div", { class: "art", "aria-hidden": "true" }, c.emoji) : null),
     h("p", { class: "ask" }, c.claim_ask),
-    h("div", { class: "who" }, `— ${c.name}`),
-    // The profile sits behind "Read more", so the four calls stay quick (a live card has a timer).
-    PD.profile(c),
-    // Leads into the four calls: "Is this… novel? useful? …"
-    h("div", { class: "is-this" }, "Is this…"),
-    h("div", { class: "axes" }, rows),
-    h("div", { class: "actions" }, lock));
+    h("div", { class: "who" }, `— ${c.name}`, site ? [" · ", h("a", { href: site, target: "_blank",
+      rel: "noopener noreferrer nofollow" }, `${hostOf(site)} ↗`)] : null),
+    h("div", { class: "card-grid" },
+      cardFacts(c),
+      cardVision(c),
+      cardOpinions(c),
+      // Leads into the four calls: "Is this… novel? useful? …"
+      h("section", { class: "sect g-call" },
+        h("div", { class: "is-this" }, "Is this…"),
+        h("div", { class: "axes" }, rows),
+        h("div", { class: "actions" }, lock))));
+  el.classList.add("full");
 
   lock.addEventListener("click", async () => {
     lock.disabled = true;
@@ -100,6 +158,7 @@ function showCard(c, index, total, { live = false } = {}) {
     }
   });
   show(el);
+  $app.classList.add("wide");
   tickTimers();
 }
 

@@ -106,30 +106,51 @@ before sign-up review count as approved members with no badge.
 
 ## The startup card and its opinions
 
-Each card shows the pitch (picture, sector, one line, the ask, the name) with a strip of facts under it: money
-raised, the latest stage and how many investors, plus a link to the startup's page. "Read more" opens the vision
-(up to 400 words), every incubation stage or funding round passed, and the investors: who has invested and how
-much, and who is only interested. All of it is edited in `/admin` on the company.
+A card shows everything there is to weigh before rating it. On a wide screen it fills nearly the whole window,
+with the facts left and the opinions right; on a phone the sections stack.
 
-After answering, each result card sets every opinion on the startup side by side as a small bar chart, Novel to
-Investable on the same 0–5 scale: **you**, **everyone** else, **A'Pelago**, the **AI models** (Claude, GPT, Grok)
-and **social media** (X, Threads, LinkedIn, Reddit, Bluesky). They only appear after answering, so none of them
-can anchor a player's own read; "Numbers and reasons" under the charts lists every value and why each model or
-platform thinks so.
+- **The pitch:** picture, sector, one line, the ask, the name and a link to the startup's page.
+- **The facts:** money raised, the investor count and the latest stage; every incubation programme or funding
+  round passed; and the investors, with how much each put in, or marked as only interested.
+- **The vision**, up to 400 words.
+- **What others make of it**, each as a small bar chart of the same four calls on 0–5 with its reason beside it:
+  **A'Pelago**, the **AI models** (Claude, GPT, Grok) and **social media** (X, Threads, LinkedIn, Reddit,
+  Bluesky).
+
+All of the profile is edited in `/admin` on the company. The crowd's read is the one thing a card holds back: each
+result card then sets you and everyone else beside all the opinions above.
 
 - **A'Pelago** is the average of its representatives' evaluations: moderators and admins rate each startup on
-  `/moderate` → Startups, as representatives rather than players. A representative sees the average only after
-  giving their own, their comment stays with the team, and deleting an account removes its evaluations.
-- **AI models**: Admin → a company → **Ask the AIs** asks every model that has a key to rate the card's profile.
-- **Social media**: **Read social media** has Grok search X itself (with `XAI_API_KEY`) and Claude search each
-  other platform's own site. A platform's read only counts posts the search returned and the model cited; with
-  none it's recorded as quiet and gets no chart.
-- Any AI or platform read can be typed in or corrected by hand in the same Admin panel, e.g. without a key.
+  `/moderate` → Startups, as representatives rather than players. A representative sees the average there only
+  after giving their own, their comment stays with the team, and deleting an account removes its evaluations.
+- **AI models** rate the card's profile.
+- **Social media**: Grok searches X itself and Claude searches each other platform's own site. A platform's read
+  only counts posts the model cited on that platform; with none it shows as "no posts found".
 
-Both buttons call paid APIs, never on the game's path: per company, three short model calls, and up to 4 web
-searches per platform (Claude bills web search at $10 per 1,000) or X posts fetched by Grok ($5 per 1,000), plus
-tokens. Keys and models are set in `.env`: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, and
-`CLAUDE_MODEL` / `GPT_MODEL` / `GROK_MODEL` (defaults `claude-opus-5-5`, `gpt-6-astra`, `grok-4.7`).
+The AI and social reads happen by themselves: a card gets them in the background as soon as it's added (in Admin,
+from a player's submission or by discovery), and every card still missing one gets it when the app starts. Sample
+startups are made up, so they get AI ratings only; a social search could only find their namesakes. Admin shows the
+last run, with a **Read missing now** button; per company, **Ask the AIs** and **Read social media** read it again,
+and any read can be typed in or corrected by hand, e.g. without a key. A failed read stays missing until the next
+run.
+
+These are paid APIs, never on the game's path: per card, three short model calls, and for a real startup up to 4
+web searches per platform (Claude bills web search at $10 per 1,000) or X posts fetched by Grok ($5 per 1,000),
+plus tokens. The first start with a key reads every card already there.
+
+Keys go in `.env`, one of two ways:
+
+- **One key for all three:** `OPENROUTER_API_KEY`. Every model call and social read goes through
+  [OpenRouter](https://openrouter.ai), with each model's own search engine, and the provider keys below are
+  ignored. Cited posts are checked against the platform's site; OpenRouter doesn't return the full search
+  results, so they can't also be checked against what the search found. Claude's server-side refusal fallback is
+  only on the direct route.
+- **A key per provider:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`. A model without its key is
+  skipped.
+
+`CLAUDE_MODEL` / `GPT_MODEL` / `GROK_MODEL` pick other models. Left blank they default to `claude-opus-5-5`,
+`gpt-6-astra` and `grok-4.7` directly, or `anthropic/claude-opus-5.5`, `openai/gpt-6-astra` and `x-ai/grok-4.7`
+on OpenRouter, which names models differently.
 
 ## Rehearsing the live demo
 
@@ -171,8 +192,9 @@ app/
   scoring.py     crowd stats, vote weights (guests, badges) and lean (higher / with / lower)
   accounts.py    sign-up, login, sessions, guests' answers moving onto an account
   moderation.py  sign-up review, member badges, how each member plays
-  opinions.py    A'Pelago's, AI models' and social media's opinions, and a result card's charts
-  reads.py       asking the AI models and reading social media (Admin only)
+  opinions.py    A'Pelago's, AI models' and social media's opinions, as the cards show them
+  reads.py       asking the AI models and reading social media (never on the game's path)
+  autoread.py    reading each new card in the background, and cards missing reads on startup
   live.py        live-room state machine
   seed.py        seed / reset / rescore CLI and demo votes
   seed_data.py   the fictional seed companies and sets

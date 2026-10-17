@@ -43,13 +43,16 @@ GUEST_MAX_SHARE = float(os.environ.get("GUEST_MAX_SHARE") or 0.4)
 HIGH_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("HIGH_PRIORITY_WEIGHT") or 2.0))
 LOW_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("LOW_PRIORITY_WEIGHT") or 0.5))
 # Outside reads, run from Admin and never on the game's path: AI models rate each startup, and AI searches
-# read what people say about it on social media. A model without its key is skipped.
+# read what people say about it on social media. One OpenRouter key runs all three models; otherwise each needs
+# its own key, and a model without one is skipped.
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") or ""
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or ""
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or ""
 XAI_API_KEY = os.environ.get("XAI_API_KEY") or ""
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL") or "claude-opus-5-5"
-GPT_MODEL = os.environ.get("GPT_MODEL") or "gpt-6-astra"
-GROK_MODEL = os.environ.get("GROK_MODEL") or "grok-4.7"
+# Blank means the default for the route in use (see reads.MODELS): OpenRouter names models differently.
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL") or ""
+GPT_MODEL = os.environ.get("GPT_MODEL") or ""
+GROK_MODEL = os.environ.get("GROK_MODEL") or ""
 WEIGHTS_PATH = ROOT / "weights.json"
 CRAWL_CACHE = ROOT / "data" / "crawl_cache"
 STATIC_DIR = ROOT / "static"

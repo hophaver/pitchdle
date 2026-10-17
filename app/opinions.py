@@ -62,6 +62,13 @@ def apelago(db, cid: int) -> dict | None:
             "reps": [r["author"] for r in rows]}
 
 
+def quiet(db, cid: int) -> list[str]:
+    """The platforms searched without finding a post about the company."""
+    empty = {r["source"] for r in db.execute("SELECT source FROM opinions WHERE company_id = ? AND novel IS NULL",
+                                             (cid,))}
+    return [label for key, label in SOCIAL.items() if key in empty]
+
+
 def for_card(db, cid: int, you: dict | None, crowd: dict | None) -> list[dict]:
     """Every opinion that has scores, in the order a result card shows them.
 
