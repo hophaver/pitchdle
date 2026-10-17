@@ -77,12 +77,48 @@ def test_roles_are_independent_and_only_admins_grant_them(client, moderator):
     assert client.put(f"/api/mod/users/{uid}/password", json={"password": "x1234"}, auth=moderator).status_code == 403
 
 
-def test_players_and_guests_still_get_the_password_prompt(client):
+def test_players_and_guests_get_the_sign_in_page(client):
     guest = new_player(client)
     r = guest.get("/api/host/radar")
-    assert r.status_code == 401 and r.headers["www-authenticate"].startswith("Basic")
+    assert r.status_code == 401 and "www-authenticate" not in r.headers  # no browser password popup
+    for path in ("/host", "/game", "/admin", "/moderate", "/review"):
+        r = guest.get(path)
+        assert r.status_code == 401 and 'id="login"' in r.text, path
     pia = new_player(client)
     join(pia)
     assert pia.get("/host").status_code == 401
     assert pia.get("/api/admin/companies", auth=("x", "wrong")).status_code == 401
     assert pia.get("/api/admin/companies", auth=staff()).status_code == 200
+
+
+def staff_login(c, username, password, need="admin"):
+    return c.post("/api/staff/login", json={"username": username, "password": password, "need": need})
+
+
+def test_the_admin_password_signs_in_and_out(client):
+    c = TestClient(client.app)
+    assert staff_login(c, "", "wrong").status_code == 401
+    assert staff_login(c, "", "secret").json() == {"user": None, "admin": True}
+    for path in HOST_TOOL + ("/moderate",):
+        assert c.get(path).status_code == 200, path
+    assert c.get("/api/mod/users").json()["viewer"] == {"name": "admin", "admin": True}
+    c.post("/api/staff/logout")
+    assert c.get("/host").status_code == 401
+
+
+def test_a_staff_account_signs_in_as_itself(client, moderator):
+    join(new_player(client), "ada", "adapass1")
+    promote(client, "ada", "admin")
+    c = TestClient(client.app)
+    assert staff_login(c, "ada", "adapass1").json()["user"]["username"] == "ada"
+    assert c.get("/host").status_code == 200
+    assert c.get("/api/mod/users").json()["viewer"] == {"name": "ada", "admin": True}
+    # A moderator signs in for moderation, but not for the dashboard.
+    m = TestClient(client.app)
+    r = staff_login(m, *moderator)
+    assert r.status_code == 403 and "admin" in r.json()["detail"]
+    assert staff_login(m, *moderator, need="moderator").status_code == 200
+    assert m.get("/moderate").status_code == 200 and m.get("/host").status_code == 401
+    # A plain member can't sign in here at all.
+    join(new_player(client), "pia", "pass1234")
+    assert staff_login(TestClient(client.app), "pia", "pass1234", need="moderator").status_code == 403

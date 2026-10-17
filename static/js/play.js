@@ -49,7 +49,6 @@ const TUTORIAL = [
   ["📊", "See how you compare", "At the end: your read next to everyone else's, the AI models' average, social media's "
     + "average and how many posts were found. A new set comes out every day at midnight."],
 ];
-const TUTORIAL_SEEN = "pd.tutorial";
 
 function showHelp() {
   const dialog = h("dialog", { class: "help", "aria-labelledby": "help-title" },
@@ -64,11 +63,6 @@ function showHelp() {
   dialog.addEventListener("close", () => dialog.remove());
   document.body.append(dialog);
   dialog.showModal();
-  try { localStorage.setItem(TUTORIAL_SEEN, "1"); } catch { /* private mode: it shows again next time */ }
-}
-
-function firstVisit() {
-  try { return !localStorage.getItem(TUTORIAL_SEEN); } catch { return false; }
 }
 
 function showStart() {
@@ -86,7 +80,6 @@ function showStart() {
     h("div", { class: "actions" },
       pill(started ? "Continue →" : today ? "Play today's →" : "Play it →", () => nextCard()))),
   submitSection());
-  if (!started && firstVisit()) showHelp();
 }
 
 // --- one card -------------------------------------------------------------------------------------

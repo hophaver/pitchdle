@@ -170,5 +170,12 @@ def kick() -> bool:
     return True
 
 
+def clear_errors(db) -> None:
+    """Forget the last run's problems; a card that failed stays missing and is tried again on the next run."""
+    st = get_setting(db, "autoread")
+    if st:
+        set_setting(db, "autoread", st | {"errors": []})
+
+
 def status(db) -> dict:
     return (get_setting(db, "autoread") or {}) | {"running": _running}

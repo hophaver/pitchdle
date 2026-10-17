@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Pitchdle</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23141414'/></svg>">
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("pd.theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); } catch { /* light */ }</script>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="tool">
+  <div class="tool-shell">
+    <header class="topnav">
+      <a class="brand" href="/play">Pitchdle</a>
+      <span class="spacer"></span>
+      <div class="mode-switch theme-switch" id="theme-switch" role="group" aria-label="Theme"></div>
+      <a class="ext" href="/play">Play ↗</a>
+    </header>
+    <main class="login">
+      <form class="panel login-card" id="login" novalidate>
+        <h1 id="login-title">Sign in</h1>
+        <p class="muted" id="login-sub">Staff only.</p>
+        <p class="login-note" id="login-note" hidden></p>
+        <label class="login-field">Username
+          <input type="text" name="username" autocomplete="username" autocapitalize="off" spellcheck="false">
+        </label>
+        <label class="login-field">Password
+          <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <p class="login-error" id="login-error" role="alert" hidden></p>
+        <button class="btn primary login-submit" type="submit">Sign in</button>
+        <p class="muted small login-hint">Using the admin password? Leave the username empty.</p>
+      </form>
+    </main>
+  </div>
+  <script src="/static/js/common.js"></script>
+  <script src="/static/js/login.js"></script>
+</body>
+</html>

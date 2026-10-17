@@ -459,6 +459,8 @@ body.tool {
 .btn.busy { opacity: .6; cursor: progress; }
 .tool input[type=text], .tool input[type=search], .tool input[type=number], .tool input[type=date], .tool select {
   font: inherit; font-size: .85rem; color: var(--ink); background: var(--control); border: 1px solid var(--line); border-radius: 8px; padding: .38rem .6rem; }
+.tool input[type=password] {
+  font: inherit; font-size: .85rem; color: var(--ink); background: var(--control); border: 1px solid var(--line); border-radius: 8px; padding: .38rem .6rem; }
 .tool input:focus-visible, .tool select:focus-visible { outline: none; border-color: var(--ink); }
 .tool .btn:focus-visible, .tool button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .row { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
@@ -642,6 +644,20 @@ table.data tr.sub > td { background: var(--paper); }
 
 .form { display: grid; gap: .6rem; }
 .form label { display: grid; gap: .2rem; font-size: .75rem; font-weight: 600; color: var(--muted); }
+/* the sign-in page, in place of a host or moderation page */
+.login { display: grid; place-items: start center; padding: 8vh 0 2rem; }
+.login-card { width: 100%; max-width: 380px; display: grid; gap: .9rem; padding: 1.6rem 1.5rem; margin: 0; }
+.login-card h1 { font-size: 1.35rem; }
+.login-card > p { margin: 0; }
+.login-card > .muted:first-of-type { margin-top: -.6rem; }
+.login-field { display: grid; gap: .3rem; font-size: .78rem; font-weight: 600; color: var(--muted); }
+.login-field input { width: 100%; box-sizing: border-box; min-height: 40px; font-size: .95rem !important; }
+.login-submit { min-height: 40px; font-size: .9rem; }
+.login-note { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: .55rem .7rem; font-weight: 600; font-size: .82rem; }
+.login-error { color: var(--bad); font-weight: 600; font-size: .85rem; }
+.login-hint { text-align: center; }
+.topnav .signout { color: var(--muted); font-weight: 600; }
+.topnav .signout:hover { color: var(--ink); }
 .split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 1rem; align-items: start; }
 @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
 @media (max-width: 640px) {

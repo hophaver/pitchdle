@@ -133,6 +133,16 @@ const PD = (() => {
   return { AXES, AXIS, ROLES, colorFor, api, post, h, fmt1, toast, bars, money, opinionChart, safeLink, hostOf, plural, profile };
 })();
 
+// Sign out on the host and moderation pages: ends the admin password's sign-in and any account login.
+(() => {
+  const nav = document.querySelector("body.tool .topnav");
+  if (!nav || document.getElementById("login")) return;
+  nav.append(PD.h("button", { type: "button", class: "btn link signout", onclick: async () => {
+    try { await PD.post("/api/staff/logout", {}); } catch { /* signed out anyway */ }
+    location.reload();
+  } }, "Sign out"));
+})();
+
 // Light / dark on the host pages: a sun and a moon in the nav. The page's <head> sets the theme before it paints
 // (the saved choice, else the system's); this only draws the switch and remembers a pick.
 (() => {

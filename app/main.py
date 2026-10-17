@@ -1,5 +1,7 @@
 """Pitchdle: FastAPI app serving the API and the static pages."""
 import csv
+import hashlib
+import hmac
 import io
 import json
 import logging
@@ -77,34 +79,50 @@ def current_user(request: Request, db=Depends(get_db)):
     return accounts.user_for_session(db, request.cookies.get(SESSION_COOKIE))
 
 
-def require_admin(creds: HTTPBasicCredentials | None = Depends(basic), user=Depends(current_user),
-                  db=Depends(get_db)) -> None:
-    """The admin password at the browser prompt, or an admin account: already logged in on /play, or their username
-    and password at the prompt."""
-    if user and user["is_admin"]:
-        return
-    if creds and secrets.compare_digest(creds.password.encode(), config.ADMIN_PASSWORD.encode()):
-        return
-    if creds and (u := accounts.staff_login(db, creds.username, creds.password)) and u["is_admin"]:
-        return
-    raise HTTPException(401, "Wrong password", headers={"WWW-Authenticate": 'Basic realm="Host"'})
+# Signed in with the admin password on the sign-in page: a cookie derived from the password, so changing
+# ADMIN_PASSWORD signs everyone out.
+ADMIN_COOKIE = "pd_admin"
 
 
-mod_basic = HTTPBasic(realm="Moderation", auto_error=False)
+def is_admin_password(password: str) -> bool:
+    return secrets.compare_digest(password.encode(), config.ADMIN_PASSWORD.encode())
 
 
-def require_moderator(creds: HTTPBasicCredentials | None = Depends(mod_basic), user=Depends(current_user),
-                      db=Depends(get_db)) -> moderation.Staff:
-    """The admin password at the browser prompt, or a moderator's or admin's own account: already logged in on /play,
-    or their username and password at the prompt. Returns who's acting, which goes on each review."""
-    if creds and secrets.compare_digest(creds.password.encode(), config.ADMIN_PASSWORD.encode()):
+def admin_token() -> str:
+    return hmac.new(config.ADMIN_PASSWORD.encode(), b"pitchdle admin session", hashlib.sha256).hexdigest()
+
+
+def staff_for(request: Request, creds: HTTPBasicCredentials | None, user, db) -> moderation.Staff | None:
+    """Who's acting, if they're staff: the admin password (the sign-in page's cookie, or Basic auth for scripts),
+    or a moderator's or admin's own account (logged in, or Basic auth). None for everyone else."""
+    if secrets.compare_digest(request.cookies.get(ADMIN_COOKIE, "").encode(), admin_token().encode()):
+        return moderation.Staff("admin", admin=True)
+    if creds and is_admin_password(creds.password):
         return moderation.Staff("admin", admin=True)
     if not (user and (user["is_moderator"] or user["is_admin"])) and creds:
         user = accounts.staff_login(db, creds.username, creds.password)
     if user and (user["is_moderator"] or user["is_admin"]):
         return moderation.Staff(user["username"], admin=bool(user["is_admin"]))
-    raise HTTPException(401, "Log in with a moderator or admin account, or the admin password.",
-                        headers={"WWW-Authenticate": 'Basic realm="Moderation"'})
+    return None
+
+
+def optional_staff(request: Request, creds: HTTPBasicCredentials | None = Depends(basic), user=Depends(current_user),
+                   db=Depends(get_db)) -> moderation.Staff | None:
+    return staff_for(request, creds, user, db)
+
+
+def require_admin(staff: moderation.Staff | None = Depends(optional_staff)) -> None:
+    """The admin password, or an admin account."""
+    if not (staff and staff.admin):
+        raise HTTPException(401, "Sign in with an admin account or the admin password.")
+
+
+def require_moderator(staff: moderation.Staff | None = Depends(optional_staff)) -> moderation.Staff:
+    """The admin password, or a moderator's or admin's own account. Returns who's acting, which goes on each
+    review."""
+    if not staff:
+        raise HTTPException(401, "Sign in with a moderator or admin account, or the admin password.")
+    return staff
 
 
 def get_player(request: Request, response: Response, db=Depends(get_db), user=Depends(current_user)):
@@ -143,30 +161,39 @@ def play_page():
     return page("play.html")
 
 
-@app.get("/host", include_in_schema=False, dependencies=[Depends(require_admin)])
-def host_page():
-    return page("host.html")
+def staff_page(name: str, staff: moderation.Staff | None, admin: bool) -> FileResponse:
+    """The page, or the sign-in page in its place (same URL, so signing in just reloads it)."""
+    if staff and (staff.admin or not admin):
+        return page(name)
+    response = page("login.html")
+    response.status_code = 401
+    return response
 
 
-@app.get("/game", include_in_schema=False, dependencies=[Depends(require_admin)])
-def game_page():
-    return page("game.html")
+@app.get("/host", include_in_schema=False)
+def host_page(staff=Depends(optional_staff)):
+    return staff_page("host.html", staff, admin=True)
 
 
-@app.get("/admin", include_in_schema=False, dependencies=[Depends(require_admin)])
-def admin_page():
-    return page("admin.html")
+@app.get("/game", include_in_schema=False)
+def game_page(staff=Depends(optional_staff)):
+    return staff_page("game.html", staff, admin=True)
 
 
-@app.get("/moderate", include_in_schema=False, dependencies=[Depends(require_moderator)])
-def moderate_page():
-    return page("moderate.html")
+@app.get("/admin", include_in_schema=False)
+def admin_page(staff=Depends(optional_staff)):
+    return staff_page("admin.html", staff, admin=True)
+
+
+@app.get("/moderate", include_in_schema=False)
+def moderate_page(staff=Depends(optional_staff)):
+    return staff_page("moderate.html", staff, admin=False)
 
 
 # Review: A'Pelago's own read of each startup, on the moderation page's code.
-@app.get("/review", include_in_schema=False, dependencies=[Depends(require_moderator)])
-def review_page():
-    return page("moderate.html")
+@app.get("/review", include_in_schema=False)
+def review_page(staff=Depends(optional_staff)):
+    return staff_page("moderate.html", staff, admin=False)
 
 
 # --- player API ------------------------------------------------------------------------------------
@@ -333,6 +360,44 @@ def login(body: Credentials, request: Request, response: Response, db=Depends(ge
     except accounts.AccountError as e:
         raise HTTPException(401, str(e))
     return sign_in(request, response, db, user)
+
+
+class StaffCredentials(BaseModel):
+    username: str = Field("", max_length=40)
+    password: str = Field(max_length=200)
+    need: str = Field("admin", pattern="^(admin|moderator)$")  # what the page being opened needs
+
+
+@app.post("/api/staff/login")
+def staff_login(body: StaffCredentials, request: Request, response: Response, db=Depends(get_db)):
+    """The sign-in page for the host and moderation pages: a staff account signs in as itself (the same login as on
+    /play), the admin password with any or no username."""
+    user = None
+    if body.username.strip():
+        try:
+            user = accounts.authenticate(db, body.username, body.password)
+        except accounts.NotApproved as e:
+            raise HTTPException(403, str(e))
+        except accounts.AccountError:
+            pass
+    if user:
+        if not (user["is_admin"] or (body.need == "moderator" and user["is_moderator"])):
+            raise HTTPException(403, "This page needs an admin account." if body.need == "admin"
+                                else "This page needs a moderator or admin account.")
+        return sign_in(request, response, db, user)
+    if is_admin_password(body.password):
+        response.set_cookie(ADMIN_COOKIE, admin_token(), max_age=30 * 24 * 3600, samesite="lax", httponly=True)
+        return {"user": None, "admin": True}
+    raise HTTPException(401, "Wrong username or password.")
+
+
+@app.post("/api/staff/logout")
+def staff_logout(request: Request, response: Response, db=Depends(get_db)):
+    """Signs out of the host pages: the admin password's cookie and any account login."""
+    accounts.end_session(db, request.cookies.get(SESSION_COOKIE))
+    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(ADMIN_COOKIE)
+    return {"ok": True}
 
 
 @app.post("/api/account/logout")
@@ -954,6 +1019,15 @@ def admin_reads(cid: int, kind: str, db=Depends(get_db)):
 def admin_autoread(db=Depends(get_db)):
     """Read every card still missing AI ratings or a social media read, in the background (also done on startup)."""
     return {"started": autoread.kick(), "status": autoread.status(db)}
+
+
+@app.delete("/api/admin/autoread/errors", dependencies=[Depends(require_admin)])
+def admin_autoread_clear_errors(db=Depends(get_db)):
+    """Clear the problems list on Admin. Not while a run is going: it keeps its own list and would write it back."""
+    if autoread.status(db)["running"]:
+        raise HTTPException(409, "Wait for the run to finish, then clear its errors.")
+    autoread.clear_errors(db)
+    return {"status": autoread.status(db)}
 
 
 @app.post("/api/admin/refresh", dependencies=[Depends(require_admin)])

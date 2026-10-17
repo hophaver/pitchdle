@@ -34,13 +34,23 @@ function readsPanel() {
     } catch (e) { PD.toast(e.message); }
     await refresh();
   }
+  async function clearErrors() {
+    try {
+      await api("/api/admin/autoread/errors", { method: "DELETE" });
+      PD.toast("Errors cleared");
+    } catch (e) { PD.toast(e.message); }
+    await refresh();
+  }
   const status = auto.running ? ["busy", "Working on new cards…"] : !any ? ["off", "Off until a key is set (OPENROUTER_API_KEY in .env)"]
     : errors.length ? ["bad", "Last run had problems"] : auto.finished_at ? ["ok", "All caught up"] : ["off", "Not run yet"];
   const stat = (label, value) => h("div", { class: "ai-stat" }, h("span", {}, label), h("b", {}, value));
   return h("section", { class: "panel ai-panel" },
     h("div", { class: "panel-head" }, h("h2", {}, "AI work in the background"), h("span", { class: "spacer" }),
       h("button", { class: `btn${auto.running ? " busy" : ""}`, disabled: auto.running || !any, onclick: readMissing,
-        title: "Fill, check and review every card still missing something" }, auto.running ? "Running…" : "Run missing now")),
+        title: "Fill, check and review every card still missing something" }, auto.running ? "Running…" : "Run missing now"),
+      errors.length ? h("button", { class: "btn", disabled: auto.running, onclick: clearErrors,
+        title: auto.running ? "Wait for the run to finish" : "Empty the problems list. Failed cards are tried again on the next run." },
+        "Clear errors") : null),
     h("div", { class: `ai-status ${status[0]}` }, h("i", { "aria-hidden": "true" }), status[1]),
     auto.finished_at || auto.running ? h("div", { class: "ai-stats" },
       stat("Last run", auto.finished_at ? when(auto.finished_at) : "now"),

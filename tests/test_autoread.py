@@ -91,6 +91,17 @@ def test_failures_wait_for_the_next_run_and_reads_already_there_count(client, ad
     assert st["errors"] == ["Kelp Co, GPT: APIError: down"]  # only GPT was missing: grok was already read
     kelp = next(c for c in client.get("/api/admin/companies", auth=admin).json() if c["id"] == cid)
     assert "gpt" not in kelp["opinions"] and kelp["opinions"]["grok"]["note"] == "Read before."
+    # Clearing the list forgets the problems, not the card: GPT is still missing and tried again next run.
+    r = client.delete("/api/admin/autoread/errors", auth=admin)
+    assert r.status_code == 200 and r.json()["status"]["errors"] == []
+    assert client.get("/api/admin/mode", auth=admin).json()["reads"]["auto"]["errors"] == []
+    client.post("/api/admin/autoread", auth=admin)
+    assert client.get("/api/admin/mode", auth=admin).json()["reads"]["auto"]["errors"] == ["Kelp Co, GPT: APIError: down"]
+
+
+def test_errors_wait_for_a_run_to_finish(client, admin, monkeypatch):
+    monkeypatch.setattr(autoread, "_running", True)
+    assert client.delete("/api/admin/autoread/errors", auth=admin).status_code == 409
 
 
 def test_nothing_runs_without_a_key(client, admin, monkeypatch):
