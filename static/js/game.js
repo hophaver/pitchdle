@@ -1,10 +1,10 @@
-// Game: who plays, the sets already played (with the crowd's read next to the engine's), and what's queued.
+// Game: the sets already played (with the crowd's read next to the engine's) and what's queued, queued by hand or
+// generated for the next days. Who plays is on Moderation › People.
 const { h, api, post, fmt1 } = PD;
 const $app = document.getElementById("app");
 
-const TABS = [{ key: "players", label: "Players" }, { key: "past", label: "Past games" }, { key: "next", label: "Next games" }];
-const S = { tab: Tool.hashTab(TABS.map((t) => t.key), "next"), users: { users: [] }, dives: [], companies: [], open: new Map() };
-const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const TABS = [{ key: "past", label: "Past games" }, { key: "next", label: "Next games" }];
+const S = { tab: Tool.hashTab(TABS.map((t) => t.key), "next"), dives: [], companies: [], open: new Map() };
 
 function names(d) {
   const byId = Object.fromEntries(S.companies.map((c) => [c.id, c.name]));
@@ -22,39 +22,6 @@ async function del(d) {
   if (!confirm(`Delete ${d.label} and its answers?`)) return;
   await post(`/api/admin/dives/${d.id}`, undefined, "DELETE");
   await refresh();
-}
-
-// --- players ----------------------------------------------------------------------------------------
-
-function playersTab() {
-  async function remove(u) {
-    if (!confirm(`Delete ${u.username} and their ${u.answers} answers?`)) return;
-    try {
-      await post(`/api/admin/users/${u.id}`, undefined, "DELETE");
-      await refresh();
-    } catch (e) { PD.toast(e.message); }
-  }
-  const { users, guests, guest_weight: gw, investor_weight: iw } = S.users;
-  // An investor's sign-up waits for a moderator; until then it can't play as an investor.
-  const kind = (u) => (u.kind === "investor" ? (u.status === "approved" ? "Investor" : `Investor · ${u.status === "rejected" ? "rejected" : "waiting"}`)
-    : "Player");
-  return h("section", { class: "panel" },
-    h("div", { class: "row", style: { marginBottom: ".6rem" } }, h("h2", { style: { margin: 0 } }, plural(users.length, "account")),
-      h("span", { class: "muted small" }, `+ ${plural(guests, "guest device")}`), h("span", { class: "spacer" }),
-      h("span", { class: "muted small" }, `In crowd scores a guest counts ×${gw}, a player ×1 and an investor ×${iw}. `,
-        h("a", { href: "/moderate" }, "Review investors and badges on Moderation"))),
-    users.length ? h("div", { class: "table-wrap" }, h("table", { class: "data" },
-      h("thead", {}, h("tr", {}, ["Username", "Kind", "Joined", "Sets", "Answers", "Last played", ""].map((t, i) =>
-        h("th", { class: i >= 3 && i <= 4 ? "num" : "" }, t)))),
-      h("tbody", {}, users.map((u) => h("tr", {},
-        h("td", {}, h("b", {}, u.username)),
-        h("td", {}, kind(u)),
-        h("td", {}, (u.created_at || "").slice(0, 10)),
-        h("td", { class: "num" }, u.sets),
-        h("td", { class: "num" }, u.answers),
-        h("td", {}, u.last_played ? u.last_played.slice(0, 10) : "–"),
-        h("td", { class: "num" }, h("button", { class: "btn link", onclick: () => remove(u) }, "Delete")))))))
-      : h("p", { class: "empty" }, "No accounts yet."));
 }
 
 // --- past games -------------------------------------------------------------------------------------
@@ -93,6 +60,32 @@ function pastTab() {
 
 // --- next games -------------------------------------------------------------------------------------
 
+// Queue the next games by themselves: one a day on the next days without a game, each with the in-game companies
+// shown least so far, so every company gets its turn.
+function generator() {
+  const inGame = S.companies.filter((c) => c.active).length;
+  const count = h("input", { type: "number", min: 1, max: 60, value: S.genCount || 7, "aria-label": "How many games",
+    oninput: (e) => { S.genCount = Number(e.target.value) || 7; } });
+  const cards = h("input", { type: "number", min: 1, max: 10, value: S.genCards || 5, "aria-label": "Cards per game",
+    oninput: (e) => { S.genCards = Number(e.target.value) || 5; } });
+  async function generate(btn) {
+    btn.disabled = true;
+    try {
+      const made = await post("/api/admin/dives/generate", { count: Number(count.value), cards: Number(cards.value) });
+      PD.toast(`${made.length} game${made.length === 1 ? "" : "s"} queued: ${made[0].date} to ${made[made.length - 1].date}`);
+    } catch (e) { PD.toast(e.message, 6000); }
+    await refresh();
+  }
+  return h("section", { class: "panel" }, h("h2", {}, "Generate next games"),
+    h("p", { class: "muted small" }, `One game a day on the next days without one, rotating the ${inGame} companies in the game so `,
+      "the least-shown go first."),
+    h("div", { class: "form" },
+      h("label", {}, "How many games", count),
+      h("label", {}, "Cards per game", cards),
+      h("button", { class: "btn primary", disabled: !inGame, onclick: (e) => generate(e.currentTarget) },
+        inGame ? "Generate" : "No companies in the game yet")));
+}
+
 function builder() {
   const label = h("input", { type: "text", placeholder: "Label" });
   const date = h("input", { type: "text", placeholder: "YYYY-MM-DD (blank = any day)" });
@@ -124,15 +117,14 @@ function nextTab() {
           h("button", { class: "btn link", onclick: () => demoAnswers(d) }, "Demo answers"),
           h("button", { class: "btn link", onclick: () => del(d) }, "Delete")))))))))
       : h("p", { class: "empty" }, "Nothing queued."),
-    builder());
+    h("div", {}, generator(), builder()));
 }
 
 // --- page -------------------------------------------------------------------------------------------
 
 function render() {
-  const counts = { players: S.users.users.length, past: S.dives.filter((d) => d.when === "past").length,
-    next: S.dives.filter((d) => d.when !== "past").length };
-  const body = { players: playersTab, past: pastTab, next: nextTab }[S.tab]();
+  const counts = { past: S.dives.filter((d) => d.when === "past").length, next: S.dives.filter((d) => d.when !== "past").length };
+  const body = { past: pastTab, next: nextTab }[S.tab]();
   $app.replaceChildren(
     h("div", { class: "head" }, h("h1", {}, "Game"),
       Tool.tabs(TABS.map((t) => ({ ...t, count: counts[t.key] })), S.tab, (k) => { S.tab = k; Tool.setHash(k); render(); })),
@@ -141,8 +133,7 @@ function render() {
 
 async function refresh() {
   try {
-    [S.users, S.dives, S.companies] = await Promise.all([
-      api("/api/admin/users"), api("/api/host/dives"), api("/api/admin/companies?pool=current")]);
+    [S.dives, S.companies] = await Promise.all([api("/api/host/dives"), api("/api/admin/companies?pool=current")]);
     render();
   } catch (e) {
     $app.replaceChildren(h("p", { class: "callout" }, e.message));

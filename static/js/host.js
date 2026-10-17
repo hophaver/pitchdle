@@ -29,6 +29,7 @@ const saved = (localStorageGet("pd.sort") || "avg:desc").split(":");
 const state = {
   filter: "all", sort: SORTS.some(([k]) => k === saved[0]) ? saved[0] : "avg", dir: saved[1] === "asc" ? "asc" : "desc",
   open: null, busy: new Set(), searching: false, editing: null, rubric: null,
+  scope: localStorageGet("pd.scope") === "all" ? "all" : "in",
 };
 const remember = () => localStorageSet("pd.sort", `${state.sort}:${state.dir}`);
 let data = null;
@@ -151,7 +152,7 @@ function card(c) {
     const busy = state.busy.has(`c${c.id}`);
     return h("article", { class: "rc new" },
       h("div", { class: "top" }, h("div", { class: "name" }, nameLink(c.name, c.url)), callChip(c)),
-      h("div", { class: "meta" }, [c.card?.sector || c.sector_query, where].filter(Boolean).join(" · ") || " "),
+      h("div", { class: "meta" }, scopeTag(c), [c.card?.sector || c.sector_query, where].filter(Boolean).join(" · ") || " "),
       // The same brief pitch a tracked card shows, written in the background; the headline until it's in.
       c.card?.one_liner ? h("div", { class: "what" }, c.card.one_liner)
         : h("div", { class: "what headline", title: c.snippet }, c.snippet),
@@ -173,6 +174,24 @@ function card(c) {
     gapChip(c),
     n && n.with ? h("div", { class: "next" }, h("b", {}, "Next: "), `${n.text} with `, nameLink(n.with, n.url)) : null,
     h("div", { class: "foot" }, h("button", { class: "btn", onclick: () => openDrawer(c.id) }, "Details")));
+}
+
+// In or out of A'Pelago's and Redstone's thesis gates (Admin › Thesis criteria), with why on hover.
+function scopeTag(c) {
+  if (!c.scope) return null;
+  return c.scope.in ? h("span", { class: "tag in", title: "Inside A'Pelago's or Redstone's thesis gates" }, "In scope")
+    : h("span", { class: "tag out", title: c.scope.why.join("\n") }, "Out of scope");
+}
+
+async function trackAllInScope(btn) {
+  btn.disabled = true;
+  btn.textContent = "Tracking…";
+  try {
+    const r = await post("/api/admin/discover/track-in-scope", {});
+    PD.toast(`${plural(r.tracked.length, "startup")} tracked${r.failed.length ? ` · ${r.failed.length} failed: ${r.failed.map((f) => f.name).join(", ")}` : ""}`,
+      r.failed.length ? 7000 : 3000);
+  } catch (e) { PD.toast(e.message); }
+  refresh(true);
 }
 
 async function track_(c) {
@@ -640,16 +659,27 @@ function sortValue(c) {
   return !r ? null : state.sort === "avg" ? r.avg : r.scores[state.sort];
 }
 
+// Find startups by any one of: in scope (the thesis gates in Admin › Thesis criteria), a country, or a field.
 function searchRow() {
-  const country = h("input", { type: "text", placeholder: "Country", maxlength: 40, "aria-label": "Country" });
-  const field = h("input", { type: "text", placeholder: "Field (optional)", maxlength: 60, "aria-label": "Field" });
+  const country = h("input", { type: "text", placeholder: "Country (optional)", maxlength: 40, "aria-label": "Country",
+    value: state.country || "", oninput: (e) => { state.country = e.target.value; } });
+  const field = h("input", { type: "text", placeholder: "Field (optional)", maxlength: 60, "aria-label": "Field",
+    value: state.field || "", oninput: (e) => { state.field = e.target.value; } });
+  const scopeSeg = h("div", { class: "seg", role: "group", "aria-label": "Which startups",
+    title: "In scope: only startups inside A'Pelago's or Redstone's thesis gates (sector, geography, ticket). Everything: whatever matches the search." },
+    [["in", "In scope"], ["all", "Everything"]].map(([k, label]) => h("button", { type: "button", "aria-pressed": String(state.scope === k),
+      onclick: () => { state.scope = k; localStorageSet("pd.scope", k); render(); } }, label)));
   async function find() {
-    if (country.value.trim().length < 2 && field.value.trim().length < 2) return country.focus();
+    if (state.scope !== "in" && country.value.trim().length < 2 && field.value.trim().length < 2) {
+      PD.toast("Enter a country or a field, or switch to In scope");
+      return country.focus();
+    }
     state.searching = true;
     btn.disabled = true;
     btn.textContent = "Finding…";
     try {
-      const found = await post("/api/admin/discover/search", { sector: field.value.trim(), country: country.value.trim(), limit: 8 });
+      const found = await post("/api/admin/discover/search", { sector: field.value.trim(), country: country.value.trim(),
+        scope: state.scope, limit: 8 });
       PD.toast(found.length ? `${plural(found.length, "startup")} found` : "Nothing found");
       state.filter = "new";
     } catch (e) { PD.toast(e.message); }
@@ -658,13 +688,14 @@ function searchRow() {
   }
   const btn = h("button", { class: "btn primary", disabled: state.searching, onclick: find }, state.searching ? "Finding…" : "Find startups");
   [country, field].forEach((el) => el.addEventListener("keydown", (e) => { if (e.key === "Enter") find(); }));
-  return data.mode === "live" ? h("div", { class: "row" }, country, field, btn) : null;
+  return data.mode === "live" ? h("div", { class: "row" }, scopeSeg, country, field, btn) : null;
 }
 
 function render() {
   if (!data) return;
   const { cos, cands } = items();
   const count = { all: cos.length + cands.length, new: cands.length };
+  const inScope = cands.filter((c) => c.kind === "cand" && c.scope && c.scope.in);
   for (const c of cos) count[c.call.key] = (count[c.call.key] || 0) + 1;
   const sorted = (arr) => [...arr].sort((a, b) => {
     const x = sortValue(a), y = sortValue(b);
@@ -684,6 +715,8 @@ function render() {
       h("div", { class: "chips", role: "group", "aria-label": "Show" }, FILTERS.filter(([k]) => k === "all" || count[k]).map(([k, label]) =>
         h("button", { "aria-pressed": String(state.filter === k), onclick: () => { state.filter = k; render(); } }, label, h("b", {}, count[k] || 0)))),
       h("span", { class: "spacer" }),
+      inScope.length ? h("button", { class: "btn primary", onclick: (e) => trackAllInScope(e.currentTarget),
+        title: inScope.map((c) => c.name).join(", ") }, `Track all in scope (${inScope.length})`) : null,
       h("label", { class: "sort" }, "Sort by",
         h("select", { "aria-label": "Sort by", onchange: (e) => { state.sort = e.target.value; remember(); render(); } },
           SORTS.map(([k, label]) => h("option", { value: k, selected: state.sort === k }, label)))),

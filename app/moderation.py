@@ -1,8 +1,8 @@
-"""Moderation: every investor sign-up waits for a moderator (players are in at once), and members carry a badge
-that scales how much their answers count in crowd scores (scoring.vote_weights does the counting).
+"""Moderation: every investor sign-up waits for a moderator (players are in at once). How much a member's answers
+count in crowd scores follows from their account kind (scoring.vote_weights).
 
 Moderators are members an admin has promoted, and sign in with their own account; admins get in with the
-admin password. Whoever acts is recorded on each review and badge.
+admin password. Whoever acts is recorded on each review.
 """
 from dataclasses import dataclass
 from statistics import fmean
@@ -10,8 +10,6 @@ from statistics import fmean
 from . import accounts, config
 from .db import j, now
 from .engine import AXES, composite_of
-
-BADGES = ("", "high", "low", "muted")  # '' is no badge: a member who counts 1
 
 
 @dataclass(frozen=True)
@@ -39,25 +37,12 @@ def check_manageable(user, staff: Staff) -> None:
         raise NotAllowed("Only an admin can change a moderator's account.")
 
 
-def review(db, user, status: str, badge: str, staff: Staff) -> None:
-    """Let a sign-up in, optionally with a badge, or turn it down. A turned-down sign-up can still be let in later."""
+def review(db, user, status: str, staff: Staff) -> None:
+    """Let a sign-up in or turn it down. A turned-down sign-up can still be let in later."""
     if user["status"] == "approved":
-        raise ModerationError(f"{user['username']} is already a member. Change their badge or delete them instead.")
-    stamp = now()
+        raise ModerationError(f"{user['username']} is already a member. Delete them instead.")
     db.execute("UPDATE users SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?",
-               (status, staff.name, stamp, user["id"]))
-    if status == "approved" and badge:
-        db.execute("UPDATE users SET badge = ?, badge_by = ?, badge_at = ? WHERE id = ?",
-                   (badge, staff.name, stamp, user["id"]))
-    db.commit()
-
-
-def set_badge(db, user, badge: str, staff: Staff) -> None:
-    if user["status"] != "approved":
-        raise ModerationError("Only members have badges. Approve the sign-up first.")
-    check_manageable(user, staff)
-    db.execute("UPDATE users SET badge = ?, badge_by = ?, badge_at = ? WHERE id = ?",
-               (badge, staff.name, now(), user["id"]))
+               (status, staff.name, now(), user["id"]))
     db.commit()
 
 
@@ -107,7 +92,6 @@ def user_payload(user, played: dict | None) -> dict:
         "id": user["id"], "username": user["username"], "created_at": user["created_at"],
         "status": user["status"], "kind": user["kind"] or "player", "profile": j(user["profile"], {}),
         "reviewed_by": user["reviewed_by"], "reviewed_at": user["reviewed_at"],
-        "badge": user["badge"] or "", "badge_by": user["badge_by"], "badge_at": user["badge_at"],
         "is_moderator": bool(user["is_moderator"]), "is_test": accounts.is_test(user),
         **(played or NO_ACTIVITY),
     }
@@ -124,7 +108,6 @@ def overview(db) -> dict:
     return {
         "users": [user_payload(u, played.get(u["id"])) for u in users],
         "guests": accounts.guest_count(db),
-        "weights": {"high": config.HIGH_PRIORITY_WEIGHT, "low": config.LOW_PRIORITY_WEIGHT,
-                    "investor": config.INVESTOR_WEIGHT,
+        "weights": {"investor": config.INVESTOR_WEIGHT,
                     "guest": config.GUEST_WEIGHT, "guest_max_share": config.GUEST_MAX_SHARE},
     }

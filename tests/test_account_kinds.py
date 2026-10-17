@@ -55,12 +55,10 @@ def test_guests_count_least_players_one_and_investors_most(client):
     assert weights["guest"] < weights["player"]
 
 
-def test_badges_scale_an_investors_weight():
-    investor = {"user_id": 1, "kind": "investor", "badge": "high"}
-    player = {"user_id": 2, "kind": "player", "badge": "low"}
-    muted = {"user_id": 3, "kind": "investor", "badge": "muted"}
-    assert scoring.vote_weights([investor, player, muted]) == [
-        config.INVESTOR_WEIGHT * config.HIGH_PRIORITY_WEIGHT, config.LOW_PRIORITY_WEIGHT, 0.0]
+def test_a_members_weight_is_their_kind_alone():
+    investor = {"user_id": 1, "kind": "investor", "badge": "high"}  # a badge left in an old database is ignored
+    player = {"user_id": 2, "kind": "player", "badge": "muted"}
+    assert scoring.vote_weights([investor, player]) == [config.INVESTOR_WEIGHT, 1.0]
 
 
 def test_the_dashboard_shows_the_profile_and_opinions(client, admin):

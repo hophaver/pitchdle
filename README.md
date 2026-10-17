@@ -24,7 +24,7 @@ Open http://localhost:8000/play. The first run creates `.venv`, installs `requir
 | `/host` | Dashboard: the radar. Find startups; each card's call and its reviews' average (N U P I), sortable by any of them; details with the profile, readiness, thesis fit, every review and ranked next steps | admin |
 | `/game` | Players, past games (crowd vs engine), next games queued | admin |
 | `/admin` | The background AI work (last run, errors, run missing now), exports and resets | admin |
-| `/moderate` | Review investor sign-ups, set member badges, make moderators; give A'Pelago's read of each startup | moderator account or admin |
+| `/moderate` | Review investor sign-ups, see every player's and investor's profile and play, make moderators; give A'Pelago's read of each startup | moderator account or admin |
 
 Host and admin pages use a browser login prompt. Any username works; the password is
 `ADMIN_PASSWORD` (default `admin`). `/moderate` takes the admin password too, and moderators sign in with their
@@ -155,11 +155,11 @@ Everyone plays as a guest (a device cookie) until they log in. Signing up starts
 
 The first login moves whatever that device played as a guest onto the account. Guests get today's set only; an
 account keeps history, stats and streaks, and opens earlier daily sets. Players delete their own account from the
-menu under their username; moderators can delete any member's account, and the host can in `/game` → Players.
+menu under their username; moderators (and the host) can delete any member's account on `/moderate` → People.
 
 Moderators are members an admin has promoted: on `/moderate` → Members, open a row → **Make moderator**. Each
-review and badge records who did it (the admin login shows as "admin"). Only admins make or remove moderators or
-change a moderator's account (badge, deletion), a moderator's own included. A moderator's account menu on
+review records who did it (the admin login shows as "admin"). Only admins make or remove moderators or
+delete a moderator's account, a moderator's own included. A moderator's account menu on
 `/play` links to the moderation page.
 
 ### How much an answer counts
@@ -172,11 +172,9 @@ Guests count least, players 1, investors most:
 | Player | 1 |
 | Investor | `INVESTOR_WEIGHT` (2) |
 
-A moderator can give any member a badge, which multiplies that: **High priority** ×`HIGH_PRIORITY_WEIGHT` (2),
-none ×1, **Low priority** ×`LOW_PRIORITY_WEIGHT` (0.5), **Muted** ×0 (left out everywhere). A high-priority
-investor counts 4. The Members tab shows how each one plays: answers, how far their reads sit from the engine's
-on average, and how often they give all four calls the same number. Badges are only shown to moderators. These
-weights apply to player results, the dashboard and exports. Accounts from before account kinds count as players.
+The Members tab on `/moderate` → People lists players and investors (filter by kind) and shows how each one plays:
+answers, how far their reads sit from the engine's on average, and how often they give all four calls the same
+number. Click an investor for everything they entered at sign-up, links included. These weights apply to player results, the dashboard and exports. Accounts from before account kinds count as players.
 
 ## The startup card and its opinions
 
@@ -248,7 +246,7 @@ All 12 seed companies are **fictional**. Real startups come from discovery in Li
 
 They cover the engine (including both demo cases), crowd maths, a full solo set with results locked until
 the last card, discovery screening and exclusions, the demo/live pool rule, landscape matching, the call and the
-next move, player and investor sign-up, investor review with moderator access, vote weights and badges, the card
+next move, player and investor sign-up, investor review with moderator access, vote weights, the card
 profile and every kind of opinion. The AI and social reads run against canned API answers through the real SDKs.
 No network needed.
 
@@ -260,9 +258,9 @@ app/
   service.py     player results (you vs crowd), host overview, the call and the next move
   landscape.py   matches startups to landscape.json (investors, grants, partners, clients)
   engine.py      evidence → per-axis engine read + coverage (weights.json)
-  scoring.py     crowd stats, vote weights (guests, players, investors, badges) and lean (higher / with / lower)
+  scoring.py     crowd stats, vote weights (guests, players, investors) and lean (higher / with / lower)
   accounts.py    sign-up (player or investor), login, sessions, guests' answers moving onto an account
-  moderation.py  investor sign-up review, member badges, how each member plays
+  moderation.py  investor sign-up review, how each member plays
   opinions.py    A'Pelago's, AI models' and social media's opinions, as the cards show them
   reads.py       asking the AI models and reading social media (never on the game's path)
   autoread.py    reading each new card in the background, and cards missing reads on startup

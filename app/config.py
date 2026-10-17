@@ -39,9 +39,6 @@ GUEST_WEIGHT = float(os.environ.get("GUEST_WEIGHT") or 0.5)
 GUEST_MAX_SHARE = float(os.environ.get("GUEST_MAX_SHARE") or 0.4)
 # How much an investor account's answer counts next to a player account's (1.0).
 INVESTOR_WEIGHT = max(0.0, float(os.environ.get("INVESTOR_WEIGHT") or 2.0))
-# A badge multiplies a member's weight: high or low priority (no badge is ×1, muted is 0).
-HIGH_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("HIGH_PRIORITY_WEIGHT") or 2.0))
-LOW_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("LOW_PRIORITY_WEIGHT") or 0.5))
 # Outside reads, run from Admin and never on the game's path: AI models rate each startup, and AI searches
 # read what people say about it on social media. One OpenRouter key runs all three models; otherwise each needs
 # its own key, and a model without one is skipped.

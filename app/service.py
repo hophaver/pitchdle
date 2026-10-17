@@ -128,21 +128,55 @@ def todays_dive(db):
             db.commit()
             return get_dive(db, row["id"])
         return row
-    count = db.execute("SELECT COUNT(*) FROM dives WHERE mode = 'daily' AND pool = ?", (pool,)).fetchone()[0]
-    label = f"#{count + 1}" if pool == "demo" else f"Live #{count + 1}"
     cur = db.execute("INSERT INTO dives (label, date, company_ids, mode, pool, created_at) VALUES (?, ?, ?, 'daily', ?, ?)",
-                     (label, today, dumps(picked), pool, now()))
+                     (daily_label(db, pool), today, dumps(picked), pool, now()))
     db.commit()
     return get_dive(db, cur.lastrowid)
+
+
+def daily_label(db, pool: str) -> str:
+    count = db.execute("SELECT COUNT(*) FROM dives WHERE mode = 'daily' AND pool = ?", (pool,)).fetchone()[0]
+    return f"#{count + 1}" if pool == "demo" else f"Live #{count + 1}"
+
+
+def generate_dives(db, count: int, cards: int = 5) -> list:
+    """Queue the next `count` daily games for the current mode, one per day on the first days from today that have no
+    game yet. Each takes the `cards` in-game companies shown least so far (in any of the mode's games), so every
+    company gets its turn before one repeats; ties are broken at random. Returns the new games, oldest first."""
+    pool = get_mode(db)
+    ids = [r["id"] for r in db.execute("SELECT id FROM companies WHERE active = 1 AND is_real = ? ORDER BY id",
+                                       (pool_is_real(pool),))]
+    if not ids:
+        raise ValueError("No companies are in the game yet: activate some first.")
+    shown = {i: 0 for i in ids}
+    taken = set()
+    for row in db.execute("SELECT date, company_ids FROM dives WHERE pool = ?", (pool,)):
+        taken.add(row["date"])
+        for i in j(row["company_ids"], []):
+            if i in shown:
+                shown[i] += 1
+    rng = random.Random()
+    day, made = date.today(), []
+    while len(made) < count:
+        if day.isoformat() not in taken:
+            picked = sorted(ids, key=lambda i: (shown[i], rng.random()))[:min(cards, len(ids))]
+            for i in picked:
+                shown[i] += 1
+            cur = db.execute("INSERT INTO dives (label, date, company_ids, mode, pool, created_at) "
+                             "VALUES (?, ?, ?, 'daily', ?, ?)", (daily_label(db, pool), day.isoformat(), dumps(picked), pool, now()))
+            made.append(get_dive(db, cur.lastrowid))
+        day += timedelta(days=1)
+    db.commit()
+    return made
 
 
 def scores_of(vote) -> dict:
     return {a: vote[a] for a in AXES}
 
 
-# Votes with the voter's user_id, badge and account kind alongside, so crowd scores can weigh guests, players and
+# Votes with the voter's user_id and account kind alongside, so crowd scores can weigh guests, players and
 # investors apart.
-VOTES_WITH_USER = ("SELECT v.*, p.user_id, u.badge, u.kind FROM votes v LEFT JOIN players p ON p.id = v.player_id "
+VOTES_WITH_USER = ("SELECT v.*, p.user_id, u.kind FROM votes v LEFT JOIN players p ON p.id = v.player_id "
                    "LEFT JOIN users u ON u.id = p.user_id")
 
 

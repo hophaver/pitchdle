@@ -1,4 +1,4 @@
-"""Sign-ups wait for a moderator; members' badges set how much their answers count."""
+"""Sign-ups wait for a moderator; moderators see how members play; only admins manage moderators."""
 from statistics import fmean
 
 from fastapi.testclient import TestClient
@@ -16,13 +16,8 @@ def mod_user(client, moderator, username):
     return next(u for u in client.get("/api/mod/users", auth=moderator).json()["users"] if u["username"] == username)
 
 
-def review(client, moderator, username, status, badge=""):
-    return client.post(f"/api/mod/users/{user_id(client, username)}/review", json={"status": status, "badge": badge},
-                       auth=moderator)
-
-
-def set_badge(client, moderator, username, badge):
-    return client.put(f"/api/mod/users/{user_id(client, username)}/badge", json={"badge": badge}, auth=moderator)
+def review(client, moderator, username, status):
+    return client.post(f"/api/mod/users/{user_id(client, username)}/review", json={"status": status}, auth=moderator)
 
 
 def test_sign_ups_wait_for_a_moderator(client, moderator):
@@ -39,11 +34,11 @@ def test_sign_ups_wait_for_a_moderator(client, moderator):
     pending = mod_user(client, moderator, "maija")
     assert pending["status"] == "pending" and pending["profile"]["email"] == "maija@example.com"
     assert pending["profile"]["links"] == {"linkedin": "https://www.linkedin.com/in/maija"}
-    r = review(client, moderator, "maija", "approved", badge="high")
+    r = review(client, moderator, "maija", "approved")
     assert r.status_code == 200
     member = r.json()
-    assert (member["status"], member["badge"]) == ("approved", "high")
-    assert member["reviewed_by"] == member["badge_by"] == "mira"  # the moderator's own account
+    assert member["status"] == "approved" and "badge" not in member
+    assert member["reviewed_by"] == "mira"  # the moderator's own account
 
     r = login(client)
     assert r.status_code == 200 and r.json()["claimed"] == 2  # guest answers move onto the account
@@ -62,12 +57,11 @@ def test_turned_down_sign_ups_cannot_log_in_until_reconsidered(client, moderator
 
 def test_review_rules(client, moderator):
     apply(client)
-    assert set_badge(client, moderator, "maija", "high").status_code == 409  # not a member yet
     review(client, moderator, "maija", "approved")
-    assert review(client, moderator, "maija", "rejected").status_code == 409  # members get muted or deleted instead
-    assert set_badge(client, moderator, "maija", "loud").status_code == 422
+    assert review(client, moderator, "maija", "rejected").status_code == 409  # members get deleted instead
+    assert client.put(f"/api/mod/users/{user_id(client, 'maija')}/badge", json={"badge": "high"},
+                      auth=moderator).status_code in (404, 405)  # badges are gone
     for call in (lambda: client.post("/api/mod/users/9999/review", json={"status": "approved"}, auth=moderator),
-                 lambda: client.put("/api/mod/users/9999/badge", json={"badge": "high"}, auth=moderator),
                  lambda: client.delete("/api/mod/users/9999", auth=moderator)):
         assert call().status_code == 404
 
@@ -145,9 +139,7 @@ def test_only_admins_manage_moderators(client, admin, moderator):
     assert client.get("/api/mod/users", auth=("maija", "pass1234")).status_code == 200
     # Moderator accounts, a moderator's own included, are for admins to change.
     for target in (maija, mira):
-        assert client.put(f"/api/mod/users/{target}/badge", json={"badge": "high"}, auth=moderator).status_code == 403
         assert client.delete(f"/api/mod/users/{target}", auth=moderator).status_code == 403
-    assert client.put(f"/api/mod/users/{maija}/badge", json={"badge": "low"}, auth=admin).json()["badge_by"] == "admin"
     # Taking the role away ends their access at once.
     assert promote(maija, False, admin).json()["is_moderator"] is False
     assert client.get("/api/mod/users", auth=("maija", "pass1234")).status_code == 401
@@ -171,7 +163,8 @@ def test_the_test_moderator_comes_from_env(tmp_path, monkeypatch):
         assert c.get("/api/mod/users", auth=("mod1234", "moderator")).status_code == 200
 
 
-def test_badges_set_how_much_a_member_counts(client, moderator):
+def test_every_member_counts_by_their_kind_alone(client, moderator):
+    """Players count 1 each: two opposite players average out, whatever was set on their accounts before."""
     data = today(client)
     dive_id, cards = data["dive"]["id"], data["cards"]
     loud, quiet = new_player(client), new_player(client)
@@ -181,27 +174,11 @@ def test_badges_set_how_much_a_member_counts(client, moderator):
         answer(loud, dive_id, card["id"], {**GUESS, "novel": 5})
         answer(quiet, dive_id, card["id"], {**GUESS, "novel": 1})
         answer(client, dive_id, card["id"])  # a guest, so their results show everyone else
-
-    def crowd():
-        return client.get(f"/api/dive/{dive_id}/results").json()["cards"][0]["crowd"]
-
-    assert crowd()["means"]["novel"] == 3.0
-    set_badge(client, moderator, "loud", "high")
-    hw = config.HIGH_PRIORITY_WEIGHT
-    assert crowd()["means"]["novel"] == round((hw * 5 + 1) / (hw + 1), 2)
-    set_badge(client, moderator, "loud", "low")
-    lw = config.LOW_PRIORITY_WEIGHT
-    assert crowd()["means"]["novel"] == round((lw * 5 + 1) / (lw + 1), 2)
-    set_badge(client, moderator, "loud", "muted")
-    assert crowd()["n"] == 1 and crowd()["means"]["novel"] == 1.0  # muted answers don't count at all
-    assert mod_user(client, moderator, "loud")["badge_by"] == "mira"
-
-    host = client.get("/api/host/overview", auth=("host", "secret")).json()["companies"]
-    first = next(c for c in host if c["id"] == cards[0]["id"])
-    assert first["crowd"]["n"] == 2  # the dashboard leaves the muted member out too
-
-    set_badge(client, moderator, "loud", "")
-    assert crowd()["means"]["novel"] == 3.0
+    import sqlite3
+    with sqlite3.connect(config.DB_PATH) as db:  # a badge left in an old database changes nothing now
+        db.execute("UPDATE users SET badge = 'muted' WHERE username = 'loud'")
+    crowd = client.get(f"/api/dive/{dive_id}/results").json()["cards"][0]["crowd"]
+    assert crowd["n"] == 2 and crowd["means"]["novel"] == 3.0
 
 
 def test_moderators_see_how_members_play(client, admin, moderator):
@@ -237,4 +214,4 @@ def test_accounts_from_before_review_stay_members(tmp_path, monkeypatch):
         r = login(c, "veteran")
         assert r.status_code == 200
         u = mod_user(c, ("staff", config.ADMIN_PASSWORD), "veteran")
-        assert (u["status"], u["badge"], u["profile"]) == ("approved", "", {})
+        assert (u["status"], u["profile"]) == ("approved", {})

@@ -87,7 +87,7 @@ mod_basic = HTTPBasic(realm="Moderation", auto_error=False)
 def require_moderator(creds: HTTPBasicCredentials | None = Depends(mod_basic), user=Depends(current_user),
                       db=Depends(get_db)) -> moderation.Staff:
     """The admin password at the browser prompt, or a moderator's own account: already logged in on /play, or their
-    username and password at the prompt. Returns who's acting, which goes on each review and badge."""
+    username and password at the prompt. Returns who's acting, which goes on each review."""
     if creds and secrets.compare_digest(creds.password.encode(), config.ADMIN_PASSWORD.encode()):
         return moderation.Staff("admin", admin=True)
     if not (user and user["is_moderator"]) and creds:
@@ -532,9 +532,8 @@ def host_dive(dive_id: int, db=Depends(get_db)):
 
 
 # --- moderation ------------------------------------------------------------------------------------
-# Sign-ups wait on /moderate until a moderator lets them in. A member's badge sets how much their answers count.
+# Sign-ups wait on /moderate until a moderator lets them in.
 
-BADGE_PATTERN = f"^({'|'.join(moderation.BADGES)})$"
 
 
 def mod_user(db, uid: int):
@@ -562,24 +561,12 @@ def mod_users(staff: moderation.Staff = Depends(require_moderator), db=Depends(g
 
 class ReviewIn(BaseModel):
     status: str = Field(pattern="^(approved|rejected)$")
-    badge: str = Field("", pattern=BADGE_PATTERN)
 
 
 @app.post("/api/mod/users/{uid}/review")
 def mod_review(uid: int, body: ReviewIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
     with refusals():
-        moderation.review(db, mod_user(db, uid), body.status, body.badge, staff)
-    return moderation.member(db, uid)
-
-
-class BadgeIn(BaseModel):
-    badge: str = Field(pattern=BADGE_PATTERN)
-
-
-@app.put("/api/mod/users/{uid}/badge")
-def mod_badge(uid: int, body: BadgeIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
-    with refusals():
-        moderation.set_badge(db, mod_user(db, uid), body.badge, staff)
+        moderation.review(db, mod_user(db, uid), body.status, staff)
     return moderation.member(db, uid)
 
 
@@ -948,22 +935,37 @@ def candidate_out(row) -> dict:
     for key in ("engine_hint", "pulse", "screen", "card"):
         out[key] = j(row[key])
     out["card_error"] = row["card_error"] or ""
+    inside, why = engine.scope(autofill.scope_company(row))  # A'Pelago's or Redstone's thesis gates (rubric.json)
+    out["scope"] = {"in": inside, "why": why}
     return out
 
 
 class DiscoverIn(BaseModel):
-    """A field, a country, or both: a country alone finds startups based there in any field."""
+    """Any one of: a field, a country, or scope "in". A country alone finds startups based there in any field.
+    scope "in" keeps only finds inside A'Pelago's or Redstone's thesis gates (rubric.json); with no field it
+    searches the in-scope fields (DISCOVER_FIELDS). scope "all" keeps everything screening lets through."""
     sector: str = Field("", max_length=60)
     country: str = Field("", max_length=40)
+    scope: str = Field("all", pattern="^(all|in)$")
     limit: int = Field(8, ge=1, le=10)
 
 
 @app.post("/api/admin/discover/search", dependencies=[Depends(require_admin)])
 def admin_discover_search(body: DiscoverIn, db=Depends(get_db)):
     sector, country = clean_text(body.sector), clean_text(body.country)
-    if len(sector) < 2 and len(country) < 2:
-        raise HTTPException(422, "Enter a field, a country, or both.")
-    rows = autofill.store_candidates(db, sector, country, body.limit)
+    in_scope = body.scope == "in"
+    if len(sector) < 2 and len(country) < 2 and not in_scope:
+        raise HTTPException(422, "Enter a field or a country, or search in scope.")
+    fields = [sector] if len(sector) >= 2 else (config.DISCOVER_FIELDS or ["blue economy"]) if in_scope else [""]
+    rows, seen = [], set()
+    for field in fields:
+        for row in autofill.store_candidates(db, field, country, body.limit):
+            if row["id"] not in seen:
+                seen.add(row["id"])
+                rows.append(row)
+    if in_scope:
+        rows = autofill.keep_in_scope(db, rows)
+    rows = rows[:body.limit]
     autoread.kick()  # the new finds get their cards written in the background, so they show a proper pitch
     return [candidate_out(r) for r in rows]
 
@@ -1017,13 +1019,35 @@ def admin_discover_approve(cand_id: int, db=Depends(get_db)):
     if hit := autofill.excluded(row):
         raise HTTPException(409, f"{row['name']} is excluded (matches “{hit}”): funds, publishers and the event's "
                                  "partners are never rated as startups.")
+    return admin_company(db, service.get_company(db, track_candidate(db, row)))
+
+
+def track_candidate(db, row) -> int:
+    """File a find as a real company and return its id: the existing one if it's already there."""
     if same := autofill.existing_company(db, row["name"]):  # a second click, or filed under another candidate
-        return admin_company(db, service.get_company(db, autofill.link(db, cand_id, same["id"])))
+        return autofill.link(db, row["id"], same["id"])
     # The card queued earlier, or one written now. The host chose it, so it's kept even if writing fails or the
     # AI doubts it: then the headline stands in as the pitch and it's marked for a manual pass.
     card = autofill.write_candidate_card(db, row)
-    cid = autofill.approve_candidate(db, get_candidate(db, cand_id), card=card)
-    return admin_company(db, service.get_company(db, cid))
+    return autofill.approve_candidate(db, get_candidate(db, row["id"]), card=card)
+
+
+@app.post("/api/admin/discover/track-in-scope", dependencies=[Depends(require_admin)])
+def admin_discover_track_in_scope(db=Depends(get_db)):
+    """Track every open find inside A'Pelago's or Redstone's thesis gates in one go. Out-of-scope finds stay where
+    they are for the host to judge."""
+    tracked, failed = [], []
+    for row in db.execute("SELECT * FROM candidates WHERE status IN ('new', 'queued') ORDER BY id").fetchall():
+        if autofill.excluded(row) or not engine.scope(autofill.scope_company(row))[0]:
+            continue
+        try:
+            track_candidate(db, row)
+            tracked.append(row["name"])
+        except Exception as e:  # noqa: BLE001 - one bad find doesn't stop the rest
+            failed.append({"name": row["name"], "error": reads.short_error(e)})
+    if tracked:
+        autoread.kick()  # the new companies get filled, checked and reviewed in the background
+    return {"tracked": tracked, "failed": failed}
 
 
 @app.post("/api/admin/companies/{cid}/rewrite", dependencies=[Depends(require_admin)])
@@ -1271,6 +1295,21 @@ def admin_create_dive(body: DiveIn, db=Depends(get_db)):
                      (body.label, body.date, dumps(body.company_ids), body.mode, service.get_mode(db), now())).lastrowid
     db.commit()
     return service.dive_payload(service.get_dive(db, cid))
+
+
+class GenerateIn(BaseModel):
+    count: int = Field(7, ge=1, le=60)
+    cards: int = Field(5, ge=1, le=10)
+
+
+@app.post("/api/admin/dives/generate", dependencies=[Depends(require_admin)])
+def admin_generate_dives(body: GenerateIn, db=Depends(get_db)):
+    """Queue the next `count` daily games automatically, on the next free days, rotating the in-game companies."""
+    try:
+        made = service.generate_dives(db, body.count, body.cards)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return [service.dive_payload(d) | {"company_ids": j(d["company_ids"], [])} for d in made]
 
 
 @app.delete("/api/admin/dives/{dive_id}", dependencies=[Depends(require_admin)])

@@ -760,10 +760,6 @@ a.chip:hover { border-color: var(--muted); }
 .profile-facts dt { color: var(--muted); font-weight: 600; }
 .profile-facts dd { margin: 0; overflow-wrap: anywhere; }
 .motivation { margin: .7rem 0 .4rem; padding: .6rem .85rem; background: var(--paper); border-left: 3px solid var(--line); border-radius: 0 var(--t-radius-sm) var(--t-radius-sm) 0; white-space: pre-line; }
-.tool select.badge-select { width: auto; font-weight: 600; }
-.badge-select.badge-high { background: var(--good-bg); color: var(--good); border-color: #b9dcc6; }
-.badge-select.badge-low { background: var(--warn-bg); color: var(--warn); border-color: #ecd894; }
-.badge-select.badge-muted { background: var(--bad-bg); color: var(--bad); border-color: #f0c2b6; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -774,3 +770,20 @@ a.chip:hover { border-color: var(--muted); }
 .thesis-form h3 { font-size: .95rem; }
 .thesis-form .row > input[type=text] { flex: 1; min-width: 12rem; }
 .thesis-form input[type=number] { width: 6.5rem; }
+
+/* moderation: a member's full profile, opened from their row */
+.pf { max-width: none; }
+.pf-head { display: flex; align-items: flex-start; gap: .6rem; flex-wrap: wrap; }
+.pf-head h3 { font-size: 1.05rem; text-transform: none; letter-spacing: -.01em; color: var(--ink); }
+.pf-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: .4rem 1.6rem; }
+@media (max-width: 760px) { .pf-grid { grid-template-columns: minmax(0, 1fr); } }
+.pf .sub-head { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: .8rem 0 .3rem; }
+.pf-links { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
+.pf-links li { display: grid; gap: .05rem; }
+.pf-links small { font-size: .68rem; font-weight: 700; color: var(--muted); }
+.pf-links a { font-weight: 600; overflow-wrap: anywhere; }
+.pf-figs { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0 .7rem; }
+.pf-fig { display: grid; gap: .05rem; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: .3rem .6rem; min-width: 4.6rem; }
+.pf-fig small { font-size: .62rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.pf-fig b { font-variant-numeric: tabular-nums; }
+.rc .meta .tag { margin-right: .35rem; }

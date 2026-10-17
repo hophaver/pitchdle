@@ -10,7 +10,7 @@ import sqlite3
 import threading
 from urllib.parse import urlsplit
 
-from . import autoread, config, seed
+from . import autoread, config, engine, seed
 from .crawler import discovery, pitch, pulse, website
 from .db import connect, dumps, j, name_key, now
 from .service import get_mode, get_setting, set_setting
@@ -85,6 +85,30 @@ def store_candidates(db, sector: str, country: str, limit: int, skipped: list | 
         rows.append(get_row(db, row["id"]))
     db.commit()
     return rows
+
+
+def scope_company(row) -> dict:
+    """What the thesis gates read from a find: its written card if any, else the search and headline."""
+    card = j(row["card"], {}) or {}
+    screen = j(row["screen"], {}) or {}
+    return {"sector": card.get("sector") or row["sector_query"] or "", "claim_ask": card.get("claim_ask") or "",
+            "one_liner": " ".join(x for x in (card.get("one_liner"), row["snippet"]) if x),
+            "country": screen.get("based_in") or row["country_tag"] or ""}
+
+
+def keep_in_scope(db, rows: list) -> list:
+    """The finds inside A'Pelago's or Redstone's thesis gates (rubric.json). One outside both is filed as dismissed
+    by screening, with the reason, so a later search for everything can still bring it back."""
+    kept = []
+    for row in rows:
+        inside, why = engine.scope(scope_company(row))
+        if inside:
+            kept.append(row)
+        elif row["status"] in OPEN:
+            verdict = (j(row["screen"], {}) or {}) | {"verdict": "rejected", "reason": f"Out of scope ({'; '.join(why)})"}
+            db.execute("UPDATE candidates SET status = 'dismissed', screen = ? WHERE id = ?", (dumps(verdict), row["id"]))
+    db.commit()
+    return kept
 
 
 def get_row(db, cand_id: int):

@@ -378,6 +378,19 @@ def gates(spec: dict, company: dict | None) -> list[dict]:
     return out
 
 
+def scope(company: dict | None) -> tuple[bool, list[str]]:
+    """In scope when some holder's gates all pass (unknowns pass). Returns (in_scope, why not per holder)."""
+    reasons = []
+    for key, spec in load_rubric()["theses"].items():
+        if key.startswith("_"):
+            continue
+        failed = [g for g in gates(spec.get("gates") or {}, company) if g["status"] == "fail"]
+        if not failed:
+            return True, []
+        reasons.append(f"{spec['label'].split(' ')[0]}: {'; '.join(g['note'] for g in failed)}")
+    return False, reasons
+
+
 def stage_window(spec: dict | None, evidence: dict) -> dict:
     """How well the company's stage sits in a holder's band: 1.0 inside the peak, falling linearly to 0 over
     `falloff` levels either side. An accelerator fits less once a company is past what it can help with."""

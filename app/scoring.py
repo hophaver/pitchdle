@@ -30,18 +30,6 @@ def signed_in(vote) -> bool:
         return False
 
 
-def badge_of(vote) -> str:
-    """The voter's moderator badge: '' for none (and for guests), or high, low or muted."""
-    try:
-        return vote["badge"] or ""
-    except (KeyError, IndexError):
-        return ""
-
-
-def badge_weight(badge: str) -> float:
-    return {"high": config.HIGH_PRIORITY_WEIGHT, "low": config.LOW_PRIORITY_WEIGHT, "muted": 0.0}.get(badge, 1.0)
-
-
 def kind_of(vote) -> str:
     """The voter's account kind: player or investor ('' for guests)."""
     try:
@@ -55,14 +43,13 @@ def kind_weight(kind: str) -> float:
 
 
 def member_weight(vote) -> float:
-    return kind_weight(kind_of(vote)) * badge_weight(badge_of(vote))
+    return kind_weight(kind_of(vote))
 
 
 def vote_weights(votes: list) -> list[float]:
     """How much each vote counts towards a crowd score: guests least, players 1, investors most.
 
-    A player counts 1 and an investor INVESTOR_WEIGHT, either scaled by the badge a moderator gave them (high or
-    low priority; muted is 0). Guests count GUEST_WEIGHT each, shrinking further as guests pile up so that together
+    A player counts 1 and an investor INVESTOR_WEIGHT. Guests count GUEST_WEIGHT each, shrinking further as guests pile up so that together
     they never make up more than GUEST_MAX_SHARE of the total. With no member weight to weigh them against, guests
     count 1 each.
     """
@@ -79,10 +66,9 @@ def vote_weights(votes: list) -> list[float]:
 def crowd(votes: list, weighted: bool = True) -> dict:
     """Aggregate votes (rows or dicts with the four axis columns).
 
-    Weighted, guests count for less, investors for more, and members by their badge; unweighted counts everyone alike, as a live
-    room does. Either way a muted member's answers are left out entirely, from the counts too.
+    Weighted, guests count for less and investors for more; unweighted counts everyone alike, as a live room does.
     """
-    weights = vote_weights(votes) if weighted else [0.0 if badge_of(v) == "muted" else 1.0 for v in votes]
+    weights = vote_weights(votes) if weighted else [1.0] * len(votes)
     counted = [(v, w) for v, w in zip(votes, weights) if w > 0]
     votes, weights = [v for v, _ in counted], [w for _, w in counted]
     n = len(votes)

@@ -174,7 +174,7 @@ MIGRATIONS = [
     ("users", "profile", "TEXT DEFAULT '{}'"),  # what they told moderators when signing up
     ("users", "reviewed_by", "TEXT"),
     ("users", "reviewed_at", "TEXT"),
-    ("users", "badge", "TEXT DEFAULT ''"),  # '' | high | low | muted: how much their answers count
+    ("users", "badge", "TEXT DEFAULT ''"),  # unused since badges were removed; kept so old databases still open
     ("users", "badge_by", "TEXT"),
     ("users", "badge_at", "TEXT"),
     ("users", "is_moderator", "INTEGER DEFAULT 0"),  # set by an admin on /moderate
