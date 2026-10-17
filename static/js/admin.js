@@ -117,14 +117,33 @@ function profileForm(c) {
       await refresh();
     } catch (e) { PD.toast(e.message); }
   }
+  // Fills only the empty fields, from the website and news; also done by itself for every new real startup.
+  async function fillWithAI(btn) {
+    btn.disabled = true;
+    btn.classList.add("busy");
+    btn.textContent = "Reading its website and news…";
+    try {
+      const r = await post(`/api/admin/companies/${c.id}/profile/fill`, {});
+      PD.toast(r.filled.length ? `Filled: ${r.filled.join(", ")}` : "The AI found nothing new to fill");
+      await refresh();
+    } catch (e) {
+      PD.toast(e.message, 6000);
+      btn.disabled = false;
+      btn.classList.remove("busy");
+      btn.textContent = "Fill with AI";
+    }
+  }
   return [
     h("h3", {}, "Profile"),
+    c.profile_note ? h("p", { class: "muted small" }, c.profile_note) : null,
     h("div", { class: "form" },
       h("label", {}, h("span", { class: "row" }, "Vision (a blank line starts a new paragraph)", h("span", { class: "spacer" }), words), vision),
       field("Stages passed, one per line, oldest first (incubators, rounds)", stages),
       field("Money raised so far, € (blank: not disclosed)", raised),
       field(INVESTOR_HELP, investors),
-      h("div", {}, h("button", { class: "btn primary", onclick: save }, "Save profile"))),
+      h("div", { class: "row" }, h("button", { class: "btn primary", onclick: save }, "Save profile"),
+        c.is_real ? h("button", { class: "btn", disabled: !S.mode.discover.ai.enabled, onclick: (e) => fillWithAI(e.currentTarget),
+          title: "Fills only the empty fields, from its website and news headlines" }, "Fill with AI") : null)),
   ];
 }
 
@@ -296,7 +315,11 @@ function readsPanel() {
     } catch (e) { PD.toast(e.message); }
     await refresh();
   }
+  const tasks = S.mode.discover.ai.models;
+  const { models } = S.mode.reads;
   return h("section", { class: "panel" }, h("h2", {}, "AI and social reads"),
+    h("p", { class: "muted small" }, "Models, set per task in .env: ",
+      `screening ${tasks.screen} · cards ${tasks.card} · profiles ${tasks.profile} · ratings ${models.claude}, ${models.gpt}, ${models.grok}.`),
     h("p", { class: "small" }, auto.running ? "Reading new cards…"
       : auto.finished_at ? `Last run ${auto.finished_at.slice(0, 16).replace("T", " ")}, ${auto.read.length} card${auto.read.length === 1 ? "" : "s"} read${errors.length ? `, ${errors.length} error${errors.length === 1 ? "" : "s"}` : ""}.`
         : any ? "Not run yet." : "Off until a key is set (OPENROUTER_API_KEY)."),

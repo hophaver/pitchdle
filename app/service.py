@@ -391,6 +391,7 @@ def company_insight(db, comp, real_only: bool) -> dict:
         # make of it.
         "emoji": comp["emoji"] or "", "vision": comp["vision"] or "", "stages": j(comp["stages"], []),
         "raised_eur": comp["raised_eur"], "investors": j(comp["investors"], []),
+        "profile": {"status": comp["profile_status"] or "", "note": comp["profile_note"] or ""},
         "opinions": opinions.for_card(db, comp["id"], None, room if room["n"] else None),
         "quiet": opinions.quiet(db, comp["id"]),
     }

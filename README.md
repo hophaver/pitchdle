@@ -58,8 +58,10 @@ Copy `.env.example` to `.env` to override any of these:
 | `DISCOVER_MAX` | `10` | Most auto-found startups kept |
 | `DISCOVER_EXCLUDE` | empty | Comma list of words/names to skip (whole words, in the name or headline) |
 | `DISCOVER_EXCLUDE_NAMES` | `fund,funds,capital,ventures,…` | Words that make a *name* a fund, publisher or lab (name only) |
-| `OPENROUTER_API_KEY` | empty | Optional: AI writes found startups' cards and skips non-startups |
-| `OPENROUTER_MODEL` | `anthropic/claude-haiku-5.5` | Any OpenRouter model with structured outputs |
+| `OPENROUTER_API_KEY` | empty | Optional: AI screens discovery hits, writes found startups' cards, fills their profiles, and rates every card |
+| `OPENROUTER_MODEL` | `anthropic/claude-haiku-5.5` | Default model for screening, cards and profiles: any OpenRouter model with structured outputs |
+| `SCREEN_MODEL` / `CARD_MODEL` / `PROFILE_MODEL` | empty | A different model for one of those tasks; blank uses `OPENROUTER_MODEL` |
+| `CLAUDE_MODEL` / `GPT_MODEL` / `GROK_MODEL` | empty | The three rating models (see below) |
 
 ### Demo and live mode
 
@@ -101,6 +103,14 @@ publishers/databases (TechCrunch, Crunchbase, …, also matched in the website's
 `DISCOVER_EXCLUDE_NAMES` word (fund, capital, VC, institute, summit, …). These match whole words of the name, so
 "Blue Ocean Capital" is skipped and "Fundbox" isn't. Player submissions under those names can't be approved either. One real company per name:
 a second "Granarium" is linked to the first, never added again, and duplicates left by older builds are merged on startup.
+
+**Profiles.** Discovery only stores a headline and a website, so each real startup's profile (money raised,
+investors, stages passed, vision, country) is filled by AI in the background, right after it's tracked and before
+its AI ratings, from its website and news headlines (on `PROFILE_MODEL`, else `OPENROUTER_MODEL`). The model uses
+only what those sources say and leaves the rest empty; amounts in other currencies are turned into euros at rough
+rates, with the original kept in the stage line. Only empty fields are filled, never what the host typed, and each
+startup is filled once (Admin → Profile & opinions → **Fill with AI** runs it again). The details card says when a
+profile came from AI.
 
 Found startups carry only what discovery can show: a tech stage, when their site or a headline states one
 ("pilot", "deployed"); otherwise nothing. Until the host confirms their evidence the call says so.

@@ -1,5 +1,6 @@
-"""Automatic outside reads: a new card gets its AI ratings, and a real startup its social media read, as soon as it's
-added; cards from before get theirs when the app starts. Runs in a background thread, never on the game's path.
+"""Automatic outside reads: a new card gets its AI ratings, and a real startup its profile (filled from its website
+and news) and its social media read, as soon as it's added; cards from before get theirs when the app starts.
+The profile comes first, so the AI models rate the fuller card. Runs in a background thread, never on the game's path.
 
 Each run reads every card still missing a read this setup can make, each card once. Whatever fails (an error, a
 model down) stays missing for the next run instead of being retried in a loop. Reads typed in by hand, and
@@ -11,6 +12,7 @@ import logging
 import threading
 
 from . import opinions, reads
+from .crawler import pitch, profile
 from .db import connect, now
 from .service import get_setting, set_setting
 
@@ -37,6 +39,11 @@ def store(db, cid: int, results: dict) -> dict:
     return report
 
 
+def needs_profile(comp) -> bool:
+    """A real startup whose profile hasn't been filled yet, when the setup can fill it."""
+    return bool(comp["is_real"]) and not comp["profile_status"] and pitch.available()
+
+
 def gaps(db, comp) -> tuple[list[str], list[str]]:
     """The AI models and social platforms a company has no read from yet, of those this setup can ask."""
     have = {r["source"] for r in db.execute("SELECT source FROM opinions WHERE company_id = ?", (comp["id"],))}
@@ -56,12 +63,22 @@ def fill(db) -> dict:
         for comp in db.execute("SELECT * FROM companies ORDER BY is_real DESC, id").fetchall():
             if comp["id"] not in tried:
                 ai, social = gaps(db, comp)
-                if ai or social:
+                if ai or social or needs_profile(comp):
                     todo.append((comp, ai, social))
         if not todo:
             break
         for comp, ai, social in todo:
             tried.add(comp["id"])
+            if needs_profile(comp):
+                try:
+                    profile.fill(db, comp)
+                    comp = db.execute("SELECT * FROM companies WHERE id = ?", (comp["id"],)).fetchone() or comp
+                except Exception as e:  # noqa: BLE001 - stays unfilled for the next run
+                    st["errors"].append(f"{comp['name']}, profile: {reads.short_error(e)}")
+            if not (ai or social):
+                st["read"].append(comp["name"])
+                set_setting(db, "autoread", st)
+                continue
             try:
                 results = (reads.rate_all(comp, only=ai) if ai else {}) | (reads.social_all(comp, only=social) if social else {})
                 report = store(db, comp["id"], results)
@@ -97,7 +114,7 @@ def work() -> None:
 def kick() -> bool:
     """Read whatever is missing, in the background, if any model can be asked. Returns whether a run is on."""
     global _running, _again
-    if not any(reads.setup().values()):
+    if not any(reads.setup().values()) and not pitch.available():
         return False
     with _state:
         if _running:

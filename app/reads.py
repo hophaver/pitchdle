@@ -22,6 +22,10 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"  # a declined request is retri
 XAI_BASE_URL = "https://api.x.ai/v1"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 TIMEOUT = 180  # seconds per request; a web search loop takes a while
+# Output caps on OpenRouter. Without one it reserves the model's whole output window (65k tokens) against the
+# key's credit up front, which a key with a spending limit can't cover, so every read fails with a 402.
+RATE_MAX_TOKENS = 2000  # a rating is a few lines of JSON, with room for a reasoning model's thinking
+SOCIAL_MAX_TOKENS = 6000  # a social read writes a short summary after its searches
 
 # The model each route asks unless CLAUDE_MODEL, GPT_MODEL or GROK_MODEL says otherwise.
 MODELS = {
@@ -252,6 +256,8 @@ def openrouter_client():
 
 def answer_text(response) -> str:
     message = response.choices[0].message
+    if not message.content and response.choices[0].finish_reason == "length":
+        raise RuntimeError(f"the answer didn't fit in {RATE_MAX_TOKENS} tokens")
     if not message.content:
         raise RuntimeError(getattr(message, "refusal", None) or "the model gave no answer")
     return message.content
@@ -261,6 +267,7 @@ def openrouter_rate(key: str, profile: str) -> dict:
     response = openrouter_client().chat.completions.create(
         model=model(key),
         messages=[{"role": "system", "content": RATE_SYSTEM}, {"role": "user", "content": profile}],
+        max_tokens=RATE_MAX_TOKENS,
         response_format={"type": "json_schema",
                          "json_schema": {"name": "startup_read", "strict": True, "schema": SCORE_SCHEMA}},
         extra_body={"provider": {"require_parameters": True}},  # only endpoints that enforce the schema
@@ -283,6 +290,7 @@ def openrouter_social(platform: str, comp) -> dict:
         messages=[{"role": "system", "content": SOCIAL_SYSTEM},
                   {"role": "user", "content": social_request(platform, comp)}],
         tools=[{"type": "openrouter:web_search", "parameters": search}],
+        max_tokens=SOCIAL_MAX_TOKENS,
     )
     message = response.choices[0].message
     cited = [a.url_citation.url for a in (message.annotations or []) if a.type == "url_citation"]
@@ -304,6 +312,10 @@ def setup() -> dict[str, bool]:
 
 
 def short_error(e: Exception) -> str:
+    code = getattr(e, "status_code", None) or getattr(e, "code", None)  # the SDKs' errors, or pitch.OpenRouterError
+    if code == 402 or (code == 403 and "limit" in str(e).lower()):
+        return ("Out of credit: the OpenRouter key's spending limit or the account's credit is used up. Raise the "
+                "key's limit or add credits on openrouter.ai, then Read missing now.")
     return f"{type(e).__name__}: {e}"[:240]
 
 

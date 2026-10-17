@@ -12,12 +12,16 @@ Card text only. Neither call writes evidence factors, so engine scores stay huma
 """
 import json
 import re
+import urllib.error
 import urllib.request
 
 from .. import config
 
 URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT = 45
+# Output caps. Without one OpenRouter reserves the model's whole output window against the key's credit up
+# front, which a key with a spending limit can't cover (a 402 on every call).
+MAX_TOKENS = {"card": 1500, "screen": 3000, "profile": 2500}
 # The same limits the player submission form uses, so a written card fits the card layout.
 LIMITS = {"one_liner": 90, "claim_ask": 60, "sector": 30}
 MAX_FACTS = 3
@@ -72,19 +76,37 @@ Rules:
 Use British English."""
 
 
+class OpenRouterError(RuntimeError):
+    """An error answer from OpenRouter, with its own message (a bare "HTTP Error 403" hides that the key's limit
+    is used up)."""
+
+    def __init__(self, code: int, body: bytes):
+        try:
+            message = json.loads(body)["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            message = body[:200].decode(errors="replace")
+        super().__init__(f"OpenRouter {code}: {message}")
+        self.code = code
+
+
 def available() -> bool:
     return bool(config.OPENROUTER_API_KEY)
 
 
-def _post(schema_name: str, schema: dict, messages: list[dict]) -> dict:
-    """One structured chat completion: the only network call here. Tests block it outright."""
-    body = {"model": config.OPENROUTER_MODEL, "messages": messages, "temperature": 0.2,
+def _post(schema_name: str, schema: dict, messages: list[dict], task: str = "card") -> dict:
+    """One structured chat completion on the task's model (config.task_model): the only network call here. Tests
+    block it outright."""
+    body = {"model": config.task_model(task), "messages": messages, "temperature": 0.2,
+            "max_tokens": MAX_TOKENS[task],
             "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "strict": True, "schema": schema}}}
     req = urllib.request.Request(URL, data=json.dumps(body).encode(), method="POST", headers={
         "Authorization": f"Bearer {config.OPENROUTER_API_KEY}", "Content-Type": "application/json",
         "X-Title": "Pitchdle"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        data = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise OpenRouterError(e.code, e.read()) from None
     content = data["choices"][0]["message"]["content"]
     if not isinstance(content, str):
         return content
@@ -99,7 +121,7 @@ def complete(messages: list[dict]) -> dict:
 
 def screen_complete(messages: list[dict]) -> dict:
     """The screening call. Tests replace this."""
-    return _post("screen", SCREEN_SCHEMA, messages)
+    return _post("screen", SCREEN_SCHEMA, messages, task="screen")
 
 
 def sources_text(name: str, field: str, headline: str = "", hits: list | None = None,

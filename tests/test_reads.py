@@ -203,6 +203,14 @@ def test_one_openrouter_key_runs_all_three(oai, monkeypatch):
     assert req["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert req["body"]["response_format"]["json_schema"]["strict"] is True
     assert req["body"]["provider"] == {"require_parameters": True}
+    # Capped, or OpenRouter reserves the whole 65k output window against the key's credit and refuses (402).
+    assert all(r["body"]["max_tokens"] == reads.RATE_MAX_TOKENS for r in rec.requests)
+
+
+def test_running_out_of_openrouter_credit_says_so():
+    class PaymentRequired(Exception):
+        status_code = 402
+    assert reads.short_error(PaymentRequired("Error code: 402 - requested up to 65536 tokens")).startswith("Out of credit")
 
 
 def test_models_can_be_overridden(monkeypatch):
@@ -228,7 +236,7 @@ def test_openrouter_reads_a_platform_with_native_search(oai, monkeypatch):
     assert out["meta"]["links"] == [post] and out["meta"]["posts"] == 1  # cited on the platform itself
     assert out["meta"]["via"] == "Claude search via OpenRouter" and out["scores"]["useful"] == 4.5
     body = rec.requests[0]["body"]
-    assert body["model"] == "anthropic/claude-opus-5.5"
+    assert body["model"] == "anthropic/claude-opus-5.5" and body["max_tokens"] == reads.SOCIAL_MAX_TOKENS
     assert body["tools"] == [{"type": "openrouter:web_search", "parameters": {
         "engine": "native", "max_uses": 4, "max_results": 5, "allowed_domains": ["linkedin.com"]}}]
 

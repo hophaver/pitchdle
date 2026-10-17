@@ -3,6 +3,7 @@ startup for cards from before. The reads are faked here; tests/test_reads.py cov
 import pytest
 
 from app import autoread, config, reads
+from app.crawler import profile
 from tests.conftest import new_player, sign_up
 from tests.test_api import GUESS, today
 
@@ -27,8 +28,13 @@ def calls(client, monkeypatch):
         made.append((comp["name"], "social", tuple(only)))
         return {p: (AI_READ if p == "x" else QUIET) for p in only}
 
+    def fill_profile(db, comp):  # tests/test_profile.py covers the real one
+        db.execute("UPDATE companies SET profile_status = 'ai' WHERE id = ?", (comp["id"],))
+        db.commit()
+
     monkeypatch.setattr(reads, "rate_all", rate_all)
     monkeypatch.setattr(reads, "social_all", social_all)
+    monkeypatch.setattr(profile, "fill", fill_profile)
     return made
 
 

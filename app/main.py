@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from . import accounts, autofill, autoread, config, moderation, opinions, reads, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, name_key, now
-from .crawler import pitch
+from .crawler import pitch, profile
 from .engine import AXES, full_score as engine_full
 
 log = logging.getLogger("pitchdle")
@@ -885,6 +885,22 @@ def admin_reads(cid: int, kind: str, db=Depends(get_db)):
     return {"report": autoread.store(db, cid, results), "company": admin_company(db, service.get_company(db, cid))}
 
 
+@app.post("/api/admin/companies/{cid}/profile/fill", dependencies=[Depends(require_admin)])
+def admin_fill_profile(cid: int, db=Depends(get_db)):
+    """Fill a company's empty profile fields with AI from its website and news (also done in the background for
+    every new real startup). Fields that already have something are left alone."""
+    comp = service.get_company(db, cid)
+    if not comp:
+        raise HTTPException(404, "No such company.")
+    if not pitch.available():
+        raise HTTPException(400, "Set OPENROUTER_API_KEY in .env to fill profiles with AI.")
+    try:
+        out = profile.fill(db, comp)
+    except Exception as e:  # noqa: BLE001 - the provider's error, said plainly
+        raise HTTPException(502, reads.short_error(e))
+    return out | {"company": admin_company(db, service.get_company(db, cid))}
+
+
 @app.post("/api/admin/autoread", dependencies=[Depends(require_admin)])
 def admin_autoread(db=Depends(get_db)):
     """Read every card still missing AI ratings or a social media read, in the background (also done on startup)."""
@@ -1075,7 +1091,7 @@ def admin_rewrite_card(cid: int, db=Depends(get_db)):
     if card["is_startup"]:
         note = comp["evidence_note"] or ""
         if "Card text written by AI" not in note:
-            note = (note + " " + autofill.AI_NOTE.format(model=config.OPENROUTER_MODEL)).strip()
+            note = (note + " " + autofill.AI_NOTE.format(model=config.task_model("card"))).strip()
         db.execute("UPDATE companies SET emoji = ?, sector = ?, one_liner = ?, claim_ask = ?, facts = ?, evidence_note = ?, "
                    "card_status = 'ai' WHERE id = ?", (card["emoji"] or comp["emoji"], card["sector"] or comp["sector"], card["one_liner"],
                                     card["claim_ask"], dumps(card["facts"]), note, cid))

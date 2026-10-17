@@ -301,7 +301,7 @@ def approve_candidate(db, row, origin: str = PICKED, card: dict | None = None) -
     written = bool(card and card.get("is_startup") and card.get("one_liner"))
     if written:
         fields = {k: card[k] or fields[k] for k in fields}
-        note += " " + AI_NOTE.format(model=config.OPENROUTER_MODEL)
+        note += " " + AI_NOTE.format(model=config.task_model("card"))
     evidence, basis = estimate_evidence(row, hint)
     if evidence:
         note += " " + AUTO_EVIDENCE_NOTE.format(stage=evidence["trl_stage"], basis=basis)
@@ -373,7 +373,8 @@ def settings_payload() -> dict:
     return {"fields": config.DISCOVER_FIELDS, "region": config.DISCOVER_REGION, "depth": config.DISCOVER_DEPTH,
             "max": config.DISCOVER_MAX, "exclude": config.DISCOVER_EXCLUDE, "auto": config.DISCOVER_AUTO,
             "exclude_names": config.EXCLUDE_ALWAYS + config.DISCOVER_EXCLUDE_NAMES,
-            "ai": {"enabled": pitch.available(), "model": config.OPENROUTER_MODEL}}
+            "ai": {"enabled": pitch.available(), "model": config.task_model("card"),
+                   "models": {t: config.task_model(t) for t in ("screen", "card", "profile")}}}
 
 
 def status(db) -> dict:

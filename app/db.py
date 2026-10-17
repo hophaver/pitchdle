@@ -186,6 +186,10 @@ MIGRATIONS = [
     ("companies", "stages", "TEXT DEFAULT '[]'"),  # incubation programmes and rounds passed, in order
     ("companies", "raised_eur", "INTEGER"),  # NULL: not disclosed
     ("companies", "investors", "TEXT DEFAULT '[]'"),  # [{name, status: invested | interested, amount_eur}]
+    # A real startup's profile filled by AI from its website and news (crawler/profile.py): '' = not yet, 'ai' =
+    # done (whatever it found is in profile_note). Only empty fields are ever filled.
+    ("companies", "profile_status", "TEXT DEFAULT ''"),
+    ("companies", "profile_note", "TEXT DEFAULT ''"),
 ]
 
 

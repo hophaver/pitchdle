@@ -45,7 +45,7 @@ LOW_PRIORITY_WEIGHT = max(0.0, float(os.environ.get("LOW_PRIORITY_WEIGHT") or 0.
 # Outside reads, run from Admin and never on the game's path: AI models rate each startup, and AI searches
 # read what people say about it on social media. One OpenRouter key runs all three models; otherwise each needs
 # its own key, and a model without one is skipped.
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") or ""
+OPENROUTER_API_KEY = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or ""
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or ""
 XAI_API_KEY = os.environ.get("XAI_API_KEY") or ""
@@ -81,7 +81,16 @@ EXCLUDE_ALWAYS = ["redstone", "a'pelago", "techcrunch", "crunchbase", "sifted", 
                   "eu-startups", "tech.eu", "arcticstartup", "maddyness", "silicon canals", "venturebeat",
                   "the next web", "business insider", "reuters", "bloomberg", "forbes", "yahoo finance",
                   "startup.info", "tracxn", "cb insights"]
-# Optional: an OpenRouter key turns discovery headlines into proper game cards (pitch, ask, facts) and screens
-# out names that aren't startups. Without it, found startups keep their headline as the pitch.
-OPENROUTER_API_KEY = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+# Optional: the OpenRouter key above also screens discovery hits, writes found startups' game cards (pitch, ask,
+# facts) and fills real startups' profiles (raised, investors, stages, vision, country) from their website and
+# news. Without it, found startups keep their headline as the pitch and an empty profile.
+# Each of those tasks can run on its own model; blank uses OPENROUTER_MODEL.
 OPENROUTER_MODEL = (os.environ.get("OPENROUTER_MODEL") or "anthropic/claude-haiku-5.5").strip()
+SCREEN_MODEL = (os.environ.get("SCREEN_MODEL") or "").strip()    # which discovery hits are real, on-topic startups
+CARD_MODEL = (os.environ.get("CARD_MODEL") or "").strip()        # writing a found startup's game card
+PROFILE_MODEL = (os.environ.get("PROFILE_MODEL") or "").strip()  # filling a real startup's profile
+
+
+def task_model(task: str) -> str:
+    """The OpenRouter model for a discovery task (screen, card or profile): its own setting, else OPENROUTER_MODEL."""
+    return {"screen": SCREEN_MODEL, "card": CARD_MODEL, "profile": PROFILE_MODEL}[task] or OPENROUTER_MODEL

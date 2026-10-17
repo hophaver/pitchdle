@@ -1,12 +1,10 @@
 // Dashboard: the opportunity radar. Every tracked company and every new discovery as a card with a call
 // (back / watch / avoid), a lens on why (thesis, readiness, the game's crowd, the web), and its next move.
-// Details opens the full read: readiness levels, thesis fit, ranked investors, grants, partners and clients, and
-// everything an investor's game card shows: the profile and what A'Pelago, the AI models and social media make of it.
+// Details opens the startup's full card: everything an investor's game card shows, and the radar's whole read.
 const { h, api, post, fmt1, AXES, AXIS } = PD;
 const $app = document.getElementById("app");
 
 const LENSES = [["thesis", "Thesis"], ["readiness", "Readiness"], ["game", "Game"], ["opinions", "Opinions"], ["web", "Web"]];
-const OPINION_GROUPS = [["people", "People"], ["ai", "AI models"], ["social", "Social media"]];
 const COUNT_WORD = { crowd: "answer", apelago: "reviewer" }; // social media counts posts
 const FILTERS = [["all", "All"], ["back", "Back"], ["watch", "Watch"], ["avoid", "Avoid"], ["evidence", "Needs evidence"], ["new", "New"]];
 const SORTS = [["redstone", "Redstone fit"], ["apelago", "A'Pelago fit"], ["readiness", "Readiness"], ["gap", "Crowd gap"]];
@@ -96,44 +94,6 @@ function opinionBars(c) {
     bar("Social", groupMean(social)),
     h("span", { class: "muted" }, [ap ? plural(ap.count, "reviewer") : null, ai.length ? `${ai.map((t) => t.label).join(", ")}` : null,
       social.length ? social.map((t) => t.label).join(", ") : null].filter(Boolean).join(" · ")),
-  ];
-}
-
-function profileSection(c) {
-  const invested = c.investors.filter((i) => i.status === "invested");
-  const box = (label, value) => h("div", { class: "fact-cell" }, h("small", {}, label), h("b", {}, value));
-  return [
-    h("h3", {}, "Profile"),
-    h("div", { class: "fact-cells" },
-      box("Raised", c.raised_eur === null || c.raised_eur === undefined ? "Not disclosed" : PD.money(c.raised_eur)),
-      box("Investors", invested.length ? String(invested.length) : "None yet"),
-      box("Stage", c.stages.length ? c.stages[c.stages.length - 1] : "Not given")),
-    c.vision ? h("div", { class: "vision small" }, c.vision.split(/\n{2,}/).map((para) => h("p", {}, para))) : null,
-    c.stages.length ? [h("div", { class: "sub-head" }, "Stages passed"),
-      h("ol", { class: "small" }, c.stages.map((s) => h("li", {}, s)))] : null,
-    c.investors.length ? [h("div", { class: "sub-head" }, "Investors"),
-      h("ul", { class: "small" }, c.investors.map((i) => h("li", {}, h("b", {}, i.name), " ",
-        i.status === "interested" ? h("span", { class: "muted" }, "interested")
-          : i.amount_eur ? PD.money(i.amount_eur) : "invested")))] : null,
-  ];
-}
-
-// The same rows an investor's game card shows: who, their four calls on 0–5, and why.
-function opinionsSection(c) {
-  const row = (t) => h("div", { class: "op-row" },
-    h("div", { class: "op-who" }, h("b", {}, t.label), t.count ? h("small", {}, plural(t.count, COUNT_WORD[t.key] || "post")) : null),
-    PD.opinionChart(t.scores, { labelled: true }),
-    t.note ? h("p", { class: "op-note" }, t.note) : null);
-  const social = c.opinions.filter((t) => t.group === "social");
-  return [
-    h("h3", {}, "What others make of it"),
-    OPINION_GROUPS.map(([g, title]) => {
-      const tiles = c.opinions.filter((t) => t.group === g);
-      return tiles.length ? [h("div", { class: "sub-head" }, title), tiles.map(row)] : null;
-    }),
-    !c.opinions.length ? h("p", { class: "muted small" }, "No opinions yet.") : null,
-    !c.is_real && !social.length ? h("p", { class: "muted small" }, "No social media: this startup is made up.")
-      : c.quiet.length ? h("p", { class: "muted small" }, `No posts found on ${c.quiet.join(", ")}.`) : null,
   ];
 }
 
@@ -240,61 +200,201 @@ async function runPulse(c, btn) {
   await refresh(true);
 }
 
+// --- details: the startup's full card -------------------------------------------------------------
+// The investor's game card made bigger and denser, sized to the window so it reads without scrolling: the pitch
+// across the top with the call and next move beside it, then three columns. The startup (facts, stages, investors,
+// vision, evidence); the radar's read (readiness, thesis fit, the ranked next steps); and what everyone makes of it (every
+// read on the four calls in one table, crowd vs engine, the web). Long text is cut to fit and opens on a click.
+// On a phone the columns stack and the card scrolls.
+
+const money = (eur) => (eur === null || eur === undefined ? "Not disclosed" : PD.money(eur));
+const sect = (title, ...kids) => h("section", { class: "sect" }, h("div", { class: "caps sect-title" }, title), ...kids);
+const subTitle = (text) => h("div", { class: "caps sub-title" }, text);
+const empty = (text) => h("p", { class: "op-empty" }, text);
+// A paragraph cut to a few lines that opens in full on a click.
+const clamp = (text, cls = "") => h("p", { class: `clamp ${cls}`, title: "Click to read it all", tabindex: "0",
+  onclick: (e) => e.currentTarget.classList.toggle("open"),
+  onkeydown: (e) => { if (e.key === "Enter") e.currentTarget.classList.toggle("open"); } }, text);
+
+// The facts as the investor's game card shows them: raised so far, investors and stage, then every stage passed
+// and every investor. A profile the AI filled says so.
+function factsSect(c) {
+  const invested = c.investors.filter((i) => i.status === "invested");
+  const box = (label, value, cls = "") => h("div", { class: `fact-box ${cls}` }, h("small", { class: "caps" }, label), h("b", {}, value));
+  const ai = c.profile && c.profile.status === "ai";
+  return h("section", { class: "sect g-facts" },
+    h("div", { class: "fact-grid" },
+      box("Raised so far", money(c.raised_eur)),
+      box("Investors", invested.length ? String(invested.length) : "None yet"),
+      box("Stage", c.stages.length ? c.stages[c.stages.length - 1] : "Not given", "wide")),
+    c.stages.length ? [subTitle("Stages passed"), h("ol", { class: "stage-list" }, c.stages.map((s) => h("li", {}, s)))] : null,
+    c.investors.length ? [subTitle("Investors"),
+      h("ul", { class: "investor-list" }, c.investors.map((i) => h("li", {}, h("b", {}, i.name), " ",
+        i.status === "interested" ? h("span", { class: "interested" }, "interested")
+          : i.amount_eur ? PD.money(i.amount_eur) : "invested")))] : null,
+    ai ? h("p", { class: "note ai-note", title: c.profile.note }, "Filled by AI from its website and news. Check it.") : null,
+    c.is_real && !ai && !c.stages.length && !c.investors.length && c.raised_eur == null
+      ? h("p", { class: "note" }, "Not filled yet: the AI fills it in the background, or use Admin → Profile & opinions.") : null);
+}
+
+function startupCol(c) {
+  return [
+    factsSect(c),
+    c.vision ? sect("Vision", h("div", { class: "clamp vision-text", title: "Click to read it all", tabindex: "0",
+      onclick: (e) => e.currentTarget.classList.toggle("open"),
+      onkeydown: (e) => { if (e.key === "Enter") e.currentTarget.classList.toggle("open"); } },
+    c.vision.split(/\n{2,}/).map((p) => h("p", { class: "vision" }, p)))) : null,
+    evidenceSect(c),
+  ];
+}
+
+// Every evidence factor the engine scored, best first, with the sources.
+function evidenceSect(c) {
+  const f = [...(c.factors || [])].sort((a, b) => b.value - a.value);
+  return f.length ? sect(`Evidence${c.coverage ? ` · ${c.coverage.assessed}/${c.coverage.total} factors` : ""}${c.review.pending ? " · to confirm" : " · reviewed"}`,
+      f.length ? h("div", { class: "factor-grid" }, f.map((x) => h("div", { class: "factor", title: x.label },
+        h("span", { class: "k" }, x.label.replace(/\s*\(.*\)\s*/, "")), h("span", { class: "t" }, h("i", { style: { width: `${(x.value / 5) * 100}%` } })),
+        h("b", {}, fmt1(x.value))))) : null,
+      c.evidence_note ? clamp(`Sources: ${c.evidence_note}`, "note sources") : null) : null;
+}
+
+// The call and the next move, beside the pitch in the header.
+function callBox(c) {
+  const n = c.next;
+  return h("section", { class: "sect call-box" },
+    h("div", { class: "caps sect-title" }, "The call ", callChip(c)),
+    h("p", { class: "reasons" }, c.call.reasons.join(" · ")),
+    n ? h("div", { class: "move" }, h("b", {}, n.text, n.with ? [" with ", nameLink(n.with, n.url)] : null),
+      h("span", { class: "note" }, ` · weakest: ${n.gap_label.replace(/\s*\(.*\)/, "")} ${n.gap_score === null ? "unknown" : fmt1(n.gap_score)}`)) : null);
+}
+
+function readCol(c) {
+  const factorList = (title, list) => (list && list.length
+    ? h("div", { class: "note" }, `${title}: ${list.map((x) => `${short(x.label)} ${fmt1(x.value)}`).join(" · ")}`) : null);
+  return [
+    sect(["Readiness", Tool.tip(DEFS.readiness)],
+      h("div", { class: "bars-list" }, LEVELS.map(([k, label]) => {
+        const lv = c.readiness[k];
+        const known_ = lv.coverage ? ` (${lv.coverage.assessed}/${lv.coverage.total})` : "";
+        return h("div", { title: `${lv.label}: ${known_.trim() || "no"} factors known` },
+          k === "tech" && lv.trl ? bar(label, lv.score, `TRL ${lv.trl} · `) : bar(label, lv.score));
+      })),
+      c.coverage && c.coverage.unknown && c.coverage.unknown.length
+        ? clamp(`Unknown: ${c.coverage.unknown.join(", ")}`, "note") : null),
+    sect(["Thesis fit", Tool.tip(DEFS.thesis)],
+      Object.values(c.theses).map((t) => h("div", { class: "thesis" },
+        bar(t.label.split(" ")[0], t.score),
+        t.why ? clamp(t.why, "note") : null,
+        factorList("Risks", t.risks)))),
+    stepsSect(c),
+  ];
+}
+
+// Every read of the startup on the same four calls: the engine's evidence, the crowd, A'Pelago, the AI models and
+// social media. A row with a reason opens it on a click.
+function readsTable(c) {
+  const rows = [];
+  if (known(c)) rows.push({ key: "engine", label: "Engine", scores: c.engine.axes, note: `From the evidence: ${c.coverage.assessed}/${c.coverage.total} factors known.` });
+  rows.push(...c.opinions);
+  const avg = (s) => AXES.reduce((sum, a) => sum + s[a], 0) / AXES.length;
+  const cell = (v) => h("td", {}, h("span", { class: "v" }, fmt1(v)), h("i", { class: "mini", style: { "--v": v / 5 } }));
+  const groupOf = (t) => (t.key === "engine" ? "engine" : t.group);
+  const body = [];
+  let last = null;
+  for (const t of rows) {
+    const g = groupOf(t);
+    if (g !== last && g !== "engine") {
+      body.push(h("tr", { class: "group" }, h("th", { colspan: 7 }, { people: "People", ai: "AI models", social: "Social media" }[g])));
+    }
+    last = g;
+    const count = t.count ? plural(t.count, COUNT_WORD[t.key] || "post") : "";
+    const tr = h("tr", { class: t.note ? "has-note" : "", title: t.note || "", onclick: t.note ? () => tr.classList.toggle("open") : null },
+      h("th", {}, t.label, count ? h("small", {}, count) : null),
+      AXES.map((a) => cell(t.scores[a])),
+      h("td", { class: "avg" }, fmt1(avg(t.scores))),
+      h("td", { class: "why" }, t.note ? h("span", {}, t.note) : null));
+    body.push(tr);
+  }
+  const social = c.opinions.filter((t) => t.group === "social");
+  const missing = [
+    !c.crowd.n ? "nobody has played it yet" : null,
+    !c.opinions.some((t) => t.key === "apelago") ? "A'Pelago hasn't rated it" : null,
+    !c.opinions.some((t) => t.group === "ai") ? "no AI ratings yet" : null,
+    !c.is_real && !social.length ? "no social media (made up)" : c.quiet.length ? `no posts on ${c.quiet.join(", ")}`
+      : social.length ? null : "social media not read yet",
+  ].filter(Boolean);
+  return sect("What everyone makes of it",
+    !rows.length ? null : h("table", { class: "reads" },
+      h("colgroup", {}, h("col", { class: "c-who" }), AXES.map(() => h("col", { class: "c-num" })), h("col", { class: "c-num" }), h("col")),
+      h("thead", {}, h("tr", {}, h("td"), AXES.map((a) => h("th", { title: AXIS[a] }, AXIS[a][0])), h("th", {}, "Avg"), h("th", { class: "why" }, "Why"))),
+      h("tbody", {}, body)),
+    missing.length ? h("p", { class: "note" }, `${missing.join(" · ")}.`.replace(/^./, (s) => s.toUpperCase())) : null);
+}
+
+function crowdSect(c) {
+  if (!c.crowd.n) return null;
+  return sect("Crowd vs engine",
+    track(c),
+    h("div", { class: "legend" }, h("span", {}, h("i", { class: "key crowd" }), `Crowd ${fmt1(c.crowd.composite)}`),
+      h("span", {}, h("i", { class: "key engine" }), `Engine ${known(c) ? fmt1(c.engine.composite) : "–"}`),
+      c.gap === null ? null : h("span", {}, `Gap ${c.gap > 0 ? "+" : ""}${fmt1(c.gap)}`),
+      h("span", { class: "note" }, `${plural(c.crowd.n, "answer")} · ${c.crowd.signed_in} signed in · spread ${fmt1(c.crowd.consensus)}`)),
+    c.flags.map((f) => h("div", { class: "note" }, h("b", {}, f.label), ` ${f.detail}`)));
+}
+
+function webSect(c) {
+  const p = c.pulse;
+  return sect("Web",
+    h("div", { class: "row" }, p ? lean(p) : h("span", { class: "note" }, "Not checked yet."), h("span", { class: "spacer" }),
+      h("button", { class: "pill ghost small", onclick: (e) => runPulse(c, e.currentTarget) }, p ? "Refresh" : "Check the web")),
+    p && p.top_hits.length ? h("ul", { class: "hits" }, p.top_hits.slice(0, 3).map((t) =>
+      h("li", {}, h("a", { href: t.link, target: "_blank", rel: "noopener noreferrer", title: t.title }, t.title)))) : null);
+}
+
+// The top matches of each kind on one line each; the rest open on a click.
+function stepsSect(c) {
+  const TOP = 2;
+  const groups = Object.keys(KIND_LABEL).map((k) => [k, c.actions.filter((a) => a.kind === k)]).filter(([, l]) => l.length);
+  const step = (a, i) => h("li", { title: [a.why, ...(a.reasons || []), ...(a.boosted || [])].filter(Boolean).join(" · ") },
+    h("span", { class: "n" }, `${i + 1}`), h("b", {}, nameLink(a.name, a.url)),
+    h("span", { class: "w" }, [a.stage_fit, a.why].filter(Boolean).join(" · ")));
+  return sect("Next steps, ranked",
+    groups.length ? h("div", { class: "steps" }, groups.map(([k, list]) => h("div", {},
+      subTitle(KIND_LABEL[k]),
+      h("ol", {}, list.slice(0, TOP).map(step)),
+      list.length > TOP ? h("details", {}, h("summary", {}, `${list.length - TOP} more`),
+        h("ol", { start: TOP + 1 }, list.slice(TOP).map((a, i) => step(a, i + TOP)))) : null)))
+      : empty("No matches."));
+}
+
 function renderDrawer() {
-  document.querySelectorAll(".drawer, .scrim").forEach((el) => el.remove());
+  document.querySelectorAll(".dossier-wrap").forEach((el) => el.remove());
+  document.body.classList.remove("dossier-open");
   const c = state.open && data && data.companies.find((x) => x.id === state.open);
   if (!c) return;
-  const groups = Object.keys(KIND_LABEL).map((k) => [k, c.actions.filter((a) => a.kind === k)]).filter(([, list]) => list.length);
-  const n = c.next;
-  const p = c.pulse;
-  const drawer = h("aside", { class: "drawer", role: "dialog", "aria-label": c.name },
-    h("button", { class: "btn link close", "aria-label": "Close", onclick: closeDrawer }, "Close"),
-    h("h2", {}, nameLink(c.name, c.website)),
-    h("div", { class: "muted small" }, [c.sector, c.country].filter(Boolean).join(" · ")),
-    h("p", { class: "small", style: { margin: ".5rem 0 0" } }, c.one_liner, c.claim_ask ? h("span", { class: "muted" }, ` — ${c.claim_ask}`) : null),
-
-    profileSection(c),
-
-    h("h3", {}, "Call"),
-    h("div", { class: "row" }, callChip(c)),
-    h("ul", { class: "small", style: { marginTop: ".4rem" } }, c.call.reasons.map((r) => h("li", {}, r))),
-    n ? h("div", { class: "move small" }, h("b", {}, n.text), n.with ? [" with ", nameLink(n.with, n.url)] : null,
-      h("div", { class: "muted" }, `Gap: ${n.gap_label} ${n.gap_score === null ? "unknown" : fmt1(n.gap_score)}`)) : null,
-
-    h("h3", {}, "Readiness", Tool.tip(DEFS.readiness)),
-    h("div", { style: { display: "grid", gap: ".3rem" } }, LEVELS.map(([k, label]) => {
-      const lv = c.readiness[k];
-      return h("div", {}, k === "tech" && lv.trl ? bar(label, lv.score, `TRL ${lv.trl} · `) : bar(label, lv.score),
-        lv.coverage ? h("div", { class: "muted", style: { fontSize: ".7rem", marginLeft: "104px" } },
-          `${lv.coverage.assessed}/${lv.coverage.total} factors known`) : null);
-    })),
-
-    h("h3", {}, "Thesis fit", Tool.tip(DEFS.thesis)),
-    Object.values(c.theses).map((t) => h("div", { style: { marginBottom: ".45rem" } }, bar(t.label.split(" ")[0], t.score),
-      t.why ? h("div", { class: "muted small" }, t.why) : null)),
-
-    h("h3", {}, "Next steps, ranked"),
-    groups.length ? groups.map(([k, list]) => [h("div", { class: "small", style: { fontWeight: 700, margin: ".5rem 0 .3rem" } }, KIND_LABEL[k]),
-      h("div", { class: "steps" }, list.map((a, i) => h("div", { class: "step small" },
-        h("span", { class: "n" }, nameLink(a.name, a.url)), h("span", { class: "fit" }, `#${i + 1}`),
-        h("span", { class: "w" }, [a.why, ...(a.reasons || [])].filter(Boolean).join(" · ")))))])
-      : h("p", { class: "muted small" }, "No matches."),
-
-    h("h3", {}, "Crowd vs engine"),
-    c.crowd.n ? [track(c), h("div", { class: "muted small", style: { marginTop: ".3rem" } },
-      `Crowd ${fmt1(c.crowd.composite)} · engine ${fmt1(c.engine.composite)} · ${plural(c.crowd.n, "answer")}`),
-    c.flags.map((f) => h("div", { class: "small" }, `${f.label}: ${f.detail}`))]
-      : h("p", { class: "muted small" }, "Not played yet."),
-
-    opinionsSection(c),
-
-    h("h3", {}, "Web"),
-    p ? [lean(p), h("ul", { class: "small", style: { marginTop: ".35rem" } }, p.top_hits.slice(0, 5).map((t) =>
-      h("li", {}, h("a", { href: t.link, target: "_blank", rel: "noopener noreferrer" }, t.title))))] : null,
-    h("button", { class: "btn", style: { marginTop: ".5rem" }, onclick: (e) => runPulse(c, e.currentTarget) }, p ? "Refresh" : "Check the web"),
-
-    c.evidence_note ? [h("h3", {}, "Sources"), h("p", { class: "muted small" }, c.evidence_note)] : null);
-  document.body.append(h("div", { class: "scrim", onclick: closeDrawer }), drawer);
+  const site = c.website && /^https?:\/\//i.test(c.website) ? c.website : null;
+  const card = h("article", { class: "card dossier", style: { "--card": PD.colorFor(data.companies.indexOf(c)) },
+    role: "dialog", "aria-modal": "true", "aria-label": c.name },
+    h("header", { class: "dossier-head" },
+      h("div", { class: "pitch" },
+        h("div", { class: "name-row" }, c.emoji ? h("div", { class: "art small", "aria-hidden": "true" }, c.emoji) : null,
+          h("div", {}, h("h2", {}, c.name),
+            h("div", { class: "row meta" },
+              h("span", { class: "caps sector" }, [c.sector, c.country, c.is_real ? "real startup" : "made-up startup"].filter(Boolean).join(" · ")),
+              site ? h("a", { class: "site", href: site, target: "_blank", rel: "noopener noreferrer nofollow" },
+                `${site.replace(/^https?:\/\/(www\.)?/, "").replace(/\/.*$/, "")} ↗`) : null))),
+        h("p", { class: "pitch-line" }, c.one_liner || (c.vision || "").split(/(?<=[.!?])\s/)[0]),
+        c.claim_ask ? h("p", { class: "ask" }, c.claim_ask) : null),
+      callBox(c),
+      h("button", { class: "close-x", "aria-label": "Close", title: "Close (Esc)", onclick: closeDrawer }, "✕")),
+    h("div", { class: "dossier-grid" },
+      h("div", { class: "col" }, startupCol(c)),
+      h("div", { class: "col" }, readCol(c)),
+      h("div", { class: "col" }, readsTable(c), crowdSect(c), webSect(c))));
+  const wrap = h("div", { class: "dossier-wrap", onclick: (e) => { if (e.target === wrap) closeDrawer(); } }, card);
+  document.body.append(wrap);
+  document.body.classList.add("dossier-open");
+  card.querySelector(".close-x").focus({ preventScroll: true });
 }
 
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.open) closeDrawer(); });
