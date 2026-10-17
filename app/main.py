@@ -963,6 +963,7 @@ def admin_discover_search(body: DiscoverIn, db=Depends(get_db)):
     if len(sector) < 2 and len(country) < 2:
         raise HTTPException(422, "Enter a field, a country, or both.")
     rows = autofill.store_candidates(db, sector, country, body.limit)
+    autoread.kick()  # the new finds get their cards written in the background, so they show a proper pitch
     return [candidate_out(r) for r in rows]
 
 

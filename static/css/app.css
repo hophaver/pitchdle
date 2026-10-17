@@ -433,6 +433,7 @@ body.tool {
 .rc .name a:hover { text-decoration: underline; }
 .rc .name a::after { content: " ↗"; color: var(--muted); font-weight: 600; font-size: .8em; }
 .rc .meta { font-size: .78rem; color: var(--muted); margin-top: .1rem; font-weight: 500; }
+.rc .what.headline { color: var(--muted); font-style: italic; }
 .rc .what { font-size: .86rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tool .ask { font-family: inherit; font-size: .82rem; font-weight: 500; line-height: 1.35; color: var(--muted); }
 /* the reviews' average on a card: N U P I and Avg, each a number over a small 0-5 bar; the one sorted by in ink */

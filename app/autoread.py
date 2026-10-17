@@ -1,4 +1,4 @@
-"""Automatic outside reads: a new card gets its AI ratings, and a real startup its profile (filled from its website
+"""Automatic outside reads: a new find on the dashboard gets its game card written; a new card gets its AI ratings, and a real startup its profile (filled from its website
 and news), the game's automatic moderation (in the daily game, or kept out with the reason) and its social media
 read, as soon as it's added; cards from before get theirs when the app starts. The profile comes first, so the
 check and the AI models see the fuller card. Runs in a background thread, never on the game's path.
@@ -59,10 +59,28 @@ def gaps(db, comp) -> tuple[list[str], list[str]]:
     return ai, social
 
 
+def write_find_cards(db, st: dict) -> None:
+    """New finds on the dashboard get their game card written, so they show a brief pitch, not a headline."""
+    if not pitch.available():
+        return
+    from . import autofill  # autofill kicks these runs, so it's imported here rather than at the top
+    rows = db.execute("SELECT * FROM candidates WHERE status IN ('new', 'queued') AND card IS NULL "
+                      "AND COALESCE(card_error, '') = '' ORDER BY id").fetchall()
+    for row in rows:
+        try:
+            autofill.write_find_card(db, row)
+            st["read"].append(row["name"])
+        except Exception as e:  # noqa: BLE001 - e.g. the find was dismissed meanwhile
+            st["errors"].append(f"{row['name']}, card: {reads.short_error(e)}")
+        set_setting(db, "autoread", st)
+
+
 def fill(db) -> dict:
-    """One run: read every card that's missing something, including cards added while it runs."""
+    """One run: write new finds' cards, then read every card that's missing something, including cards added while
+    it runs."""
     st = {"started_at": now(), "finished_at": None, "read": [], "errors": []}
     set_setting(db, "autoread", st)
+    write_find_cards(db, st)
     tried = set()
     while True:
         todo = []

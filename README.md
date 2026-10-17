@@ -81,8 +81,9 @@ country, inferred from each company's website text and headline (feeds don't geo
 under Dismissed with the reason ("based in Sweden, not Finland"); a later search for their own country revives them.
 If the screen errors, or there's no key, nothing is dropped: hits are kept and marked unconfirmed.
 
-**Track** on a new find writes its card with AI straight away (sector, pitch, ask, facts, from headlines and
-site) and adds it to the radar. If writing fails, it's kept with its headline as the pitch. The card writer never
+A new find's game card (sector, pitch, ask, facts, from headlines and site) is written in the background as soon as
+it's on the dashboard, so it shows the same brief pitch as a tracked startup; a find the writer says isn't a startup
+is set aside under dismissed. **Track** adds it to the radar with that card. If writing fails, it's kept with its headline as the pitch. The card writer never
 invents amounts; the profile and evidence are filled right after (below).
 
 ### The radar

@@ -136,8 +136,12 @@ function card(c) {
     return h("article", { class: "rc new" },
       h("div", { class: "top" }, h("div", { class: "name" }, nameLink(c.name, c.url)), callChip(c)),
       h("div", { class: "meta" }, [c.card?.sector || c.sector_query, where].filter(Boolean).join(" · ") || " "),
-      h("div", { class: "what" }, c.card?.one_liner || c.snippet),
+      // The same brief pitch a tracked card shows, written in the background; the headline until it's in.
+      c.card?.one_liner ? h("div", { class: "what" }, c.card.one_liner)
+        : h("div", { class: "what headline", title: c.snippet }, c.snippet),
       c.card?.claim_ask ? h("div", { class: "ask" }, c.card.claim_ask) : null,
+      !c.card && !c.card_error && data.reads && data.reads.fill
+        ? h("div", { class: "muted small" }, data.reads.auto.running ? "Writing its pitch…" : "Pitch not written yet") : null,
       h("div", { class: "foot" },
         h("button", { class: `btn primary${busy ? " busy" : ""}`, disabled: busy, onclick: () => track_(c) }, busy ? "Tracking…" : "Track"),
         h("button", { class: "btn link", disabled: busy, onclick: () => dismiss(c) }, "Dismiss")));

@@ -238,6 +238,28 @@ def write_candidate_card(db, row) -> dict | None:
     return card
 
 
+def write_find_card(db, row) -> dict | None:
+    """Write the game card for a new find as soon as it's on the dashboard, so its card shows the same brief pitch a
+    tracked startup's does (Track then reuses it). Like the background run, a find the writer says isn't a startup
+    (a fund, a publisher, a misparsed headline) is set aside under dismissed, with its reason. A failure is kept as
+    the card_error, so it isn't asked again; the card then shows the headline."""
+    if j(row["card"]) or row["card_error"] or not pitch.available():
+        return j(row["card"])
+    try:
+        card = card_for_candidate(row)
+    except Exception as e:  # noqa: BLE001 - the find stays, with its headline
+        db.execute("UPDATE candidates SET card_error = ? WHERE id = ?", (f"Card writer failed ({e}).", row["id"]))
+        db.commit()
+        return None
+    if not card["is_startup"]:
+        screen = (j(row["screen"], {}) or {}) | {"verdict": "rejected", "reason": card["reject_reason"] or "not a startup"}
+        db.execute("UPDATE candidates SET status = 'dismissed', screen = ? WHERE id = ?", (dumps(screen), row["id"]))
+    else:
+        db.execute("UPDATE candidates SET card = ? WHERE id = ?", (dumps(card), row["id"]))
+    db.commit()
+    return card
+
+
 AI_NOTE = "Card text written by AI ({model}) from headlines and website; check it before adding to the game."
 
 
