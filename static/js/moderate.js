@@ -5,7 +5,8 @@
 const { h, api, post, fmt1, ROLES, AXES, AXIS } = PD;
 const $app = document.getElementById("app");
 const state = { view: location.pathname === "/review" ? "startups" : "people", tab: null, open: new Set(), sort: { key: "joined", dir: -1 }, kind: "all",
-  drafts: {} }; // drafts: evaluations being filled in, by company id, so a refresh never loses them
+  drafts: {}, // evaluations being filled in, by company id, so a refresh never loses them
+  weights: null }; // vote weights being changed, until saved
 let data = null; // people: /api/mod/users
 let startups = null; // /api/mod/evaluations
 let lastSig = null;
@@ -22,7 +23,7 @@ const day = (iso) => (iso ? iso.slice(0, 10) : "–");
 const safeLink = (url) => (/^https?:\/\//i.test(url || "") ? url : null);
 const KIND = { player: "Player", investor: "Investor" };
 // A player counts 1 and an investor more.
-const weight = (u) => (u.kind === "investor" ? data.weights.investor : 1);
+const weight = (u) => (u.kind === "investor" ? data.weights.investor : data.weights.player);
 const times = (w) => `×${Number(w)}`;
 // Moderator accounts, the viewer's own included, are changed by admins only (the server checks this too).
 const locked = (u) => u.is_moderator && !data.viewer.admin;
@@ -51,44 +52,39 @@ function playLine(u) {
 }
 
 // Everything a member told us when they signed up: who they are, where to find them, what they know and why they
-// want in, next to how they've played. Players sign up with a username only, so theirs is just the play.
-function profileBody(u) {
+// want in, next to how they've played. Players sign up with a username only, so theirs is just the play. `extra` is
+// a last box (the account's actions) under the rest.
+function profileBody(u, extra = null) {
   const p = u.profile;
+  const box = (title, ...kids) => h("section", { class: "pf-box" }, h("div", { class: "pf-title" }, title), ...kids);
+  const play = box("How they play", playLine(u));
   if (!p.full_name) {
-    return h("div", { class: "profile" },
-      h("p", { class: "muted small" }, u.kind === "player" ? "A player: they sign up with a username and password only."
+    return h("div", { class: "pf" },
+      h("p", { class: "pf-note muted small" }, u.kind === "player" ? "A player: they sign up with a username and password only."
         : "No sign-up details: this account didn't come through the sign-up form."),
-      playLine(u));
+      play, extra);
   }
   const links = Object.entries(p.links || {}).filter(([, url]) => safeLink(url));
   const fact = (label, value) => (value ? [h("dt", {}, label), h("dd", {}, value)] : null);
   const review = u.status === "approved" ? `approved by ${u.reviewed_by || "a moderator"} ${day(u.reviewed_at)}`
     : u.status === "rejected" ? `rejected by ${u.reviewed_by || "a moderator"} ${day(u.reviewed_at)}` : "waiting for review";
-  return h("div", { class: "profile pf" },
-    h("div", { class: "pf-head" },
-      h("div", {}, h("h3", {}, p.full_name, " ", h("span", { class: "handle" }, `@${u.username}`)),
-        h("div", { class: "co-meta" }, [ROLES[p.role], p.organisation && `at ${p.organisation}`, p.location && `· ${p.location}`].filter(Boolean).join(" "))),
-      h("span", { class: "spacer" }),
-      h("a", { class: "btn small", href: `mailto:${p.email}` }, "Email ✉")),
+  return h("div", { class: "pf" },
     h("div", { class: "pf-grid" },
-      h("div", {},
+      box("Profile",
         h("dl", { class: "profile-facts" },
           fact("Email", h("a", { href: `mailto:${p.email}` }, p.email)),
           fact("Does", ROLES[p.role]),
           fact("Organisation", p.organisation),
           fact("Based in", p.location),
           fact("Knows well", p.expertise),
-          fact("Signed up", `${day(u.created_at)} · ${review}`)),
-        h("div", { class: "sub-head" }, "Why they want to join"),
-        h("blockquote", { class: "motivation" }, p.motivation)),
-      h("div", {},
-        h("div", { class: "sub-head" }, `Links (${links.length})`),
+          fact("Signed up", `${day(u.created_at)} · ${review}`))),
+      box("Why they want to join", h("p", { class: "motivation" }, p.motivation)),
+      box(`Links (${links.length})`,
         links.length ? h("ul", { class: "pf-links" }, links.map(([key, url]) => h("li", {},
           h("small", {}, LINKS[key] || key),
           h("a", { href: url, title: url, target: "_blank", rel: "noopener noreferrer nofollow" }, `${linkText(url)} ↗`))))
-          : h("p", { class: "muted small" }, "No links."),
-        h("div", { class: "sub-head" }, "How they play"),
-        playLine(u))));
+          : h("p", { class: "muted small" }, "No links."))),
+    play, extra);
 }
 
 // --- waiting and rejected sign-ups -------------------------------------------------------------------
@@ -170,13 +166,18 @@ function memberRows(u) {
   h("td", {}, day(u.created_at)),
   h("td", {}, locked(u) ? null : h("button", { class: "btn small danger", onclick: (e) => { e.stopPropagation(); remove(u); } }, "Delete")));
   if (!open) return row;
-  return [row, h("tr", { class: "detail" }, h("td", { colspan: COLUMNS.length },
-    profileBody(u),
-    locked(u) ? null : passwordRow(u),
-    data.viewer.admin ? h("div", { class: "row" },
+  return [row, h("tr", { class: "detail" }, h("td", { colspan: COLUMNS.length }, profileBody(u, accountBox(u))))];
+}
+
+// Password and moderator rights, each on its own line. Nothing for a moderator a moderator can't change.
+function accountBox(u) {
+  if (locked(u)) return null;
+  return h("section", { class: "pf-box pf-account" }, h("div", { class: "pf-title" }, "Account"),
+    passwordRow(u),
+    data.viewer.admin ? h("div", { class: "pf-action" },
       h("button", { class: "btn small", onclick: () => setModerator(u, !u.is_moderator) }, u.is_moderator ? "Remove moderator" : "Make moderator"),
       h("span", { class: "muted small" }, u.is_moderator ? "They keep their account and go back to being a member."
-        : "They sign in here with their own username and password.")) : null))];
+        : "They sign in here with their own username and password.")) : null);
 }
 
 // All members, or only investors or only players.
@@ -191,11 +192,7 @@ function membersView(list) {
   const q = search.value.trim().toLowerCase();
   const shown = sorted(list.filter((u) => (state.kind === "all" || (state.kind === "mods" ? u.is_moderator : u.kind === state.kind))
     && (!q || [u.username, u.profile.full_name, u.profile.email, u.profile.organisation].join(" ").toLowerCase().includes(q))));
-  const w = data.weights;
   return [
-    h("p", { class: "muted small" },
-      `In crowd scores a player's answer counts ×1 and an investor's ${times(w.investor)}. Guests count ${times(w.guest)}, and together at most `,
-      `${Math.round(w.guest_max_share * 100)}% of a card.`),
     h("div", { class: "toolbar" }, kindSeg(list), search, h("span", { class: "muted small" }, `${shown.length} of ${list.length}`)),
     h("div", { class: "table-wrap" }, h("table", { class: "data" },
       h("thead", {}, header()),
@@ -205,6 +202,64 @@ function membersView(list) {
       "Vs engine and Flat are hints for judging a member's reads; hover the headers for what they measure. Click a row for the profile",
       data.viewer.admin ? ", and to make them a moderator." : "."),
   ];
+}
+
+// --- vote weights -----------------------------------------------------------------------------------------
+
+// How much one answer counts in crowd scores, by who gave it. The share is shown and typed as a percentage.
+const WEIGHTS = [
+  { key: "player", label: "Player", help: "One answer from a player account." },
+  { key: "investor", label: "Investor", help: "One answer from an approved investor." },
+  { key: "guest", label: "Guest", help: "One answer from someone playing without an account." },
+  { key: "guest_max_share", label: "Guests' max share", help: "The most all guests together make up of a card's crowd score.", pct: true },
+];
+const sameWeights = (a, b) => WEIGHTS.every(({ key }) => Number(a[key]) === Number(b[key]));
+
+function weightsPanel() {
+  const can = data.viewer.admin;
+  const w = state.weights || data.weights;
+  const dirty = !!state.weights && !sameWeights(state.weights, data.weights);
+  const field = ({ key, label, help, pct }) => {
+    const input = h("input", { type: "number", min: 0, max: pct ? 95 : 10, step: pct ? 5 : 0.1, disabled: !can,
+      "aria-label": label, value: pct ? Math.round(w[key] * 100) : w[key],
+      oninput: (e) => {
+        const v = e.target.valueAsNumber;
+        state.weights = { ...(state.weights || data.weights), [key]: Number.isFinite(v) ? (pct ? v / 100 : v) : NaN };
+        paintButtons();
+      } });
+    return h("label", { class: "w-field" },
+      h("span", { class: "w-label" }, label),
+      h("span", { class: "w-input" }, pct ? null : h("span", { class: "w-unit" }, "×"), input, pct ? h("span", { class: "w-unit" }, "%") : null),
+      h("span", { class: "w-help" }, help));
+  };
+  const save = h("button", { class: "btn primary", onclick: saveWeights }, "Save weights");
+  const undo = h("button", { class: "btn", onclick: () => { state.weights = null; render(); } }, "Undo");
+  const defaults = h("button", { class: "btn link", onclick: () => { state.weights = { ...data.weight_defaults }; render(); } }, "Back to defaults");
+  function paintButtons() {
+    const changed = !!state.weights && !sameWeights(state.weights, data.weights);
+    save.disabled = !changed;
+    undo.classList.toggle("hidden", !changed);
+    defaults.classList.toggle("hidden", sameWeights(state.weights || data.weights, data.weight_defaults));
+  }
+  paintButtons();
+  return h("section", { class: "panel" },
+    h("div", { class: "panel-head" }, h("h2", {}, "Vote weights"),
+      h("span", { class: "muted small" }, "How much one answer counts in a card's crowd score."),
+      h("span", { class: "spacer" }),
+      can ? [defaults, undo, save] : h("span", { class: "muted small" }, "Only the admin can change these.")),
+    h("div", { class: "w-grid" }, WEIGHTS.map(field)),
+    dirty ? h("p", { class: "muted small w-note" }, "Not saved yet. Saved weights count at once, for every card's crowd score.") : null);
+}
+
+async function saveWeights() {
+  const w = state.weights;
+  if (!w || WEIGHTS.some(({ key }) => !Number.isFinite(w[key]))) { PD.toast("Fill in all four weights"); return; }
+  try {
+    data.weights = await post("/api/mod/weights", w, "PUT");
+    state.weights = null;
+    PD.toast("Weights saved");
+  } catch (e) { PD.toast(e.message); }
+  await refresh();
 }
 
 // --- actions --------------------------------------------------------------------------------------------
@@ -230,7 +285,7 @@ function passwordRow(u) {
   const input = h("input", { type: "text", placeholder: "New password", autocomplete: "off", "aria-label": `New password for ${u.username}`,
     onkeydown: (e) => { if (e.key === "Enter") resetPassword(u, input, btn); } });
   const btn = h("button", { class: "btn small", onclick: () => resetPassword(u, input, btn) }, "Reset password");
-  return h("div", { class: "row pw-reset" }, h("span", { class: "caps muted" }, "Password"), input, btn,
+  return h("div", { class: "pf-action" }, input, btn,
     h("span", { class: "muted small" }, "Tell them the new one yourself; they're logged out everywhere."));
 }
 
@@ -393,6 +448,7 @@ function peopleView() {
       kpi("Waiting", by.pending.length, by.pending.length ? `sign-up${by.pending.length === 1 ? "" : "s"} to review` : "all caught up"),
       kpi("Members", members.length, `${plural(members.filter((u) => u.kind === "investor").length, "investor")} · ${plural(members.filter((u) => u.kind !== "investor").length, "player")}`),
       kpi("Guests", data.guests, "devices playing without an account")),
+    weightsPanel(),
     h("section", { class: "panel" },
       h("div", { class: "panel-head" },
         h("div", { class: "seg", role: "group", "aria-label": "Show" },

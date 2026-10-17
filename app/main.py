@@ -36,6 +36,7 @@ async def lifespan(_app: FastAPI):
         log.warning("Pitchdle: empty database, loaded seed data into %s", config.DB_PATH)
     seed.fill_profiles(db)  # sample companies from before card profiles get theirs
     accounts.ensure_test_accounts(db)
+    moderation.load_weights(db)  # the admin's vote weights over the .env defaults
     money.tidy(db)  # amounts on stored cards in euros (no model call)
     fixed = autofill.tidy(db)
     if fixed["removed"]:
@@ -649,6 +650,21 @@ def evaluated_company(db, cid: int):
     return comp
 
 
+class WeightsIn(BaseModel):
+    player: float = Field(ge=0, le=10)
+    investor: float = Field(ge=0, le=10)
+    guest: float = Field(ge=0, le=10)
+    guest_max_share: float = Field(ge=0, le=0.95)
+
+
+@app.put("/api/mod/weights")
+def mod_weights(body: WeightsIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    """How much each kind of answer counts in crowd scores. Admin only; scores use the new weights at once."""
+    if not staff.admin:
+        raise HTTPException(403, "Only the admin can change the weights.")
+    return moderation.save_weights(db, body.model_dump())
+
+
 @app.get("/api/mod/evaluations")
 def mod_evaluations(staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
     """The current mode's startups (sample ones in demo, real ones in live), those in the game first."""
@@ -865,7 +881,7 @@ def admin_reject_submission(sid: int, db=Depends(get_db)):
 def admin_users(db=Depends(get_db)):
     return {"users": accounts.list_users(db), "guests": accounts.guest_count(db),
             "guest_weight": config.GUEST_WEIGHT, "guest_max_share": config.GUEST_MAX_SHARE,
-            "investor_weight": config.INVESTOR_WEIGHT}
+            "investor_weight": config.INVESTOR_WEIGHT, "player_weight": config.PLAYER_WEIGHT}
 
 
 @app.delete("/api/admin/users/{uid}", dependencies=[Depends(require_admin)])

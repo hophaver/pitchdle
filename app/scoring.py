@@ -39,7 +39,7 @@ def kind_of(vote) -> str:
 
 
 def kind_weight(kind: str) -> float:
-    return config.INVESTOR_WEIGHT if kind == "investor" else 1.0
+    return config.INVESTOR_WEIGHT if kind == "investor" else config.PLAYER_WEIGHT
 
 
 def member_weight(vote) -> float:
@@ -47,9 +47,9 @@ def member_weight(vote) -> float:
 
 
 def vote_weights(votes: list) -> list[float]:
-    """How much each vote counts towards a crowd score: guests least, players 1, investors most.
+    """How much each vote counts towards a crowd score: guests least, then players, investors most.
 
-    A player counts 1 and an investor INVESTOR_WEIGHT. Guests count GUEST_WEIGHT each, shrinking further as guests pile up so that together
+    A player counts PLAYER_WEIGHT and an investor INVESTOR_WEIGHT. Guests count GUEST_WEIGHT each, shrinking further as guests pile up so that together
     they never make up more than GUEST_MAX_SHARE of the total. With no member weight to weigh them against, guests
     count 1 each.
     """

@@ -598,8 +598,6 @@ body.tool {
   .g-actions { grid-column: 1 / -1; justify-content: flex-start; }
 }
 
-.pw-reset { margin-top: .8rem; padding-top: .8rem; border-top: 1px solid var(--line); }
-.pw-reset input { width: 200px; }
 .dossier .tag { background: var(--soft); color: var(--on-card); margin: 0; }
 .dossier .tag.in { background: var(--white); color: var(--card); }
 .dossier .game-note { font-size: .78rem; font-weight: 600; opacity: .9; }
@@ -900,14 +898,12 @@ body.dossier-open { overflow: hidden; }
 .tool .investor-list .interested { font-family: inherit; font-size: inherit; font-weight: 600; color: var(--warn); }
 .tool .op { width: 200px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--t-radius-sm); background: var(--paper); color: var(--ink); }
 .tool .opc { --bar: var(--ink); --rule: var(--line); }
-.profile { margin-top: .6rem; max-width: 76ch; }
 .links { display: flex; flex-wrap: wrap; gap: .35rem; }
 a.chip { color: var(--ink); text-decoration: none; }
 a.chip:hover { border-color: var(--muted); }
-.profile-facts { display: grid; grid-template-columns: auto 1fr; gap: .2rem .9rem; margin: .7rem 0 0; font-size: .88rem; }
+.profile-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .3rem .9rem; margin: 0; font-size: .86rem; }
 .profile-facts dt { color: var(--muted); font-weight: 600; }
 .profile-facts dd { margin: 0; overflow-wrap: anywhere; }
-.motivation { margin: .7rem 0 .4rem; padding: .6rem .85rem; background: var(--paper); border-left: 3px solid var(--line); border-radius: 0 var(--t-radius-sm) var(--t-radius-sm) 0; white-space: pre-line; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -964,22 +960,39 @@ a.chip:hover { border-color: var(--muted); }
 .a-reset:first-child { border-top: 0; }
 @media (max-width: 800px) { .a-top { grid-template-columns: 1fr; } .t-field { grid-template-columns: 1fr; gap: .25rem; } }
 
-/* moderation: a member's full profile, opened from their row */
-.pf { max-width: none; }
-.pf-head { display: flex; align-items: flex-start; gap: .6rem; flex-wrap: wrap; }
-.pf-head h3 { font-size: 1.05rem; text-transform: none; letter-spacing: -.01em; color: var(--ink); }
-.pf-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: .4rem 1.6rem; }
-@media (max-width: 760px) { .pf-grid { grid-template-columns: minmax(0, 1fr); } }
-.pf .sub-head { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: .8rem 0 .3rem; }
-.pf-links { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
-.pf-links li { display: grid; gap: .05rem; }
-.pf-links small { font-size: .68rem; font-weight: 700; color: var(--muted); }
+/* moderation: a member's full profile, opened from their row or on a sign-up: boxes like the site's cards */
+.pf { display: grid; gap: 10px; margin-top: .4rem; }
+table.data tr.detail > td .pf { margin: .2rem 0 .2rem 1.3rem; }
+.pf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.pf-box { background: var(--page); border: 1px solid var(--line); border-radius: var(--r); padding: .8rem .95rem; min-width: 0; }
+.pf-title { font-size: .66rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-bottom: .55rem; }
+.pf-note { margin: 0; }
+.pf .motivation { margin: 0; font-size: .88rem; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+.pf-links { list-style: none; margin: 0; padding: 0; display: grid; gap: .45rem; }
+.pf-links li { display: grid; gap: .05rem; min-width: 0; }
+.pf-links small { font-size: .66rem; font-weight: 700; color: var(--muted); }
 .pf-links a { font-weight: 600; overflow-wrap: anywhere; }
-.pf-figs { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0 .7rem; }
-.pf-fig { display: grid; gap: .05rem; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: .3rem .6rem; min-width: 4.6rem; }
-.pf-fig small { font-size: .62rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
-.pf-fig b { font-variant-numeric: tabular-nums; }
+.pf-figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; }
+.pf-fig { display: grid; gap: .15rem; background: var(--paper); border-radius: 8px; padding: .5rem .7rem; min-width: 0; }
+.pf-fig small { font-size: .6rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pf-fig b { font-size: 1.05rem; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pf-account { display: grid; gap: .6rem; }
+.pf-account .pf-title { margin-bottom: 0; }
+.pf-action { display: flex; align-items: center; gap: .5rem .7rem; flex-wrap: wrap; }
+.pf-action input { width: 200px; }
 .rc .meta .tag { margin-right: .35rem; }
+
+/* moderation: the vote weights, four numbers in a row */
+.w-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.w-field { display: grid; gap: .35rem; align-content: start; background: var(--page); border: 1px solid var(--line); border-radius: var(--r);
+  padding: .75rem .9rem; }
+.w-label { font-size: .66rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+.w-input { display: flex; align-items: center; gap: .35rem; }
+.w-unit { font-size: 1.1rem; font-weight: 800; color: var(--muted); }
+.tool .w-input input[type=number] { width: 6rem; font-size: 1.15rem; font-weight: 800; padding: .3rem .55rem; font-variant-numeric: tabular-nums; }
+.w-help { font-size: .76rem; color: var(--muted); line-height: 1.35; }
+.w-note { margin: .7rem 0 0; }
 
 /* results: one row per read across the card, the same chart in each, then the total posts */
 .rs { display: grid; gap: 6px; margin-top: 14px; }

@@ -37,7 +37,9 @@ TEST_MODERATOR_PASSWORD = os.environ.get("TEST_MODERATOR_PASSWORD") or ""
 # score guests together can make up once members have answered it. See scoring.vote_weights.
 GUEST_WEIGHT = float(os.environ.get("GUEST_WEIGHT") or 0.5)
 GUEST_MAX_SHARE = float(os.environ.get("GUEST_MAX_SHARE") or 0.4)
-# How much an investor account's answer counts next to a player account's (1.0).
+# How much a player account's and an investor account's answer count. These four are the defaults: moderation's
+# admin can change them, and saved changes (the settings table) win over these.
+PLAYER_WEIGHT = max(0.0, float(os.environ.get("PLAYER_WEIGHT") or 1.0))
 INVESTOR_WEIGHT = max(0.0, float(os.environ.get("INVESTOR_WEIGHT") or 2.0))
 # Outside reads, run from Admin and never on the game's path: AI models rate each startup, and AI searches
 # read what people say about it on social media. One OpenRouter key runs all three models; otherwise each needs

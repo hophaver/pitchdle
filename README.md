@@ -48,7 +48,7 @@ Copy `.env.example` to `.env` to override any of these:
 | `DB_PATH` | `./data/pitchdle.db` | |
 | `ADMIN_PASSWORD` | `admin` | A warning is logged while it's the default |
 | `TEST_MODERATOR_USERNAME` / `TEST_MODERATOR_PASSWORD` | empty | A moderator account made on startup, for testing. Keep it off public deployments |
-| `GUEST_WEIGHT` / `INVESTOR_WEIGHT` | `0.5` / `2` | How much a guest's and an investor's answer count next to a player's (1) |
+| `GUEST_WEIGHT` / `PLAYER_WEIGHT` / `INVESTOR_WEIGHT` | `0.5` / `1` / `2` | How much a guest's, a player's and an investor's answer count (defaults; the admin can change them on `/moderate`) |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | |
 | `APP_MODE` | `demo` | Starting mode on a fresh database; the Admin toggle overrides it |
 | `DISCOVER_AUTO` | `1` | Search for real startups when Live mode is switched on |
@@ -164,12 +164,13 @@ delete a moderator's account, a moderator's own included. A moderator's account 
 
 ### How much an answer counts
 
-Guests count least, players 1, investors most:
+Guests count least, players 1, investors most. These are defaults from `.env`: signed in with the admin password,
+`/moderate` → People has a Vote weights panel that changes all four, saved in the database and used at once.
 
 | Who | An answer counts |
 |---|---|
 | Guest | `GUEST_WEIGHT` (0.5), and all guests together at most `GUEST_MAX_SHARE` (40%) of a card once members have answered it |
-| Player | 1 |
+| Player | `PLAYER_WEIGHT` (1) |
 | Investor | `INVESTOR_WEIGHT` (2) |
 
 The Members tab on `/moderate` → People lists players and investors (filter by kind) and shows how each one plays:

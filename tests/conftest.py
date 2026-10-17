@@ -12,6 +12,9 @@ def no_local_settings(monkeypatch):
                  "CLAUDE_MODEL", "GPT_MODEL", "GROK_MODEL"):
         monkeypatch.setattr(config, name, "")
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    # The vote weights at their defaults; a test that saves new ones gets them put back afterwards.
+    for name, value in (("PLAYER_WEIGHT", 1.0), ("INVESTOR_WEIGHT", 2.0), ("GUEST_WEIGHT", 0.5), ("GUEST_MAX_SHARE", 0.4)):
+        monkeypatch.setattr(config, name, value)
 
 
 @pytest.fixture(autouse=True)

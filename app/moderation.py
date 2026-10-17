@@ -7,7 +7,7 @@ admin password. Whoever acts is recorded on each review.
 from dataclasses import dataclass
 from statistics import fmean
 
-from . import accounts, config
+from . import accounts, config, service
 from .db import j, now
 from .engine import AXES, composite_of
 
@@ -108,6 +108,35 @@ def overview(db) -> dict:
     return {
         "users": [user_payload(u, played.get(u["id"])) for u in users],
         "guests": accounts.guest_count(db),
-        "weights": {"investor": config.INVESTOR_WEIGHT,
-                    "guest": config.GUEST_WEIGHT, "guest_max_share": config.GUEST_MAX_SHARE},
+        "weights": weights(),
+        "weight_defaults": dict(DEFAULT_WEIGHTS),
     }
+
+
+# --- how much each kind of answer counts ------------------------------------------------------------------
+# The four numbers scoring.vote_weights reads from config. .env sets the defaults; the admin changes them on the
+# moderation page, and the change is saved in the settings table and put back into config at startup.
+WEIGHT_ATTRS = {"player": "PLAYER_WEIGHT", "investor": "INVESTOR_WEIGHT", "guest": "GUEST_WEIGHT",
+                "guest_max_share": "GUEST_MAX_SHARE"}
+DEFAULT_WEIGHTS = {k: getattr(config, attr) for k, attr in WEIGHT_ATTRS.items()}
+
+
+def weights() -> dict:
+    return {k: getattr(config, attr) for k, attr in WEIGHT_ATTRS.items()}
+
+
+def _apply(values: dict) -> None:
+    for k, attr in WEIGHT_ATTRS.items():
+        if isinstance(values.get(k), (int, float)):
+            setattr(config, attr, float(values[k]))
+
+
+def load_weights(db) -> None:
+    """Put the saved weights (if any) over the .env defaults."""
+    _apply(service.get_setting(db, "vote_weights", {}) or {})
+
+
+def save_weights(db, values: dict) -> dict:
+    service.set_setting(db, "vote_weights", {k: float(values[k]) for k in WEIGHT_ATTRS})
+    _apply(values)
+    return weights()

@@ -3,7 +3,8 @@ from statistics import fmean
 
 from fastapi.testclient import TestClient
 
-from app import accounts, config
+from app import accounts, config, moderation, scoring
+from app.db import connect
 from tests.conftest import apply, new_player, sign_up, user_id
 from tests.test_api import GUESS, answer, today
 
@@ -217,3 +218,17 @@ def test_accounts_from_before_review_stay_members(tmp_path, monkeypatch):
         assert r.status_code == 200
         u = mod_user(c, ("staff", config.ADMIN_PASSWORD), "veteran")
         assert (u["status"], u["profile"]) == ("approved", {})
+
+
+def test_the_admin_sets_the_vote_weights(client, admin, moderator):
+    new = {"player": 1.5, "investor": 3, "guest": 0.25, "guest_max_share": 0.3}
+    assert client.put("/api/mod/weights", json=new, auth=moderator).status_code == 403  # moderators only see them
+    assert client.put("/api/mod/weights", json=new | {"guest_max_share": 1}, auth=admin).status_code == 422
+    assert client.put("/api/mod/weights", json=new, auth=admin).json() == new
+    body = client.get("/api/mod/users", auth=moderator).json()
+    assert body["weights"] == new and body["weight_defaults"]["investor"] == 2.0
+    assert scoring.vote_weights([{"user_id": 1, "kind": "player"}, {"user_id": 2, "kind": "investor"}]) == [1.5, 3.0]
+    config.PLAYER_WEIGHT = 1.0  # a restart puts the saved weights back over the defaults
+    with connect() as db:
+        moderation.load_weights(db)
+    assert config.PLAYER_WEIGHT == 1.5
