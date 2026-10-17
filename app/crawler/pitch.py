@@ -21,7 +21,7 @@ URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT = 45
 # Output caps. Without one OpenRouter reserves the model's whole output window against the key's credit up
 # front, which a key with a spending limit can't cover (a 402 on every call).
-MAX_TOKENS = {"card": 1500, "screen": 3000, "profile": 2500}
+MAX_TOKENS = {"card": 1500, "screen": 3000, "profile": 4000, "brief": 600, "gate": 300}
 # The same limits the player submission form uses, so a written card fits the card layout.
 LIMITS = {"one_liner": 90, "claim_ask": 60, "sector": 30}
 MAX_FACTS = 3
@@ -94,9 +94,8 @@ def available() -> bool:
 
 
 def _post(schema_name: str, schema: dict, messages: list[dict], task: str = "card") -> dict:
-    """One structured chat completion on the task's model (config.task_model): the only network call here. Tests
-    block it outright."""
-    body = {"model": config.task_model(task), "messages": messages, "temperature": 0.2,
+    """One structured chat completion on OPENROUTER_MODEL: the only network call here. Tests block it outright."""
+    body = {"model": config.OPENROUTER_MODEL, "messages": messages, "temperature": 0.2,
             "max_tokens": MAX_TOKENS[task],
             "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "strict": True, "schema": schema}}}
     req = urllib.request.Request(URL, data=json.dumps(body).encode(), method="POST", headers={

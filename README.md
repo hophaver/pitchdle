@@ -21,9 +21,9 @@ Open http://localhost:8000/play. The first run creates `.venv`, installs `requir
 | Page | What it's for | Password |
 |---|---|---|
 | `/play` | The game: today's set (5 cards), results at the end. Players get the simple card, investors the full one | – |
-| `/host` | Dashboard: the radar. Find startups, call, lenses (thesis, readiness, game, opinions, web), details with the profile, outside opinions and ranked next steps | admin |
+| `/host` | Dashboard: the radar. Find startups; each card's call and its reviews' average (N U P I), sortable by any of them; details with the profile, readiness, thesis fit, every review and ranked next steps | admin |
 | `/game` | Players, past games (crowd vs engine), next games queued | admin |
-| `/admin` | Which companies are in the game, each one's profile and outside opinions, player submissions, exports and resets | admin |
+| `/admin` | The background AI work (last run, errors, run missing now), exports and resets | admin |
 | `/moderate` | Review investor sign-ups, set member badges, make moderators; give A'Pelago's read of each startup | moderator account or admin |
 
 Host and admin pages use a browser login prompt. Any username works; the password is
@@ -58,10 +58,9 @@ Copy `.env.example` to `.env` to override any of these:
 | `DISCOVER_MAX` | `10` | Most auto-found startups kept |
 | `DISCOVER_EXCLUDE` | empty | Comma list of words/names to skip (whole words, in the name or headline) |
 | `DISCOVER_EXCLUDE_NAMES` | `fund,funds,capital,ventures,…` | Words that make a *name* a fund, publisher or lab (name only) |
-| `OPENROUTER_API_KEY` | empty | Optional: AI screens discovery hits, writes found startups' cards, fills their profiles, and rates every card |
-| `OPENROUTER_MODEL` | `anthropic/claude-haiku-5.5` | Default model for screening, cards and profiles: any OpenRouter model with structured outputs |
-| `SCREEN_MODEL` / `CARD_MODEL` / `PROFILE_MODEL` | empty | A different model for one of those tasks; blank uses `OPENROUTER_MODEL` |
-| `CLAUDE_MODEL` / `GPT_MODEL` / `GROK_MODEL` | empty | The three rating models (see below) |
+| `OPENROUTER_API_KEY` | empty | Optional: AI screens discovery hits, writes found startups' cards, fills their profiles and evidence, and reviews every card |
+| `OPENROUTER_MODEL` | `anthropic/claude-haiku-5.5` | The model for every AI task but the reviews (screening, cards, profiles, evidence): pick a cheap one with structured outputs |
+| `CLAUDE_MODEL` / `GPT_MODEL` / `GROK_MODEL` | empty | The review models: AI ratings and social media (see below) |
 
 ### Demo and live mode
 
@@ -71,8 +70,9 @@ a company's pool is fixed when it's created, a set can only hold its own pool's 
 them), and players only reach the current mode's sets.
 
 In Live mode the app searches open feeds (Hacker News, Google News) for the `DISCOVER_*` fields in the background
-and adds what it finds, not in the game yet. Players see a "check back soon" notice until you switch **In game**
-on at least one in Admin.
+and adds what it finds to the dashboard. Startups players suggest show there too, labelled **Sent in by a player**,
+to **Track** or **Dismiss** like any find. A tracked startup joins the daily game by itself (see the game check
+below); players see a "check back soon" notice until one has.
 
 On the Dashboard (Live mode), search by **country**, by **field**, or both. A country search also runs under its demonym
 ("Finnish startup X raises"). Raw hits are screened before they're stored: exclusions first, then, with
@@ -82,8 +82,8 @@ under Dismissed with the reason ("based in Sweden, not Finland"); a later search
 If the screen errors, or there's no key, nothing is dropped: hits are kept and marked unconfirmed.
 
 **Track** on a new find writes its card with AI straight away (sector, pitch, ask, facts, from headlines and
-site) and adds it to the radar. If writing fails, it's kept with its headline as the pitch. The AI only writes
-card text, never evidence scores, and never invents amounts.
+site) and adds it to the radar. If writing fails, it's kept with its headline as the pitch. The card writer never
+invents amounts; the profile and evidence are filled right after (below).
 
 ### The radar
 
@@ -104,16 +104,39 @@ publishers/databases (TechCrunch, Crunchbase, …, also matched in the website's
 "Blue Ocean Capital" is skipped and "Fundbox" isn't. Player submissions under those names can't be approved either. One real company per name:
 a second "Granarium" is linked to the first, never added again, and duplicates left by older builds are merged on startup.
 
-**Profiles.** Discovery only stores a headline and a website, so each real startup's profile (money raised,
-investors, stages passed, vision, country) is filled by AI in the background, right after it's tracked and before
-its AI ratings, from its website and news headlines (on `PROFILE_MODEL`, else `OPENROUTER_MODEL`). The model uses
-only what those sources say and leaves the rest empty; amounts in other currencies are turned into euros at rough
-rates, with the original kept in the stage line. Only empty fields are filled, never what the host typed, and each
-startup is filled once (Admin → Profile & opinions → **Fill with AI** runs it again). The details card says when a
-profile came from AI.
+**The game check.** Once a tracked startup's card is filled, one small call on `OPENROUTER_MODEL` checks the card
+players would see: an operating startup (not a fund, news site or misparsed headline), a pitch that says what the
+product does, nothing offensive or misleading, and a business in the event's fields. It passes into the daily game
+by itself, or is kept out with the reason, shown on its card (**In game** / **Not in game**). Each startup is
+checked once. Nobody edits companies by hand: everything on a card comes from discovery, the fill and the reviews.
 
-Found startups carry only what discovery can show: a tech stage, when their site or a headline states one
-("pilot", "deployed"); otherwise nothing. Until the host confirms their evidence the call says so.
+**Profiles and evidence fill themselves.** Discovery only stores a headline and a website, so each real startup's
+card is filled by AI in the background, right after it's tracked (and on startup for any not filled yet), before
+its AI ratings, from its website and news headlines, on `OPENROUTER_MODEL`:
+
+- the profile: money raised, investors, stages passed, vision, country. Only what the sources say; the rest stays
+  empty. Amounts in other currencies are turned into euros at rough rates, with the original kept in the stage line.
+- the evidence: every engine factor the sources speak to, scored 0–5 against written definitions, plus the tech
+  stage (from pilots and deployments, never a claim) and patents. Unknowns stay unknown. That gives the readiness
+  levels, thesis fit and the call; the evidence is marked **Estimated by AI · host confirms**, so the call is never
+  Back until the host confirms it.
+
+Only empty fields are filled, and evidence the host confirmed is never touched. Each startup is filled once. The
+details card says when its profile came from AI, and while a fill runs it updates by itself.
+
+**Reviews on the card.** The details card's "What everyone makes of it" has one **Refresh reviews** button: Claude,
+GPT and Grok rate the startup and, for a real one, social media is read; the card updates when they land. Its top
+row is the **Average** of the game, the AI models and social media on each call, each counting once. The same
+average shows on every dashboard card (Novel, Useful, Plausible, Investable and their mean), and the dashboard sorts
+by any of the five, high to low or low to high; startups with no reviews yet come last.
+
+**Reviews cost little.** The reviewers don't read the whole profile: `OPENROUTER_MODEL` first condenses it, with
+the evidence, into a brief of about 100 words that keeps every fact a rating rests on. The brief is kept and only
+rewritten when the profile changes. The reviewers then answer with low reasoning effort and capped output, and
+each social platform gets at most two searches.
+
+Before the fill, a found startup carries only what discovery can show: a tech stage, when its site or a headline
+states one ("pilot", "deployed"). Until the host confirms its evidence the call says so.
 
 Engine weights are in `weights.json`. After editing them, run `.venv/bin/python -m app.seed --rescore`.
 
@@ -157,7 +180,7 @@ weights apply to player results, the dashboard and exports. Accounts from before
 ## The startup card and its opinions
 
 Investors see a card with everything there is to weigh before rating it, and the dashboard shows the same on
-every startup (the facts on the card, the **Opinions** lens, and all of it under **Details**). On a wide screen
+every startup (the facts and the reviews' average on the card, and all of it under **Details**). On a wide screen
 the investor's card fills nearly the whole window, with the facts left and the opinions right; on a phone the
 sections stack.
 
@@ -169,8 +192,7 @@ sections stack.
   **A'Pelago**, the **AI models** (Claude, GPT, Grok) and **social media** (X, Threads, LinkedIn, Reddit,
   Bluesky).
 
-The profile and outside opinions are edited in `/admin` → a company's **Profile & opinions**. The crowd's read is
-the one thing a card holds back: each result card then sets you and everyone else beside all the opinions above.
+The crowd's read is the one thing a card holds back: each result card then sets you and everyone else beside all the opinions above.
 
 - **A'Pelago** is the average of its representatives' evaluations: moderators and admins rate each startup on
   `/moderate` → Startups, as representatives rather than players. A representative sees the average there only
@@ -179,12 +201,11 @@ the one thing a card holds back: each result card then sets you and everyone els
 - **Social media**: Grok searches X itself and Claude searches each other platform's own site. A platform's read
   only counts posts the model cited on that platform; with none it shows as "no posts found".
 
-The AI and social reads happen by themselves: a card gets them in the background as soon as it's added (in Admin,
-from a player's submission or by discovery), and every card still missing one gets it when the app starts. Sample
-startups are made up, so they get AI ratings only; a social search could only find their namesakes. Admin → Data
-shows the last run, with a **Read missing now** button; per company, **Ask the AIs** and **Read social media**
-read it again, and any read can be typed in or corrected by hand, e.g. without a key. A failed read stays missing
-until the next run.
+The AI and social reads happen by themselves: a card gets them in the background as soon as it's added (tracked
+from discovery or a player's suggestion), and every card still missing one gets it when the app starts. Sample
+startups are made up, so they get AI ratings only; a social search could only find their namesakes. Admin
+shows the last run, with a **Run missing now** button; per company, **Refresh reviews** on its Dashboard details card
+reads it again. A failed read stays missing until the next run.
 
 These are paid APIs, never on the game's path: per card, three short model calls, and for a real startup up to 4
 web searches per platform (Claude bills web search at $10 per 1,000) or X posts fetched by Grok ($5 per 1,000),
@@ -207,7 +228,7 @@ on OpenRouter, which names models differently.
 ## Rehearsing the demo
 
 In `/game` → Next games, click **Demo answers** on a set. This adds 30 fake players, flagged as demo votes, so
-the dashboard's Game lens has a crowd. Clear them in `/admin` → Data before the real run; exports always exclude
+the dashboard has a crowd in its reviews. Clear them in `/admin` → Reset before the real run; exports always exclude
 demo votes.
 
 The two designed demo cases are **TideLedger** (sounds great, engine 1.7: the room overrates it) and

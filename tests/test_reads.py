@@ -238,7 +238,7 @@ def test_openrouter_reads_a_platform_with_native_search(oai, monkeypatch):
     body = rec.requests[0]["body"]
     assert body["model"] == "anthropic/claude-opus-5.5" and body["max_tokens"] == reads.SOCIAL_MAX_TOKENS
     assert body["tools"] == [{"type": "openrouter:web_search", "parameters": {
-        "engine": "native", "max_uses": 4, "max_results": 5, "allowed_domains": ["linkedin.com"]}}]
+        "engine": "native", "max_uses": 2, "max_results": 5, "allowed_domains": ["linkedin.com"]}}]
 
 
 def test_openrouter_reads_x_with_grok_search(oai, monkeypatch):

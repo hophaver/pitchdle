@@ -14,6 +14,16 @@ def no_local_settings(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_leftover_runs(monkeypatch):
+    """No test starts a real background run (tests that want one make runs synchronous), and each starts with none
+    on: one left going would swallow the test's own kick."""
+    from app import autoread
+    monkeypatch.setattr(autoread, "START", lambda fn: None)
+    monkeypatch.setattr(autoread, "_running", False)
+    monkeypatch.setattr(autoread, "_again", False)
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "test.db"))

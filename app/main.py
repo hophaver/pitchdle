@@ -19,9 +19,9 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from . import accounts, autofill, autoread, config, moderation, opinions, reads, scoring, seed, service
+from . import accounts, autofill, autoread, brief, config, moderation, opinions, reads, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, name_key, now
-from .crawler import pitch, profile
+from .crawler import pitch
 from .engine import AXES, full_score as engine_full
 
 log = logging.getLogger("pitchdle")
@@ -491,6 +491,14 @@ def host_radar(real_only: bool = False, db=Depends(get_db)):
     out = service.overview(db, real_only)
     out["candidates"] = [candidate_out(r) for r in db.execute(
         "SELECT * FROM candidates WHERE status IN ('new', 'queued') ORDER BY id DESC")] if out["mode"] == "live" else []
+    # Startups players suggested, shown beside discovery's finds (real startups, so live mode only).
+    out["submissions"] = [dict(r) for r in db.execute(
+        "SELECT id, name, sector, one_liner, claim_ask, website, created_at FROM submissions ORDER BY id DESC")] \
+        if out["mode"] == "live" else []
+    # Whether cards are being filled and read in the background, and with what, so an open card can update and
+    # its review buttons know which models are set up.
+    out["reads"] = {"auto": autoread.status(db), "ready": reads.setup(), "models": reads.models(),
+                    "fill": pitch.available(), "fill_model": config.OPENROUTER_MODEL}
     return out
 
 
@@ -873,7 +881,7 @@ def admin_recrawl(cid: int, db=Depends(get_db)):
     return result
 
 
-# --- outside opinions: AI models and social media (fetched from Admin, never on the game's path) ----------
+# --- outside opinions: AI models and social media (fetched from the dashboard, never on the game's path) --
 
 @app.post("/api/admin/companies/{cid}/reads/{kind}", dependencies=[Depends(require_admin)])
 def admin_reads(cid: int, kind: str, db=Depends(get_db)):
@@ -881,68 +889,14 @@ def admin_reads(cid: int, kind: str, db=Depends(get_db)):
     comp = service.get_company(db, cid)
     if not comp or kind not in ("ai", "social"):
         raise HTTPException(404, "No such company or read.")
-    results = reads.rate_all(comp) if kind == "ai" else reads.social_all(comp)
+    results = reads.rate_all(comp, brief=brief.for_review(db, comp)) if kind == "ai" else reads.social_all(comp)
     return {"report": autoread.store(db, cid, results), "company": admin_company(db, service.get_company(db, cid))}
-
-
-@app.post("/api/admin/companies/{cid}/profile/fill", dependencies=[Depends(require_admin)])
-def admin_fill_profile(cid: int, db=Depends(get_db)):
-    """Fill a company's empty profile fields with AI from its website and news (also done in the background for
-    every new real startup). Fields that already have something are left alone."""
-    comp = service.get_company(db, cid)
-    if not comp:
-        raise HTTPException(404, "No such company.")
-    if not pitch.available():
-        raise HTTPException(400, "Set OPENROUTER_API_KEY in .env to fill profiles with AI.")
-    try:
-        out = profile.fill(db, comp)
-    except Exception as e:  # noqa: BLE001 - the provider's error, said plainly
-        raise HTTPException(502, reads.short_error(e))
-    return out | {"company": admin_company(db, service.get_company(db, cid))}
 
 
 @app.post("/api/admin/autoread", dependencies=[Depends(require_admin)])
 def admin_autoread(db=Depends(get_db)):
     """Read every card still missing AI ratings or a social media read, in the background (also done on startup)."""
     return {"started": autoread.kick(), "status": autoread.status(db)}
-
-
-class OpinionScores(BaseModel):
-    novel: float = Field(ge=0, le=5)
-    useful: float = Field(ge=0, le=5)
-    plausible: float = Field(ge=0, le=5)
-    investable: float = Field(ge=0, le=5)
-
-
-class OpinionIn(BaseModel):
-    scores: OpinionScores
-    note: str = Field("", max_length=600)
-    links: list[str] = Field([], max_length=10)  # for social media: posts the read rests on
-
-    @field_validator("links")
-    @classmethod
-    def web_links(cls, value: list[str]) -> list[str]:
-        return [web_link(v) for v in value if v.strip()]
-
-
-@app.put("/api/admin/companies/{cid}/opinions/{source}", dependencies=[Depends(require_admin)])
-def admin_set_opinion(cid: int, source: str, body: OpinionIn, db=Depends(get_db)):
-    """An AI model's or a platform's read, entered by hand (or corrected): when there's no key, or no search found it."""
-    if source not in opinions.OUTSIDE or not service.get_company(db, cid):
-        raise HTTPException(404, "No such company or source.")
-    meta = {"by": "hand", "links": body.links}
-    if source in opinions.SOCIAL:
-        meta["posts"] = len(body.links) or None
-    opinions.save(db, cid, source, body.scores.model_dump(), clean_paragraph(body.note), meta)
-    return admin_company(db, service.get_company(db, cid))
-
-
-@app.delete("/api/admin/companies/{cid}/opinions/{source}", dependencies=[Depends(require_admin)])
-def admin_clear_opinion(cid: int, source: str, db=Depends(get_db)):
-    if source not in opinions.OUTSIDE or not service.get_company(db, cid):
-        raise HTTPException(404, "No such company or source.")
-    opinions.remove(db, cid, source)
-    return admin_company(db, service.get_company(db, cid))
 
 
 # --- web pulse (host hint only: never feeds engine scores or player routes) ---------------------------
@@ -1091,7 +1045,7 @@ def admin_rewrite_card(cid: int, db=Depends(get_db)):
     if card["is_startup"]:
         note = comp["evidence_note"] or ""
         if "Card text written by AI" not in note:
-            note = (note + " " + autofill.AI_NOTE.format(model=config.task_model("card"))).strip()
+            note = (note + " " + autofill.AI_NOTE.format(model=config.OPENROUTER_MODEL)).strip()
         db.execute("UPDATE companies SET emoji = ?, sector = ?, one_liner = ?, claim_ask = ?, facts = ?, evidence_note = ?, "
                    "card_status = 'ai' WHERE id = ?", (card["emoji"] or comp["emoji"], card["sector"] or comp["sector"], card["one_liner"],
                                     card["claim_ask"], dumps(card["facts"]), note, cid))

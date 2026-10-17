@@ -299,6 +299,9 @@ def triangulate(crowd_n: int, crowd_c: float | None, engine_c: float, pulse: dic
 
 
 REVIEW = {
+    "ai": ("Estimated by AI · host confirms",
+           "Every factor its website and news speak to was scored by AI; the rest stay unknown. Readiness, thesis "
+           "fit and the call follow from those estimates until the host confirms the evidence."),
     "auto": ("Auto-estimated · host confirms",
              "Found by discovery. Only the tech stage is estimated, from its headlines or site; every other factor "
              "stays unknown until the host reviews the evidence in Admin."),
@@ -392,6 +395,8 @@ def company_insight(db, comp, real_only: bool) -> dict:
         "emoji": comp["emoji"] or "", "vision": comp["vision"] or "", "stages": j(comp["stages"], []),
         "raised_eur": comp["raised_eur"], "investors": j(comp["investors"], []),
         "profile": {"status": comp["profile_status"] or "", "note": comp["profile_note"] or ""},
+        # In the daily game or not, and why: the automatic moderation's verdict (crawler/gate.py).
+        "game": {"status": comp["game_status"] or "", "note": comp["game_note"] or ""},
         "opinions": opinions.for_card(db, comp["id"], None, room if room["n"] else None),
         "quiet": opinions.quiet(db, comp["id"]),
     }

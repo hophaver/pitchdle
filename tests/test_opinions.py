@@ -91,7 +91,7 @@ def test_apelago_evaluations(client, admin, moderator):
 
 
 def fake_reads(monkeypatch):
-    def rate_all(comp):
+    def rate_all(comp, brief=None):
         return {"claude": {"scores": {**GUESS, "novel": 4.0}, "note": "Strong trials.", "meta": {"model": "claude-opus-5-5"}},
                 "gpt": {"error": "APIError: overloaded"}, "grok": {"skipped": "no XAI_API_KEY"}}
 
@@ -117,20 +117,6 @@ def test_outside_reads_are_kept(client, admin, monkeypatch):
     assert r["company"]["opinions"]["reddit"]["scores"] is None
     assert client.post(f"/api/admin/companies/{cid}/reads/tarot", auth=admin).status_code == 404
     assert "ready" in client.get("/api/admin/mode", auth=admin).json()["reads"]
-
-
-def test_opinions_entered_by_hand(client, admin):
-    cid = client.get("/api/admin/companies", auth=admin).json()[0]["id"]
-    body = {"scores": {"novel": 2.5, "useful": 3, "plausible": 4, "investable": 1}, "note": "From the chat app.",
-            "links": ["linkedin.com/posts/abc"]}
-    assert client.put(f"/api/admin/companies/{cid}/opinions/linkedin", json=body).status_code == 401
-    out = client.put(f"/api/admin/companies/{cid}/opinions/linkedin", json=body, auth=admin).json()["opinions"]["linkedin"]
-    assert out["meta"] == {"by": "hand", "links": ["https://linkedin.com/posts/abc"], "posts": 1}
-    assert client.put(f"/api/admin/companies/{cid}/opinions/apelago", json=body, auth=admin).status_code == 404
-    bad = {**body, "scores": {**body["scores"], "novel": 6}}
-    assert client.put(f"/api/admin/companies/{cid}/opinions/gpt", json=bad, auth=admin).status_code == 422
-    out = client.delete(f"/api/admin/companies/{cid}/opinions/linkedin", auth=admin).json()
-    assert "linkedin" not in out["opinions"]
 
 
 def test_result_cards_show_every_opinion_in_order(client, admin, moderator, monkeypatch):

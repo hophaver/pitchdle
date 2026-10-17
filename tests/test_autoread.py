@@ -2,8 +2,9 @@
 startup for cards from before. The reads are faked here; tests/test_reads.py covers the real calls."""
 import pytest
 
-from app import autoread, config, reads
-from app.crawler import profile
+from app import autoread, config, opinions, reads
+from app.crawler import gate, profile
+from app.db import connect
 from tests.conftest import new_player, sign_up
 from tests.test_api import GUESS, today
 
@@ -20,7 +21,7 @@ def calls(client, monkeypatch):
     monkeypatch.setattr(config, "OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setattr(autoread, "START", lambda fn: fn())
 
-    def rate_all(comp, only=None):
+    def rate_all(comp, only=None, brief=None):
         made.append((comp["name"], "ai", tuple(only)))
         return {key: AI_READ for key in only}
 
@@ -32,9 +33,14 @@ def calls(client, monkeypatch):
         db.execute("UPDATE companies SET profile_status = 'ai' WHERE id = ?", (comp["id"],))
         db.commit()
 
+    def check(db, comp):  # and tests/test_gate.py the game check
+        db.execute("UPDATE companies SET game_status = 'in', active = 1 WHERE id = ?", (comp["id"],))
+        db.commit()
+
     monkeypatch.setattr(reads, "rate_all", rate_all)
     monkeypatch.setattr(reads, "social_all", social_all)
     monkeypatch.setattr(profile, "fill", fill_profile)
+    monkeypatch.setattr(gate, "check", check)
     return made
 
 
@@ -69,21 +75,22 @@ def test_a_new_card_is_read_when_its_added(client, admin, calls):
     assert card["quiet"] == ["Threads", "LinkedIn", "Reddit", "Bluesky"]  # searched, nothing found
 
 
-def test_failures_wait_for_the_next_run_and_typed_reads_count(client, admin, calls, monkeypatch):
+def test_failures_wait_for_the_next_run_and_reads_already_there_count(client, admin, calls, monkeypatch):
     autoread.kick()
     comp = client.post("/api/admin/companies", json=REAL, auth=admin).json()
     cid = comp["id"]
-    client.delete(f"/api/admin/companies/{cid}/opinions/gpt", auth=admin)
-    client.delete(f"/api/admin/companies/{cid}/opinions/grok", auth=admin)
-    client.put(f"/api/admin/companies/{cid}/opinions/grok", auth=admin,
-               json={"scores": {**GUESS, "novel": 1}, "note": "Typed in."})
-    monkeypatch.setattr(reads, "rate_all", lambda comp, only=None: {key: {"error": "APIError: down"} for key in only})
+    db = connect()
+    opinions.remove(db, cid, "gpt")
+    opinions.remove(db, cid, "grok")
+    opinions.save(db, cid, "grok", {**GUESS, "novel": 1.0}, "Read before.", {"by": "fetched"})
+    db.close()
+    monkeypatch.setattr(reads, "rate_all", lambda comp, only=None, brief=None: {key: {"error": "APIError: down"} for key in only})
     calls.clear()
     client.post("/api/admin/autoread", auth=admin)
     st = client.get("/api/admin/mode", auth=admin).json()["reads"]["auto"]
-    assert st["errors"] == ["Kelp Co, GPT: APIError: down"]  # only GPT was missing: grok was typed in
+    assert st["errors"] == ["Kelp Co, GPT: APIError: down"]  # only GPT was missing: grok was already read
     kelp = next(c for c in client.get("/api/admin/companies", auth=admin).json() if c["id"] == cid)
-    assert "gpt" not in kelp["opinions"] and kelp["opinions"]["grok"]["meta"]["by"] == "hand"
+    assert "gpt" not in kelp["opinions"] and kelp["opinions"]["grok"]["note"] == "Read before."
 
 
 def test_nothing_runs_without_a_key(client, admin, monkeypatch):

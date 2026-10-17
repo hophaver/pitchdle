@@ -1,13 +1,13 @@
 // Dashboard: the opportunity radar. Every tracked company and every new discovery as a card with a call
-// (back / watch / avoid), a lens on why (thesis, readiness, the game's crowd, the web), and its next move.
+// (back / watch / avoid), its reviews' average on the four calls, and its next move. Sorted by those reviews.
 // Details opens the startup's full card: everything an investor's game card shows, and the radar's whole read.
 const { h, api, post, fmt1, AXES, AXIS } = PD;
 const $app = document.getElementById("app");
 
-const LENSES = [["thesis", "Thesis"], ["readiness", "Readiness"], ["game", "Game"], ["opinions", "Opinions"], ["web", "Web"]];
 const COUNT_WORD = { crowd: "answer", apelago: "reviewer" }; // social media counts posts
 const FILTERS = [["all", "All"], ["back", "Back"], ["watch", "Watch"], ["avoid", "Avoid"], ["evidence", "Needs evidence"], ["new", "New"]];
-const SORTS = [["redstone", "Redstone fit"], ["apelago", "A'Pelago fit"], ["readiness", "Readiness"], ["gap", "Crowd gap"]];
+// Sorting is by the reviews' average (the game, AI models and social media): one of the four calls, or all four.
+const SORTS = [["avg", "Average"], ["novel", "Novel"], ["useful", "Useful"], ["plausible", "Plausible"], ["investable", "Investable"]];
 const KIND_LABEL = { investor: "Investors", grant: "Grants", partner: "Partners", client: "Clients" };
 const LEVELS = [["ocean_impact", "Ocean impact"], ["business", "Business"], ["tech", "Technology"], ["investment", "Investment"]];
 const DEFS = {
@@ -18,10 +18,12 @@ const DEFS = {
     + "A'Pelago: accelerator lens (ocean impact, business readiness, team). 0–5, from evidence alone.",
 };
 
+const saved = (localStorageGet("pd.sort") || "avg:desc").split(":");
 const state = {
-  lens: localStorageGet("pd.lens") || "thesis", filter: "all", sort: "redstone", realOnly: false,
+  filter: "all", sort: SORTS.some(([k]) => k === saved[0]) ? saved[0] : "avg", dir: saved[1] === "asc" ? "asc" : "desc",
   open: null, busy: new Set(), searching: false,
 };
+const remember = () => localStorageSet("pd.sort", `${state.sort}:${state.dir}`);
 let data = null;
 let lastSig = null;
 
@@ -33,6 +35,14 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 function nameLink(name, url) {
   return url ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, name) : name;
+}
+
+// A real startup joins the daily game by itself once its card is filled and passes the automatic check.
+function gameTag(c) {
+  const g = c.game || {};
+  if (g.status === "in") return h("span", { class: "tag in" }, "In game");
+  if (g.status === "out") return h("span", { class: "tag out", title: g.note }, "Not in game");
+  return h("span", { class: "tag" }, c.profile && c.profile.status ? "Checking for the game" : "Not in game yet");
 }
 
 function callChip(c) {
@@ -66,10 +76,6 @@ function lean(p) {
 
 // --- the startup's profile and outside opinions (what an investor's game card shows) ----------------
 
-// The average of an opinion's four calls, for one bar per source.
-const meanOf = (scores) => AXES.reduce((sum, a) => sum + scores[a], 0) / AXES.length;
-const groupMean = (tiles) => (tiles.length ? tiles.reduce((sum, t) => sum + meanOf(t.scores), 0) / tiles.length : null);
-
 // "€650k raised · Seed round · 3 investors": the card's facts on one line.
 function factLine(c) {
   const invested = c.investors.filter((i) => i.status === "invested").length;
@@ -81,62 +87,48 @@ function factLine(c) {
   return facts.length ? h("div", { class: "facts-line" }, facts.map((f) => h("span", {}, f))) : null;
 }
 
-// One bar each for A'Pelago, the AI models and social media: the average of their four calls.
-function opinionBars(c) {
-  const of = (g) => c.opinions.filter((t) => t.group === g);
-  const ap = c.opinions.find((t) => t.key === "apelago");
-  const ai = of("ai");
-  const social = of("social");
-  if (!ap && !ai.length && !social.length) return [h("span", { class: "muted" }, "No outside opinions yet")];
-  return [
-    bar("A'Pelago", ap ? meanOf(ap.scores) : null),
-    bar("AI models", groupMean(ai)),
-    bar("Social", groupMean(social)),
-    h("span", { class: "muted" }, [ap ? plural(ap.count, "reviewer") : null, ai.length ? `${ai.map((t) => t.label).join(", ")}` : null,
-      social.length ? social.map((t) => t.label).join(", ") : null].filter(Boolean).join(" · ")),
-  ];
+// The reviews' average: the game (everyone who played), the AI models and social media, each counting once, on each
+// of the four calls. null until any of them is in. The card, the sort and the details table all use it.
+function reviewAverage(c) {
+  const groups = [c.opinions.filter((t) => t.key === "crowd"), c.opinions.filter((t) => t.group === "ai"),
+    c.opinions.filter((t) => t.group === "social")].filter((g) => g.length);
+  if (!groups.length) return null;
+  const means = groups.map((g) => Object.fromEntries(AXES.map((a) => [a, g.reduce((s, t) => s + t.scores[a], 0) / g.length])));
+  const scores = Object.fromEntries(AXES.map((a) => [a, means.reduce((s, m) => s + m[a], 0) / means.length]));
+  return { scores, avg: AXES.reduce((s, a) => s + scores[a], 0) / AXES.length, groups: groups.length };
+}
+
+const AXIS_LETTER = { novel: "N", useful: "U", plausible: "P", investable: "I" };
+
+// The card's scores: N U P I and their average, each on a small 0-5 bar.
+function reviewScores(c) {
+  const r = reviewAverage(c);
+  if (!r) return h("div", { class: "nupi empty" }, h("span", { class: "muted" }, "No reviews yet"));
+  const cell = (label, v, title, cls = "") => h("div", { class: `nupi-cell ${cls}`, title: `${title} ${fmt1(v)}` },
+    h("small", {}, label), h("b", {}, fmt1(v)), h("i", { style: { "--v": v / 5 } }));
+  return h("div", { class: "nupi", title: `Average of the game, AI models and social media (${r.groups} of 3 in)` },
+    AXES.map((a) => cell(AXIS_LETTER[a], r.scores[a], AXIS[a], state.sort === a ? "on" : "")),
+    cell("Avg", r.avg, "Average", `avg${state.sort === "avg" ? " on" : ""}`));
 }
 
 const short = (label) => label.replace(/\s*\(.*\)\s*/, "").toLowerCase();
 const known = (c) => c.coverage && c.coverage.assessed > 0;
-const extremes = (c) => {
-  const f = [...(c.factors || [])].sort((a, b) => b.value - a.value);
-  return f.length >= 2 ? [f[0], f[f.length - 1]] : [];
-};
-
-// --- the lens on a card -----------------------------------------------------------------------------
-
-function lensBody(c) {
-  if (c.kind === "cand") return h("span", { class: "muted" }, "Not assessed yet");
-  if (state.lens === "thesis") {
-    const [top, low] = extremes(c);
-    return [bar("Redstone", c.theses.redstone.score), bar("A'Pelago", c.theses.apelago.score),
-      top ? h("span", { class: "muted" }, `+ ${short(top.label)} ${fmt1(top.value)}   − ${short(low.label)} ${fmt1(low.value)}`) : null];
-  }
-  if (state.lens === "readiness") {
-    return LEVELS.map(([k, label]) => {
-      const lv = c.readiness[k];
-      return k === "tech" && lv.trl ? bar(label, lv.score, `TRL ${lv.trl} · `) : bar(label, lv.score);
-    });
-  }
-  if (state.lens === "game") {
-    if (!c.crowd.n) return h("span", { class: "muted" }, "Not played yet");
-    return [track(c), h("span", { class: "muted" },
-      h("span", {}, h("i", { class: "key crowd" }), `crowd ${fmt1(c.crowd.composite)}`), "  ",
-      h("span", {}, h("i", { class: "key engine" }), `engine ${known(c) ? fmt1(c.engine.composite) : "–"}`),
-      ` · ${plural(c.crowd.n, "answer")}`),
-    c.flags.length ? h("span", {}, c.flags.map((f) => f.label).join(" · ")) : null];
-  }
-  if (state.lens === "opinions") return opinionBars(c);
-  const p = c.pulse;
-  if (!p) return h("span", { class: "muted" }, "Not checked");
-  const top = p.top_hits[0];
-  return [lean(p), top ? h("a", { href: top.link, target: "_blank", rel: "noopener noreferrer", class: "muted" }, top.title) : null];
-}
 
 // --- cards ------------------------------------------------------------------------------------------
 
 function card(c) {
+  if (c.kind === "sub") {
+    const busy = state.busy.has(`s${c.id}`);
+    return h("article", { class: "rc new" },
+      h("div", { class: "top" }, h("div", { class: "name" }, nameLink(c.name, /^https?:\/\//i.test(c.website) ? c.website : "")),
+        h("span", { class: "call new" }, "New")),
+      h("div", { class: "meta" }, h("span", { class: "tag player" }, "Sent in by a player"), c.sector ? ` · ${c.sector}` : ""),
+      h("div", { class: "what" }, c.one_liner),
+      c.claim_ask ? h("div", { class: "ask" }, c.claim_ask) : null,
+      h("div", { class: "foot" },
+        h("button", { class: `btn primary${busy ? " busy" : ""}`, disabled: busy, onclick: () => trackSub(c) }, busy ? "Tracking…" : "Track"),
+        h("button", { class: "btn link", disabled: busy, onclick: () => dismissSub(c) }, "Dismiss")));
+  }
   if (c.kind === "cand") {
     const sc = c.screen || {};
     const where = sc.verdict === "kept" && (sc.based_in || c.country_tag) ? sc.based_in || c.country_tag : "";
@@ -153,11 +145,11 @@ function card(c) {
   const n = c.next;
   return h("article", { class: "rc" },
     h("div", { class: "top" }, h("div", { class: "name" }, nameLink(c.name, c.website)), callChip(c)),
-    h("div", { class: "meta" }, [c.sector, c.country].filter(Boolean).join(" · ") || " "),
+    h("div", { class: "meta" }, c.is_real ? gameTag(c) : null, [c.sector, c.country].filter(Boolean).join(" · ") || " "),
     h("div", { class: "what" }, c.one_liner),
     c.claim_ask ? h("div", { class: "ask" }, c.claim_ask) : null,
     factLine(c),
-    h("div", { class: "lens" }, lensBody(c)),
+    reviewScores(c),
     n && n.with ? h("div", { class: "next" }, h("b", {}, "Next: "), `${n.text} with `, nameLink(n.with, n.url)) : null,
     h("div", { class: "foot" }, h("button", { class: "btn", onclick: () => openDrawer(c.id) }, "Details")));
 }
@@ -170,6 +162,24 @@ async function track_(c) {
     PD.toast(`${c.name} tracked`);
   } catch (e) { PD.toast(e.message); }
   state.busy.delete(`c${c.id}`);
+  refresh(true);
+}
+
+// A player's suggestion becomes a real startup like a discovery find: filled, checked for the game and reviewed by
+// itself once tracked.
+async function trackSub(c) {
+  state.busy.add(`s${c.id}`);
+  render();
+  try {
+    await post(`/api/admin/submissions/${c.id}/approve`, {});
+    PD.toast(`${c.name} tracked`);
+  } catch (e) { PD.toast(e.message, 6000); }
+  state.busy.delete(`s${c.id}`);
+  refresh(true);
+}
+
+async function dismissSub(c) {
+  try { await post(`/api/admin/submissions/${c.id}`, undefined, "DELETE"); } catch (e) { PD.toast(e.message); }
   refresh(true);
 }
 
@@ -216,12 +226,22 @@ const clamp = (text, cls = "") => h("p", { class: `clamp ${cls}`, title: "Click 
   onclick: (e) => e.currentTarget.classList.toggle("open"),
   onkeydown: (e) => { if (e.key === "Enter") e.currentTarget.classList.toggle("open"); } }, text);
 
+// Where a real startup's automatic fill (profile and evidence, from its website and news) stands, or null once
+// it's done. A failed fill shows its error; the next background run tries again.
+function fillState(c) {
+  if (!c.is_real || (c.profile && c.profile.status)) return null;
+  const r = data.reads || {};
+  if (!r.fill) return "Fills automatically once OPENROUTER_API_KEY is set in .env.";
+  const err = (r.auto.errors || []).find((e) => e.startsWith(`${c.name}, profile:`));
+  if (r.auto.running) return "Filling from its website and news…";
+  return err ? `Couldn't fill it: ${err.slice(c.name.length + 11)}` : "Waiting to be filled from its website and news.";
+}
+
 // The facts as the investor's game card shows them: raised so far, investors and stage, then every stage passed
-// and every investor. A profile the AI filled says so.
+// and every investor.
 function factsSect(c) {
   const invested = c.investors.filter((i) => i.status === "invested");
   const box = (label, value, cls = "") => h("div", { class: `fact-box ${cls}` }, h("small", { class: "caps" }, label), h("b", {}, value));
-  const ai = c.profile && c.profile.status === "ai";
   return h("section", { class: "sect g-facts" },
     h("div", { class: "fact-grid" },
       box("Raised so far", money(c.raised_eur)),
@@ -232,18 +252,15 @@ function factsSect(c) {
       h("ul", { class: "investor-list" }, c.investors.map((i) => h("li", {}, h("b", {}, i.name), " ",
         i.status === "interested" ? h("span", { class: "interested" }, "interested")
           : i.amount_eur ? PD.money(i.amount_eur) : "invested")))] : null,
-    ai ? h("p", { class: "note ai-note", title: c.profile.note }, "Filled by AI from its website and news. Check it.") : null,
-    c.is_real && !ai && !c.stages.length && !c.investors.length && c.raised_eur == null
-      ? h("p", { class: "note" }, "Not filled yet: the AI fills it in the background, or use Admin → Profile & opinions.") : null);
+    fillState(c) ? h("p", { class: "note fill-state" }, fillState(c)) : null);
 }
 
 function startupCol(c) {
   return [
     factsSect(c),
-    c.vision ? sect("Vision", h("div", { class: "clamp vision-text", title: "Click to read it all", tabindex: "0",
-      onclick: (e) => e.currentTarget.classList.toggle("open"),
-      onkeydown: (e) => { if (e.key === "Enter") e.currentTarget.classList.toggle("open"); } },
-    c.vision.split(/\n{2,}/).map((p) => h("p", { class: "vision" }, p)))) : null,
+    // Always in full: a long vision sets a size smaller rather than being cut.
+    c.vision ? sect("Vision", h("div", { class: `vision-text${c.vision.split(/\s+/).length > 110 ? " long" : ""}` },
+      c.vision.split(/\n{2,}/).map((p) => h("p", { class: "vision" }, p)))) : null,
     evidenceSect(c),
   ];
 }
@@ -263,7 +280,7 @@ function callBox(c) {
   const n = c.next;
   return h("section", { class: "sect call-box" },
     h("div", { class: "caps sect-title" }, "The call ", callChip(c)),
-    h("p", { class: "reasons" }, c.call.reasons.join(" · ")),
+    h("p", { class: "reasons" }, c.call.key === "evidence" && fillState(c) ? fillState(c) : c.call.reasons.join(" · ")),
     n ? h("div", { class: "move" }, h("b", {}, n.text, n.with ? [" with ", nameLink(n.with, n.url)] : null),
       h("span", { class: "note" }, ` · weakest: ${n.gap_label.replace(/\s*\(.*\)/, "")} ${n.gap_score === null ? "unknown" : fmt1(n.gap_score)}`)) : null);
 }
@@ -290,20 +307,52 @@ function readCol(c) {
   ];
 }
 
+// One click gets every review: the AI models' ratings and, for a real startup, a social media read (a made-up one
+// would only turn up namesakes). Each overwrites that source's last read.
+async function refreshReviews(c) {
+  const key = `reviews${c.id}`;
+  state.busy.add(key);
+  renderDrawer();
+  const kinds = c.is_real && (data.reads.ready.claude || data.reads.ready.grok) ? ["ai", "social"] : ["ai"];
+  const outs = await Promise.allSettled(kinds.map((kind) => post(`/api/admin/companies/${c.id}/reads/${kind}`, {})));
+  const report = outs.flatMap((o) => (o.status === "fulfilled" ? Object.values(o.value.report) : []));
+  const failed = report.find((r) => r.error) || outs.find((o) => o.status === "rejected");
+  const done = report.filter((r) => r.done).length;
+  PD.toast(`${done} of ${report.length || kinds.length} reviews in${failed ? ` · ${failed.error || failed.reason.message}` : ""}`,
+    failed ? 8000 : 3000);
+  state.busy.delete(key);
+  await refresh(true);
+}
+
+function reviewButton(c) {
+  const { ready, models } = data.reads;
+  const ok = Object.values(ready).some(Boolean);
+  const busy = state.busy.has(`reviews${c.id}`);
+  const has = c.opinions.some((t) => t.group === "ai" || t.group === "social") || c.quiet.length;
+  return h("div", { class: "row review-btns" },
+    h("button", { class: `pill ghost small${busy ? " busy" : ""}`, disabled: busy || !ok,
+      title: `${models.claude}, ${models.gpt} and ${models.grok} rate it${c.is_real ? ", and social media is read" : ""} (a minute or two)`,
+      onclick: () => refreshReviews(c) }, busy ? "Getting reviews…" : has ? "Refresh reviews" : "Get reviews"),
+    ok ? null : h("span", { class: "note" }, "Set OPENROUTER_API_KEY in .env to get reviews."));
+}
+
 // Every read of the startup on the same four calls: the engine's evidence, the crowd, A'Pelago, the AI models and
 // social media. A row with a reason opens it on a click.
 function readsTable(c) {
   const rows = [];
   if (known(c)) rows.push({ key: "engine", label: "Engine", scores: c.engine.axes, note: `From the evidence: ${c.coverage.assessed}/${c.coverage.total} factors known.` });
   rows.push(...c.opinions);
+  const r = reviewAverage(c);
+  const overall = r ? { label: "Average", scores: r.scores,
+    note: `The game, AI models and social media, each counting once (${r.groups} of 3 in).` } : null;
   const avg = (s) => AXES.reduce((sum, a) => sum + s[a], 0) / AXES.length;
   const cell = (v) => h("td", {}, h("span", { class: "v" }, fmt1(v)), h("i", { class: "mini", style: { "--v": v / 5 } }));
-  const groupOf = (t) => (t.key === "engine" ? "engine" : t.group);
+  const groupOf = (t) => (t.key === "engine" || t.key === "overall" ? t.key : t.group);
   const body = [];
   let last = null;
   for (const t of rows) {
     const g = groupOf(t);
-    if (g !== last && g !== "engine") {
+    if (g !== last && g !== "engine" && g !== "overall") {
       body.push(h("tr", { class: "group" }, h("th", { colspan: 7 }, { people: "People", ai: "AI models", social: "Social media" }[g])));
     }
     last = g;
@@ -323,12 +372,19 @@ function readsTable(c) {
     !c.is_real && !social.length ? "no social media (made up)" : c.quiet.length ? `no posts on ${c.quiet.join(", ")}`
       : social.length ? null : "social media not read yet",
   ].filter(Boolean);
+  if (overall) {
+    body.unshift(h("tr", { class: "overall", title: overall.note },
+      h("th", {}, overall.label, h("small", {}, "game · AI · social")),
+      AXES.map((a) => cell(overall.scores[a])), h("td", { class: "avg" }, fmt1(avg(overall.scores))),
+      h("td", { class: "why" }, h("span", {}, overall.note))));
+  }
   return sect("What everyone makes of it",
     !rows.length ? null : h("table", { class: "reads" },
       h("colgroup", {}, h("col", { class: "c-who" }), AXES.map(() => h("col", { class: "c-num" })), h("col", { class: "c-num" }), h("col")),
       h("thead", {}, h("tr", {}, h("td"), AXES.map((a) => h("th", { title: AXIS[a] }, AXIS[a][0])), h("th", {}, "Avg"), h("th", { class: "why" }, "Why"))),
       h("tbody", {}, body)),
-    missing.length ? h("p", { class: "note" }, `${missing.join(" · ")}.`.replace(/^./, (s) => s.toUpperCase())) : null);
+    missing.length ? h("p", { class: "note" }, `${missing.join(" · ")}.`.replace(/^./, (s) => s.toUpperCase())) : null,
+    reviewButton(c));
 }
 
 function crowdSect(c) {
@@ -368,6 +424,8 @@ function stepsSect(c) {
 }
 
 function renderDrawer() {
+  const was = document.querySelector(".dossier-wrap");
+  const scroll = was ? was.scrollTop : 0;
   document.querySelectorAll(".dossier-wrap").forEach((el) => el.remove());
   document.body.classList.remove("dossier-open");
   const c = state.open && data && data.companies.find((x) => x.id === state.open);
@@ -380,7 +438,9 @@ function renderDrawer() {
         h("div", { class: "name-row" }, c.emoji ? h("div", { class: "art small", "aria-hidden": "true" }, c.emoji) : null,
           h("div", {}, h("h2", {}, c.name),
             h("div", { class: "row meta" },
-              h("span", { class: "caps sector" }, [c.sector, c.country, c.is_real ? "real startup" : "made-up startup"].filter(Boolean).join(" · ")),
+              c.is_real ? gameTag(c) : null,
+              h("span", { class: "caps sector" }, [c.sector, c.country, c.is_real ? null : "made-up startup"].filter(Boolean).join(" · ")),
+              c.game && c.game.status === "out" ? h("span", { class: "game-note" }, `Kept out: ${c.game.note}`) : null,
               site ? h("a", { class: "site", href: site, target: "_blank", rel: "noopener noreferrer nofollow" },
                 `${site.replace(/^https?:\/\/(www\.)?/, "").replace(/\/.*$/, "")} ↗`) : null))),
         h("p", { class: "pitch-line" }, c.one_liner || (c.vision || "").split(/(?<=[.!?])\s/)[0]),
@@ -394,7 +454,8 @@ function renderDrawer() {
   const wrap = h("div", { class: "dossier-wrap", onclick: (e) => { if (e.target === wrap) closeDrawer(); } }, card);
   document.body.append(wrap);
   document.body.classList.add("dossier-open");
-  card.querySelector(".close-x").focus({ preventScroll: true });
+  wrap.scrollTop = scroll;
+  if (!was) card.querySelector(".close-x").focus({ preventScroll: true });
 }
 
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.open) closeDrawer(); });
@@ -403,21 +464,16 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.op
 
 function items() {
   const cos = data.companies.map((c) => ({ ...c, kind: "co" }));
-  const cands = data.candidates.map((c) => ({ ...c, kind: "cand" }));
+  // Players' suggestions first, then discovery's finds: both wait for Track or Dismiss.
+  const cands = [...(data.submissions || []).map((c) => ({ ...c, kind: "sub" })), ...data.candidates.map((c) => ({ ...c, kind: "cand" }))];
   return { cos, cands };
 }
 
-function readinessMean(c) {
-  const s = Object.values(c.readiness).map((l) => l.score).filter((v) => v !== null);
-  return s.length ? s.reduce((a, b) => a + b, 0) / s.length : -1;
+// The review score a card sorts by, or null when it has no reviews yet.
+function sortValue(c) {
+  const r = reviewAverage(c);
+  return !r ? null : state.sort === "avg" ? r.avg : r.scores[state.sort];
 }
-
-const SORT = {
-  redstone: (c) => c.theses.redstone.score ?? -1,
-  apelago: (c) => c.theses.apelago.score ?? -1,
-  readiness: readinessMean,
-  gap: (c) => (c.gap === null ? -1 : Math.abs(c.gap)),
-};
 
 function searchRow() {
   const country = h("input", { type: "text", placeholder: "Country", maxlength: 40, "aria-label": "Country" });
@@ -445,7 +501,11 @@ function render() {
   const { cos, cands } = items();
   const count = { all: cos.length + cands.length, new: cands.length };
   for (const c of cos) count[c.call.key] = (count[c.call.key] || 0) + 1;
-  const sorted = (arr) => [...arr].sort((a, b) => SORT[state.sort](b) - SORT[state.sort](a) || a.name.localeCompare(b.name));
+  const sorted = (arr) => [...arr].sort((a, b) => {
+    const x = sortValue(a), y = sortValue(b);
+    if (x === null || y === null) return (x === null) - (y === null) || a.name.localeCompare(b.name);
+    return (state.dir === "desc" ? y - x : x - y) || a.name.localeCompare(b.name);
+  });
   const list = state.filter === "new" ? cands
     : state.filter === "all" ? [...sorted(cos), ...cands]
       : sorted(cos.filter((c) => c.call.key === state.filter));
@@ -459,11 +519,10 @@ function render() {
       h("div", { class: "chips", role: "group", "aria-label": "Show" }, FILTERS.filter(([k]) => k === "all" || count[k]).map(([k, label]) =>
         h("button", { "aria-pressed": String(state.filter === k), onclick: () => { state.filter = k; render(); } }, label, h("b", {}, count[k] || 0)))),
       h("span", { class: "spacer" }),
-      seg(LENSES, state.lens, (k) => { state.lens = k; localStorageSet("pd.lens", k); render(); }),
-      h("select", { "aria-label": "Sort", onchange: (e) => { state.sort = e.target.value; render(); } },
-        SORTS.map(([k, label]) => h("option", { value: k, selected: state.sort === k }, label))),
-      state.lens === "game" ? h("label", { class: "check" }, h("input", { type: "checkbox", checked: state.realOnly,
-        onchange: (e) => { state.realOnly = e.target.checked; refresh(true); } }), "Real answers only") : null),
+      h("label", { class: "sort" }, "Sort by",
+        h("select", { "aria-label": "Sort by", onchange: (e) => { state.sort = e.target.value; remember(); render(); } },
+          SORTS.map(([k, label]) => h("option", { value: k, selected: state.sort === k }, label)))),
+      seg([["desc", "High → low"], ["asc", "Low → high"]], state.dir, (k) => { state.dir = k; remember(); render(); })),
     list.length ? h("div", { class: "grid" }, list.map(card))
       : h("p", { class: "empty" }, data.mode === "live" ? "No startups yet. Find some above." : "No companies."),
   ].filter(Boolean));
@@ -472,7 +531,7 @@ function render() {
 async function refresh(force = false) {
   let fresh;
   try {
-    fresh = await api(`/api/host/radar?real_only=${state.realOnly}`);
+    fresh = await api("/api/host/radar");
   } catch (e) {
     $app.replaceChildren(h("p", { class: "callout" }, e.message));
     return;
@@ -484,7 +543,11 @@ async function refresh(force = false) {
   fresh.companies = fresh.companies.filter((c) => c.is_real === (fresh.mode === "live"));
   data = fresh;
   render();
-  if (state.open) renderDrawer();
+  // The open card is redrawn only when something on it changed (a fill or a read landing), so it never jumps.
+  const open = state.open && data.companies.find((c) => c.id === state.open);
+  const openSig = open ? JSON.stringify(open) + JSON.stringify(data.reads.auto.running) : null;
+  if (state.open && (force || openSig !== state.openSig)) renderDrawer();
+  state.openSig = openSig;
 }
 
 state.open = Number((location.hash.match(/^#co-(\d+)$/) || [])[1]) || null;
@@ -495,3 +558,8 @@ setInterval(() => {
   const typing = document.activeElement && ["INPUT", "SELECT"].includes(document.activeElement.tagName);
   if (!document.hidden && !state.open && !typing && !state.searching) refresh();
 }, 15000);
+// While cards are being filled or read in the background, check often, so profiles, evidence and ratings appear
+// on their own, on an open card too.
+setInterval(() => {
+  if (!document.hidden && data && data.reads && data.reads.auto.running && !state.searching) refresh();
+}, 4000);

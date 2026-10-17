@@ -1,11 +1,11 @@
 """A real startup's profile filled by AI from its website and news: only what the sources say, only empty fields,
-on PROFILE_MODEL when it's set. The model, website and feeds are faked here."""
+with the evidence scored, on OPENROUTER_MODEL. The model, website and feeds are faked here."""
 import json
 
 import pytest
 
 from app import autoread, config, reads
-from app.crawler import pitch, profile, pulse, website
+from app.crawler import gate, pitch, profile, pulse, website
 
 REAL_POST = pitch._post  # taken before conftest swaps it for one that fails like a dead network
 REAL = {"name": "HydroSight", "sector": "water tech", "one_liner": "Sensors that find leaks in city water pipes.",
@@ -14,7 +14,13 @@ ANSWER = {"vision": "HydroSight puts acoustic sensors in water mains so cities f
           "country": "Israel", "raised": {"amount": 5_000_000, "currency": "USD"},
           "stages": ["Seed round: $5M (2025)"],
           "investors": [{"name": "Blue Fund", "status": "invested", "amount": 3_000_000, "currency": "USD"},
-                        {"name": "Wave Angels", "status": "interested", "amount": None, "currency": ""}]}
+                        {"name": "Wave Angels", "status": "interested", "amount": None, "currency": ""}],
+          "evidence": {"trl_stage": "pilot", "patents": None, "basis": "City pilot in Haifa; $5M seed.",
+                       "impact": {"measurability": 3, "problem_pressure": 4, "solution_potential": 3.5},
+                       "brl": {"market": 3, "value_prop": 4, "business_model": None, "scalability": 3},
+                       "redstone": {"market": 4, "product": 3, "team": None, "business_model": None, "competition": 2.5,
+                                    "marketing": None, "financials": 3, "tech": 3.5, "deal_dynamics": 3.5,
+                                    "impact": 3.2}}}
 
 
 @pytest.fixture
@@ -24,8 +30,8 @@ def model(client, monkeypatch):
     monkeypatch.setattr(config, "OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setattr(autoread, "START", lambda fn: fn())
     # The ratings that follow a fill have their own tests: here they answer at once, with nothing.
-    monkeypatch.setattr(reads, "rate_all", lambda comp, only=None: {})
-    monkeypatch.setattr(reads, "social_all", lambda comp, only=None: {})
+    monkeypatch.setattr(reads, "rate_all", lambda comp, only=None, brief=None: {})
+    monkeypatch.setattr(reads, "social_all", lambda comp, only=None, brief=None: {})
     monkeypatch.setattr(website, "fetch", lambda url: {"text": "HydroSight, Haifa. Acoustic leak detection.", "description": "Leak sensors"})
     monkeypatch.setattr(pulse, "compute_pulse", lambda name, limit=20: {"top_hits": [
         {"title": "Haifa startup HydroSight raises $5 million in seed round", "published": "2025-03-02"}]})
@@ -34,6 +40,7 @@ def model(client, monkeypatch):
         sent.append(messages[1]["content"])
         return ANSWER
     monkeypatch.setattr(profile, "complete", complete)
+    monkeypatch.setattr(gate, "complete", lambda messages: {"ok": True, "reason": ""})  # tests/test_gate.py
     return sent
 
 
@@ -56,6 +63,28 @@ def test_a_new_real_startup_gets_its_profile_filled(client, admin, model):
     assert radar["profile"]["status"] == "ai"
 
 
+def test_the_evidence_is_scored_so_readiness_thesis_and_the_call_follow(client, admin, model):
+    comp = add(client, admin)
+    got = next(c for c in client.get("/api/admin/companies", auth=admin).json() if c["id"] == comp["id"])
+    assert got["evidence"]["trl_stage"] == "pilot" and got["evidence"]["impact"]["problem_pressure"] == 4.0
+    assert "team" not in got["evidence"]["redstone"]  # the sources didn't say: unknown, not a guess
+    assert got["evidence"]["redstone"]["impact"] == 3.0  # kept to halves
+    assert got["evidence_status"] == "ai" and "City pilot in Haifa" in got["evidence_note"]
+    radar = next(c for c in client.get("/api/host/radar", auth=admin).json()["companies"] if c["id"] == comp["id"])
+    assert radar["readiness"]["tech"]["trl"] == 6 and radar["readiness"]["ocean_impact"]["score"] is not None
+    assert radar["theses"]["redstone"]["score"] is not None
+    assert radar["call"]["key"] in ("watch", "avoid")  # never Back on evidence the host hasn't confirmed
+    assert radar["review"]["label"].startswith("Estimated by AI")
+
+
+def test_confirmed_evidence_is_never_touched(client, admin, model):
+    mine = {"impact": {"measurability": 1}, "trl_stage": "idea"}
+    comp = add(client, admin, evidence=mine)  # the host's own: saved as confirmed
+    got = next(c for c in client.get("/api/admin/companies", auth=admin).json() if c["id"] == comp["id"])
+    assert got["evidence"] == mine and got["evidence_status"] == "confirmed"
+    assert got["country"] == "Israel"  # the empty profile fields are still filled
+
+
 def test_only_empty_fields_are_filled_and_only_once(client, admin, model):
     comp = add(client, admin, vision="Our own words.", raised_eur=100_000)
     got = next(c for c in client.get("/api/admin/companies", auth=admin).json() if c["id"] == comp["id"])
@@ -63,7 +92,7 @@ def test_only_empty_fields_are_filled_and_only_once(client, admin, model):
     assert got["country"] == "Israel" and got["stages"]  # the empty ones, filled
     model.clear()
     autoread.kick()
-    assert model == []  # done once; a manual fill in Admin can run it again
+    assert model == []  # done once
 
 
 def test_sample_startups_are_never_filled(client, admin, model):
@@ -78,21 +107,7 @@ def test_a_failed_fill_waits_for_the_next_run(client, admin, model, monkeypatch)
     assert any("profile: OSError: down" in e for e in client.get("/api/admin/mode", auth=admin).json()["reads"]["auto"]["errors"])
 
 
-def test_admin_can_fill_by_hand(client, admin, model):
-    comp = add(client, admin)
-    r = client.post(f"/api/admin/companies/{comp['id']}/profile/fill", auth=admin).json()
-    assert r["filled"] == [] and "nothing found" in r["note"]  # everything was already filled on adding
-
-
-def test_each_task_can_have_its_own_model(monkeypatch):
-    monkeypatch.setattr(config, "OPENROUTER_MODEL", "base/model")
-    monkeypatch.setattr(config, "PROFILE_MODEL", "big/model")
-    monkeypatch.setattr(config, "SCREEN_MODEL", "")
-    assert config.task_model("profile") == "big/model"
-    assert config.task_model("screen") == config.task_model("card") == "base/model"
-
-
-def test_calls_are_capped_and_use_the_tasks_model(monkeypatch):
+def test_calls_are_capped_and_use_the_cheap_model(monkeypatch):
     sent = {}
 
     class Resp:
@@ -109,11 +124,11 @@ def test_calls_are_capped_and_use_the_tasks_model(monkeypatch):
         sent.update(json.loads(req.data))
         return Resp()
     monkeypatch.setattr(config, "OPENROUTER_API_KEY", "sk-or-test")
-    monkeypatch.setattr(config, "PROFILE_MODEL", "big/model")
+    monkeypatch.setattr(config, "OPENROUTER_MODEL", "cheap/model")
     monkeypatch.setattr(pitch.urllib.request, "urlopen", urlopen)
     assert REAL_POST("profile", profile.SCHEMA, [], task="profile") == {"ok": True}
     # Capped, or OpenRouter reserves the model's whole output window against the key's credit and refuses (402).
-    assert sent["model"] == "big/model" and sent["max_tokens"] == pitch.MAX_TOKENS["profile"]
+    assert sent["model"] == "cheap/model" and sent["max_tokens"] == pitch.MAX_TOKENS["profile"]
 
 
 def test_a_used_up_key_says_so(monkeypatch):

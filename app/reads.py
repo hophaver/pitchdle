@@ -24,8 +24,9 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 TIMEOUT = 180  # seconds per request; a web search loop takes a while
 # Output caps on OpenRouter. Without one it reserves the model's whole output window (65k tokens) against the
 # key's credit up front, which a key with a spending limit can't cover, so every read fails with a 402.
-RATE_MAX_TOKENS = 2000  # a rating is a few lines of JSON, with room for a reasoning model's thinking
-SOCIAL_MAX_TOKENS = 6000  # a social read writes a short summary after its searches
+RATE_MAX_TOKENS = 1200  # a rating is a few lines of JSON, with room for brief, low-effort thinking
+SOCIAL_MAX_TOKENS = 3000  # a social read writes a short summary after its searches
+SOCIAL_SEARCHES = 2  # searches per platform: enough to find a startup's posts, each one billed
 
 # The model each route asks unless CLAUDE_MODEL, GPT_MODEL or GROK_MODEL says otherwise.
 MODELS = {
@@ -57,26 +58,26 @@ PLATFORMS = {
 PLATFORM_NAMES = {"x": "X (Twitter)", "threads": "Threads", "linkedin": "LinkedIn", "reddit": "Reddit",
                   "bluesky": "Bluesky"}
 
-RUBRIC = """Rate on four calls, each 0 to 5 (halves allowed):
-- Novel: how new it is next to what already exists. 0 = done many times before, 5 = genuinely new.
-- Useful: how much it matters to the people or the ocean it serves, if it works. 0 = barely, 5 = a big, real problem solved.
-- Plausible: how likely it is to work as described, given its stage, team, evidence and money. 0 = wishful thinking, 5 = already shown to work.
-- Investable: how good an investment it is at this stage and price. 0 = would not invest, 5 = a strong case."""
+# Short on purpose: every review sends it, and the anchors are what keep the scores comparable.
+RUBRIC = """Score 0-5 (halves ok):
+novel: 0 done many times, 5 genuinely new.
+useful: 0 barely matters, 5 solves a big real problem for people or the ocean.
+plausible: 0 wishful, 5 already shown to work (given stage, team, proof, money).
+investable: 0 would not invest, 5 strong case at this stage."""
 
-RATE_SYSTEM = f"""You rate early-stage startups for A'Pelago, a blue-economy accelerator in Finland.
+RATE_SYSTEM = f"""Rate an early-stage startup for A'Pelago, a Finnish blue-economy accelerator. Use the brief and \
+what you already know of the company. Be candid; most startups are not 5s.
 {RUBRIC}
-Judge from the profile you are given and anything you already know about the company. Be candid: most startups \
-are not 5s. Give your reason in one or two sentences."""
+reason: one sentence."""
 
 # Grok gets the format in words; Claude and GPT get the schema itself.
 RATE_FORMAT = ('Answer with only a JSON object: {"novel": n, "useful": n, "plausible": n, "investable": n, '
                '"reason": "..."}')
 
-SOCIAL_SYSTEM = f"""You find out what people say about a startup on one social platform, for A'Pelago, a \
-blue-economy accelerator in Finland. Search the platform for posts about the company, and only count posts that \
-are clearly about this company, not something with a similar name.
-Then rate what the people posting seem to think of it. {RUBRIC}
-Write two or three sentences on what people say, citing the posts. End with one line of JSON:
+SOCIAL_SYSTEM = f"""Find what people say about a startup on one social platform, for A'Pelago, a Finnish \
+blue-economy accelerator. Search the platform; count only posts clearly about this company, not a namesake.
+Rate what the posters seem to think of it. {RUBRIC}
+Write one or two sentences on what people say, citing the posts. End with one line of JSON:
 {{"posts": <relevant posts found>, "novel": n, "useful": n, "plausible": n, "investable": n, "summary": "<one sentence>"}}
 If you find no posts about this company, end with {{"posts": 0}}."""
 
@@ -176,10 +177,10 @@ def openai_client(api_key: str, base_url: str | None = None):
 def claude_rate(profile: str) -> dict:
     response = claude_client().beta.messages.create(
         model=model("claude"),
-        max_tokens=16000,
+        max_tokens=RATE_MAX_TOKENS,
         betas=[FALLBACK_BETA],
         fallbacks="default",
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCORE_SCHEMA}},
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCORE_SCHEMA}},
         system=RATE_SYSTEM,
         messages=[{"role": "user", "content": profile}],
     )
@@ -194,6 +195,8 @@ def gpt_rate(profile: str) -> dict:
         model=model("gpt"),
         instructions=RATE_SYSTEM,
         input=profile,
+        reasoning={"effort": "low"},
+        max_output_tokens=RATE_MAX_TOKENS,
         text={"format": {"type": "json_schema", "name": "startup_read", "strict": True, "schema": SCORE_SCHEMA}},
     )
     data = json.loads(response.output_text)
@@ -204,6 +207,7 @@ def grok_rate(profile: str) -> dict:
     response = openai_client(config.XAI_API_KEY, XAI_BASE_URL).responses.create(
         model=model("grok"),
         input=[{"role": "system", "content": f"{RATE_SYSTEM}\n{RATE_FORMAT}"}, {"role": "user", "content": profile}],
+        max_output_tokens=RATE_MAX_TOKENS,
     )
     data = last_json(response.output_text)
     return {"scores": clamp_scores(data), "note": note_of(data.get("reason")), "meta": {"model": response.model}}
@@ -213,13 +217,13 @@ def claude_social(platform: str, comp) -> dict:
     """Claude's web search, kept to one platform's domains."""
     client, domains = claude_client(), PLATFORMS[platform]
     user = {"role": "user", "content": social_request(platform, comp)}
-    tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 4, "allowed_domains": domains}]
+    tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": SOCIAL_SEARCHES, "allowed_domains": domains}]
     blocks, messages = [], [user]
     # The basic search tool hands back every result it found, so cited posts can be checked against them.
     for _ in range(3):
         response = client.beta.messages.create(
-            model=model("claude"), max_tokens=16000, betas=[FALLBACK_BETA], fallbacks="default",
-            output_config={"effort": "medium"}, system=SOCIAL_SYSTEM, messages=messages, tools=tools)
+            model=model("claude"), max_tokens=SOCIAL_MAX_TOKENS, betas=[FALLBACK_BETA], fallbacks="default",
+            output_config={"effort": "low"}, system=SOCIAL_SYSTEM, messages=messages, tools=tools)
         if response.stop_reason == "refusal":
             raise RuntimeError("Claude declined to search for it")
         blocks += response.content
@@ -270,7 +274,8 @@ def openrouter_rate(key: str, profile: str) -> dict:
         max_tokens=RATE_MAX_TOKENS,
         response_format={"type": "json_schema",
                          "json_schema": {"name": "startup_read", "strict": True, "schema": SCORE_SCHEMA}},
-        extra_body={"provider": {"require_parameters": True}},  # only endpoints that enforce the schema
+        # Only endpoints that enforce the schema; little thinking (billed as output), none of it sent back.
+        extra_body={"provider": {"require_parameters": True}, "reasoning": {"effort": "low", "exclude": True}},
     )
     data = json.loads(answer_text(response))
     return {"scores": clamp_scores(data), "note": note_of(data["reason"]),
@@ -282,7 +287,7 @@ def openrouter_social(platform: str, comp) -> dict:
     with its X search on; every other platform by Claude. Only citations come back, not the full results, so a post
     counts when the model cited it on the platform itself."""
     reader, domains = ("grok" if platform == "x" else "claude"), PLATFORMS[platform]
-    search = {"engine": "native", "max_uses": 4, "max_results": 5, "allowed_domains": domains}
+    search = {"engine": "native", "max_uses": SOCIAL_SEARCHES, "max_results": 5, "allowed_domains": domains}
     if platform == "x":
         search["x_search"] = {}
     response = openrouter_client().chat.completions.create(
@@ -338,9 +343,10 @@ def can_read(platform: str) -> bool:
     return ready["claude"] or (platform == "x" and ready["grok"])
 
 
-def rate_all(comp, only: list[str] | None = None) -> dict:
-    """Ask every model that has a key, or just those in `only`. Returns {source: result | {"error"} | {"skipped"}}."""
-    ready, profile = setup(), profile_text(comp)
+def rate_all(comp, only: list[str] | None = None, brief: str | None = None) -> dict:
+    """Ask every model that has a key, or just those in `only`, to rate the company from its brief (brief.py; the
+    full profile without one). Returns {source: result | {"error"} | {"skipped"}}."""
+    ready, profile = setup(), brief or profile_text(comp)
     if route() == "openrouter":
         raters = {key: (lambda key=key: openrouter_rate(key, profile)) for key in MODEL_NAMES}
     else:

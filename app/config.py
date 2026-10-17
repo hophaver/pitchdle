@@ -81,16 +81,9 @@ EXCLUDE_ALWAYS = ["redstone", "a'pelago", "techcrunch", "crunchbase", "sifted", 
                   "eu-startups", "tech.eu", "arcticstartup", "maddyness", "silicon canals", "venturebeat",
                   "the next web", "business insider", "reuters", "bloomberg", "forbes", "yahoo finance",
                   "startup.info", "tracxn", "cb insights"]
-# Optional: the OpenRouter key above also screens discovery hits, writes found startups' game cards (pitch, ask,
-# facts) and fills real startups' profiles (raised, investors, stages, vision, country) from their website and
-# news. Without it, found startups keep their headline as the pitch and an empty profile.
-# Each of those tasks can run on its own model; blank uses OPENROUTER_MODEL.
+# Optional: the OpenRouter key above also does every AI task but the reviews, all on OPENROUTER_MODEL (pick a
+# cheap one): screening discovery hits, writing found startups' game cards, and filling each real startup's profile
+# (raised, investors, stages, vision, country) and evidence scores from its website and news. Without a key, found
+# startups keep their headline as the pitch, an empty profile and no evidence. The reviews (AI ratings and social
+# media) run on CLAUDE_MODEL / GPT_MODEL / GROK_MODEL above.
 OPENROUTER_MODEL = (os.environ.get("OPENROUTER_MODEL") or "anthropic/claude-haiku-5.5").strip()
-SCREEN_MODEL = (os.environ.get("SCREEN_MODEL") or "").strip()    # which discovery hits are real, on-topic startups
-CARD_MODEL = (os.environ.get("CARD_MODEL") or "").strip()        # writing a found startup's game card
-PROFILE_MODEL = (os.environ.get("PROFILE_MODEL") or "").strip()  # filling a real startup's profile
-
-
-def task_model(task: str) -> str:
-    """The OpenRouter model for a discovery task (screen, card or profile): its own setting, else OPENROUTER_MODEL."""
-    return {"screen": SCREEN_MODEL, "card": CARD_MODEL, "profile": PROFILE_MODEL}[task] or OPENROUTER_MODEL

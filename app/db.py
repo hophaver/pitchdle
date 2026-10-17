@@ -190,6 +190,13 @@ MIGRATIONS = [
     # done (whatever it found is in profile_note). Only empty fields are ever filled.
     ("companies", "profile_status", "TEXT DEFAULT ''"),
     ("companies", "profile_note", "TEXT DEFAULT ''"),
+    # The short brief the reviewers rate (brief.py), and a fingerprint of the profile it was written from.
+    # Automatic moderation for the game (crawler/gate.py): '' = not checked, 'in' = in the daily game, 'out' = kept
+    # out, with the reason in game_note.
+    ("companies", "game_status", "TEXT DEFAULT ''"),
+    ("companies", "game_note", "TEXT DEFAULT ''"),
+    ("companies", "brief", "TEXT DEFAULT ''"),
+    ("companies", "brief_key", "TEXT DEFAULT ''"),
 ]
 
 
