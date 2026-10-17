@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from . import accounts, autofill, autoread, brief, config, engine, moderation, opinions, reads, scoring, seed, service
+from . import accounts, autofill, autoread, brief, config, engine, moderation, opinions, reads, refresh, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, name_key, now
 from .crawler import checklist, pitch
 from .engine import AXES, full_score as engine_full
@@ -64,13 +64,7 @@ async def revalidate_static(request: Request, call_next):
 
 # --- auth & identity -------------------------------------------------------------------------------
 
-basic = HTTPBasic(realm="Host")
-
-
-def require_admin(creds: HTTPBasicCredentials = Depends(basic)) -> None:
-    if not secrets.compare_digest(creds.password.encode(), config.ADMIN_PASSWORD.encode()):
-        raise HTTPException(401, "Wrong password", headers={"WWW-Authenticate": 'Basic realm="Host"'})
-
+basic = HTTPBasic(realm="Host", auto_error=False)
 
 SESSION_COOKIE = "pd_session"
 DEVICE_COOKIE = "pd_token"
@@ -79,6 +73,15 @@ YEAR = 365 * 24 * 3600
 
 def current_user(request: Request, db=Depends(get_db)):
     return accounts.user_for_session(db, request.cookies.get(SESSION_COOKIE))
+
+
+def require_admin(creds: HTTPBasicCredentials | None = Depends(basic), user=Depends(current_user)) -> None:
+    """The admin password at the browser prompt, or a moderator already logged in on /play (they get the whole tool)."""
+    if user and user["is_moderator"]:
+        return
+    if creds and secrets.compare_digest(creds.password.encode(), config.ADMIN_PASSWORD.encode()):
+        return
+    raise HTTPException(401, "Wrong password", headers={"WWW-Authenticate": 'Basic realm="Host"'})
 
 
 mod_basic = HTTPBasic(realm="Moderation", auto_error=False)
@@ -500,6 +503,7 @@ def host_radar(real_only: bool = False, db=Depends(get_db)):
     # its review buttons know which models are set up.
     out["reads"] = {"auto": autoread.status(db), "ready": reads.setup(), "models": reads.models(),
                     "fill": pitch.available(), "fill_model": config.OPENROUTER_MODEL}
+    out["refresh"] = refresh.status(db)
     return out
 
 
@@ -515,6 +519,18 @@ def host_dives(db=Depends(get_db)):
     when = lambda d: "past" if d["date"] and d["date"] < today else "today" if d["date"] == today else "upcoming"
     return [service.dive_payload(d) | {"company_ids": j(d["company_ids"], []), "players": counts.get(d["id"], (0, 0))[0],
                                        "answers": counts.get(d["id"], (0, 0))[1], "when": when(d)} for d in rows]
+
+
+@app.get("/api/host/game-pool", dependencies=[Depends(require_admin)])
+def host_game_pool(db=Depends(get_db)):
+    """Which in-game startups a new set can still use (live ones play one day only), and which of those a major
+    update brought back."""
+    pool = service.get_mode(db)
+    ids = service.eligible_ids(db, pool)
+    back = [r["id"] for r in db.execute(
+        "SELECT id FROM companies WHERE major_update_at IS NOT NULL AND id IN (SELECT value FROM dives, json_each(dives.company_ids) WHERE pool = ?)",
+        (pool,)) if r["id"] in ids]
+    return {"mode": pool, "eligible": ids, "updated": back, "repeats": pool == "demo"}
 
 
 @app.get("/api/host/dives/{dive_id}", dependencies=[Depends(require_admin)])
@@ -580,6 +596,21 @@ def mod_moderator(uid: int, body: ModeratorIn, staff: moderation.Staff = Depends
     with refusals():
         moderation.set_moderator(db, mod_user(db, uid), body.moderator, staff)
     return moderation.member(db, uid)
+
+
+class PasswordIn(BaseModel):
+    password: str
+
+
+@app.put("/api/mod/users/{uid}/password")
+def mod_password(uid: int, body: PasswordIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    with refusals():
+        moderation.check_manageable(mod_user(db, uid), staff)
+    try:
+        accounts.set_password(db, uid, body.password)
+    except accounts.AccountError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
 
 
 @app.delete("/api/mod/users/{uid}")
@@ -885,6 +916,19 @@ def admin_reads(cid: int, kind: str, db=Depends(get_db)):
 def admin_autoread(db=Depends(get_db)):
     """Read every card still missing AI ratings or a social media read, in the background (also done on startup)."""
     return {"started": autoread.kick(), "status": autoread.status(db)}
+
+
+@app.post("/api/admin/refresh", dependencies=[Depends(require_admin)])
+def admin_refresh(db=Depends(get_db)):
+    """Update all cards: look at every real startup's sources again, cheap model first (refresh.py)."""
+    if not refresh.kick():
+        raise HTTPException(409, "Updating cards needs an OpenRouter key (OPENROUTER_API_KEY).")
+    return refresh.status(db)
+
+
+@app.get("/api/admin/refresh", dependencies=[Depends(require_admin)])
+def admin_refresh_status(db=Depends(get_db)):
+    return refresh.status(db)
 
 
 # --- web pulse (host hint only: never feeds engine scores or player routes) ---------------------------

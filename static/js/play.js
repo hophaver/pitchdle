@@ -32,18 +32,52 @@ function cardTop(index, total, right) {
     h("span", {}, right ?? setLabel()));
 }
 
-// "#3" reads as "No. 3"; named sets keep their name.
-const setLabel = () => (!S.set ? "" : S.set.label.startsWith("#") ? `No. ${S.set.label.slice(1)}` : S.set.label);
+// "#3" and "Live #3" read as "No. 3"; named sets keep their name.
+const setName = (label) => { const m = /^(?:Live )?#(\d+)$/.exec(label || ""); return m ? `No. ${m[1]}` : label || ""; };
+const setLabel = () => (S.set ? setName(S.set.label) : "");
 
 const pill = (label, onclick, attrs = {}) => h("button", { class: "pill", onclick, ...attrs }, label);
 
 // --- start ----------------------------------------------------------------------------------------
 
+// How to play, the same for everyone: from the "?" on the welcome card, and by itself on a device's first visit.
+const TUTORIAL = [
+  ["📣", "Read the pitch", "Each card is a real or made-up startup: one line on what it does and what it's asking for."],
+  ["🎚️", "Make your four calls", "Tap 0–5 for each: Novel (is it new?), Useful (does it solve a real problem?), "
+    + "Plausible (can they pull it off?) and Investable (would you put money in?)."],
+  ["🔒", "Lock it in", "When all four are set, lock it in and the next startup comes up. A set is five startups."],
+  ["📊", "See how you compare", "At the end: your read next to everyone else's, the AI models' average, social media's "
+    + "average and how many posts were found. A new set comes out every day at midnight."],
+];
+const TUTORIAL_SEEN = "pd.tutorial";
+
+function showHelp() {
+  const dialog = h("dialog", { class: "help", "aria-labelledby": "help-title" },
+    h("div", { class: "help-card" },
+      h("div", { class: "card-top" }, h("span", { class: "caps", id: "help-title" }, "How to play"),
+        h("button", { class: "help-x", type: "button", "aria-label": "Close", onclick: () => dialog.close() }, "×")),
+      h("h2", {}, "Would you ", h("span", { class: "hand" }, "back"), " this?"),
+      h("ol", { class: "help-steps" }, TUTORIAL.map(([icon, title, text]) =>
+        h("li", {}, h("span", { class: "help-icon", "aria-hidden": "true" }, icon), h("div", {}, h("b", {}, title), h("p", {}, text))))),
+      h("div", { class: "actions" }, h("button", { class: "pill block", type: "button", onclick: () => dialog.close() }, "Got it"))));
+  dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); }); // a tap on the backdrop
+  dialog.addEventListener("close", () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+  try { localStorage.setItem(TUTORIAL_SEEN, "1"); } catch { /* private mode: it shows again next time */ }
+}
+
+function firstVisit() {
+  try { return !localStorage.getItem(TUTORIAL_SEEN); } catch { return false; }
+}
+
 function showStart() {
   const started = S.answered.size > 0;
   const today = S.set.mode !== "daily" || S.set.today || !S.set.date;
   show(card(colorFor(0),
-    cardTop(-1, 0),
+    h("div", { class: "card-top" }, accountTag(),
+      h("button", { class: "help-btn", type: "button", "aria-label": "How to play", title: "How to play", onclick: showHelp }, "?"),
+      h("span", {}, setLabel())),
     h("div", { class: "hero" },
       h("h1", {}, "Would you"),
       h("span", { class: "hand" }, "back"),
@@ -52,6 +86,7 @@ function showStart() {
     h("div", { class: "actions" },
       pill(started ? "Continue →" : today ? "Play today's →" : "Play it →", () => nextCard()))),
   submitSection());
+  if (!started && firstVisit()) showHelp();
 }
 
 // --- one card -------------------------------------------------------------------------------------
@@ -135,7 +170,7 @@ function showCard(c, index, total) {
       // Leads into the four calls: "Is this… novel? useful? …"
       h("div", { class: "is-this" }, "Is this…"),
       h("div", { class: "axes" }, rows),
-      h("div", { class: "actions" }, lock));
+      h("div", { class: "actions lock-bar" }, lock));
 
   lock.addEventListener("click", async () => {
     lock.disabled = true;
@@ -172,7 +207,7 @@ function fullCard(c, index, total, rows, lock) {
       h("section", { class: "sect g-call" },
         h("div", { class: "is-this" }, "Is this…"),
         h("div", { class: "axes" }, rows),
-        h("div", { class: "actions" }, lock))));
+        h("div", { class: "actions lock-bar" }, lock))));
   el.classList.add("full");
   return el;
 }
@@ -216,17 +251,20 @@ function companyLink(r) {
   return h("span", { class: "company-link muted-link" }, "Made-up startup");
 }
 
-// Every opinion on a result card is the same little chart: four columns, Novel to Investable, on 0–5.
-const OPINION_GROUPS = [["people", "People"], ["ai", "AI models"], ["social", "Social media"]];
+// Every read on a result card is the same chart, one per row across the card: four columns, Novel to Investable, on 0–5.
 const COUNT_WORD = { crowd: "answer", apelago: "reviewer" }; // social media counts posts
 
-function opinionTile(t) {
-  const you = t.key === "you";
-  const count = t.count ? plural(t.count, COUNT_WORD[t.key] || "post") : null;
-  // Your read is the one picked out; you and everyone else carry their numbers, the rest on hover or below.
-  return h("figure", { class: `op${you ? " op-you" : ""}` },
-    h("figcaption", {}, h("b", {}, t.label), count ? h("small", {}, count) : null),
-    PD.opinionChart(t.scores, { labelled: you || t.key === "crowd" }));
+// The per-axis average of a group of reads (the AI models, or the social platforms that found posts), or null.
+function averageOf(tiles) {
+  const scored = tiles.filter((t) => AXES.every((a) => typeof t.scores[a] === "number"));
+  if (!scored.length) return null;
+  return Object.fromEntries(AXES.map((a) => [a, scored.reduce((sum, t) => sum + t.scores[a], 0) / scored.length]));
+}
+
+function resultRow(label, sub, scores, { you = false, none = "No reads yet" } = {}) {
+  return h("div", { class: `rs-row${you ? " you" : ""}` },
+    h("div", { class: "rs-who" }, h("b", {}, label), sub ? h("small", {}, sub) : null),
+    scores ? PD.opinionChart(scores, { labelled: true }) : h("p", { class: "rs-none" }, none));
 }
 
 // The same numbers as a table, with why each AI or platform thinks so: nothing is only on hover.
@@ -241,27 +279,25 @@ function opinionDetails(tiles) {
     notes.length ? h("ul", { class: "op-notes" }, notes.map((t) => h("li", {}, h("b", {}, `${t.label}: `), t.note))) : null);
 }
 
-// A player sees their read next to everyone else's; an investor also sees A'Pelago's, the AI models' and social media's.
+// Everyone gets the same results: your read, everyone else's, the AI models' and social media's averages, and how
+// many posts social media turned up. The numbers behind each, and why, are under "Numbers and reasons".
 function resultCard(r, i) {
   const head = h("div", { class: "result-head" },
     r.card.emoji ? h("div", { class: "art small", "aria-hidden": "true" }, r.card.emoji) : null,
     h("div", {}, h("div", { class: "result-name" }, r.card.name), h("div", { class: "caps sector" }, r.card.sector),
       companyLink(r)));
-  if (!isInvestor()) {
-    const nums = (scores, fmt) => h("div", { class: "nums" },
-      AXES.map((a) => h("div", {}, h("b", {}, fmt(scores && scores[a])), h("small", {}, AXIS[a]))));
-    return card(colorFor(i), head,
-      h("div", { class: "block you" }, h("div", { class: "caps" }, "You said"), nums(r.you.scores, (v) => v)),
-      // Average of every other player's answer.
-      h("div", { class: "block crowd" }, h("div", { class: "caps" }, `Everyone · ${r.crowd.n}`),
-        nums(r.crowd.means, fmtAvg)));
-  }
+  const ai = r.opinions.filter((t) => t.group === "ai");
+  const social = r.opinions.filter((t) => t.group === "social");
+  const posts = social.reduce((n, t) => n + (t.count || 0), 0);
   return card(colorFor(i), head,
-    OPINION_GROUPS.map(([group, title]) => {
-      const tiles = r.opinions.filter((t) => t.group === group);
-      return tiles.length ? h("section", { class: "op-group" }, h("div", { class: "caps op-title" }, title),
-        h("div", { class: "op-grid" }, tiles.map(opinionTile))) : null;
-    }),
+    h("div", { class: "rs" },
+      h("div", { class: "rs-row rs-axes", "aria-hidden": "true" }, h("span"), h("div", { class: "rs-axis" }, AXES.map((a) => h("span", {}, AXIS[a])))),
+      resultRow("You", null, r.you.scores, { you: true }),
+      resultRow("Everyone", r.crowd.n ? plural(r.crowd.n, "answer") : null, r.crowd.n ? r.crowd.means : null, { none: "No one else yet" }),
+      resultRow("AI score", ai.length ? `avg of ${plural(ai.length, "model")}` : null, averageOf(ai)),
+      resultRow("Social media", social.length ? `avg of ${plural(social.length, "platform")}` : null, averageOf(social)),
+      h("div", { class: "rs-row rs-posts" }, h("div", { class: "rs-who" }, h("b", {}, "Total posts"), h("small", {}, "across social media")),
+        h("div", { class: "rs-count" }, String(posts)))),
     opinionDetails(r.opinions));
 }
 
@@ -501,7 +537,8 @@ function accountMenu() {
   }
   const items = () => [
     item("Your history", () => { closeMenu(); showHistory(); }),
-    // Moderators' login opens the moderation page too, so this needs no second sign-in.
+    // Moderators' login opens the dashboard and the moderation page too, so neither needs a second sign-in.
+    S.user.is_moderator ? item("Dashboard ↗", () => { closeMenu(); window.open("/host", "_blank", "noopener"); }) : null,
     S.user.is_moderator ? item("Moderation ↗", () => { closeMenu(); window.open("/moderate", "_blank", "noopener"); }) : null,
     // Test account only (TEST_USERNAME in .env): start the game over without making a new account.
     S.user.is_test ? item("Reset my data", resetData) : null,
@@ -532,7 +569,7 @@ function showAuth(mode = "login") {
   closeMenu();
   S.overlay = true;
   const username = h("input", { name: "username", type: "text", required: true, minlength: 3, maxlength: 20,
-    autocomplete: "username", autocapitalize: "none", spellcheck: "false", placeholder: "seaotter" });
+    autocomplete: "username", autocapitalize: "none", spellcheck: "false", placeholder: "alexm" });
   const password = h("input", { name: "password", type: "password", required: true, minlength: 4, maxlength: 200,
     autocomplete: "current-password" });
   const send = h("button", { class: "pill block", type: "submit" }, "Log in");
@@ -579,20 +616,20 @@ function showAuth(mode = "login") {
 const LINK_KEYS = ["linkedin", "github", "portfolio", "cv", "other"];
 const SIGNUP_SECTIONS = [
   { title: "Your account", fields: [
-    { key: "username", label: "Username", min: 3, max: 20, autocomplete: "username", placeholder: "seaotter",
+    { key: "username", label: "Username", min: 3, max: 20, autocomplete: "username", placeholder: "alexm",
       attrs: { autocapitalize: "none", spellcheck: "false" } },
     { key: "password", label: "Password", type: "password", min: 4, max: 200, autocomplete: "new-password",
       placeholder: "at least 4 characters" },
   ] },
   { title: "About you", fields: [
-    { key: "full_name", label: "Full name", min: 2, max: 80, autocomplete: "name", placeholder: "Maija Virtanen" },
-    { key: "email", label: "Email", type: "email", max: 120, autocomplete: "email", placeholder: "maija@example.com" },
+    { key: "full_name", label: "Full name", min: 2, max: 80, autocomplete: "name", placeholder: "Alex Morgan" },
+    { key: "email", label: "Email", type: "email", max: 120, autocomplete: "email", placeholder: "alex@example.com" },
     { key: "role", label: "What do you do?", options: PD.ROLES },
     { key: "organisation", label: "Organisation", optional: true, max: 80, autocomplete: "organization",
       placeholder: "company, fund or university" },
-    { key: "location", label: "Based in", optional: true, max: 80, placeholder: "Turku, Finland" },
+    { key: "location", label: "Based in", optional: true, max: 80, placeholder: "City, country" },
     { key: "expertise", label: "What you know well", optional: true, max: 160,
-      placeholder: "aquaculture, ship design, impact investing" },
+      placeholder: "climate tech, B2B software, early-stage investing" },
   ] },
   { title: "Your links", note: "At least one, so a moderator can see who you are.", fields: [
     { key: "linkedin", label: "LinkedIn", type: "url", max: 200, placeholder: "linkedin.com/in/…" },
@@ -734,7 +771,7 @@ async function showHistory() {
   const stat = (n, label) => h("div", {}, h("b", {}, `${n}`), h("span", {}, label));
   const row = (set) => {
     const status = set.done ? "Done ✓" : set.answered ? `${set.answered} of ${set.total}` : "Not played";
-    const name = set.label.startsWith("#") ? `No. ${set.label.slice(1)}` : set.label;
+    const name = setName(set.label);
     return h("li", { class: `set-row${set.done ? " done" : ""}` },
       h("div", {}, h("div", { class: "set-name" }, name, set.today ? h("span", { class: "today-tag" }, "Today") : null),
         h("div", { class: "caps set-date" }, `${dayLabel(set.date)} · ${status}`)),

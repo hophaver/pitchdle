@@ -28,7 +28,7 @@ const READ_WORD = { crowd: "crowd", engine: "evidence", outside: "outside" };
 const saved = (localStorageGet("pd.sort") || "avg:desc").split(":");
 const state = {
   filter: "all", sort: SORTS.some(([k]) => k === saved[0]) ? saved[0] : "avg", dir: saved[1] === "asc" ? "asc" : "desc",
-  open: null, busy: new Set(), searching: false, editing: null, rubric: null,
+  open: null, busy: new Set(), searching: false,
   scope: localStorageGet("pd.scope") === "all" ? "all" : "in",
 };
 const remember = () => localStorageSet("pd.sort", `${state.sort}:${state.dir}`);
@@ -50,7 +50,19 @@ function gameTag(c) {
   const g = c.game || {};
   if (g.status === "in") return h("span", { class: "tag in" }, "In game");
   if (g.status === "out") return h("span", { class: "tag out", title: g.note }, "Not in game");
-  return h("span", { class: "tag" }, c.profile && c.profile.status ? "Checking for the game" : "Not in game yet");
+  // The game needs only what a player sees: name, field, pitch and ask.
+  const lacks = [["sector", "field"], ["one_liner", "pitch"], ["claim_ask", "ask"]].filter(([k]) => !(c[k] || "").trim()).map(([, w]) => w);
+  return lacks.length ? h("span", { class: "tag", title: `Its card needs a ${lacks.join(" and ")} first` }, "Not in game yet")
+    : h("span", { class: "tag", title: "Waiting for the automatic game check" }, "Checking for the game");
+}
+
+// What "Update all cards" found in the last two weeks: a major update (new reviews, back in the game) or a minor one.
+function updateTag(c) {
+  const u = c.update || {};
+  const day = ((u.note || "").match(/^(\d{4}-\d{2}-\d{2})/) || [])[1];
+  if (!day || Date.now() - new Date(day).getTime() > 14 * 864e5) return null;
+  const major = u.major_at && u.major_at.slice(0, 10) === day;
+  return h("span", { class: `tag ${major ? "major" : ""}`, title: u.note }, major ? "Major update" : "Updated");
 }
 
 function callChip(c) {
@@ -166,14 +178,15 @@ function card(c) {
   const n = c.next;
   return h("article", { class: "rc" },
     h("div", { class: "top" }, h("div", { class: "name" }, nameLink(c.name, c.website)), callChip(c)),
-    h("div", { class: "meta" }, c.is_real ? gameTag(c) : null, [c.sector, c.country].filter(Boolean).join(" · ") || " "),
+    h("div", { class: "meta" }, c.is_real ? gameTag(c) : null, updateTag(c), [c.sector, c.country].filter(Boolean).join(" · ") || " "),
     h("div", { class: "what" }, c.one_liner),
     c.claim_ask ? h("div", { class: "ask" }, c.claim_ask) : null,
     factLine(c),
-    reviewScores(c),
     gapChip(c),
     n && n.with ? h("div", { class: "next" }, h("b", {}, "Next: "), `${n.text} with `, nameLink(n.with, n.url)) : null,
-    h("div", { class: "foot" }, h("button", { class: "btn", onclick: () => openDrawer(c.id) }, "Details")));
+    // The scores sit at the foot of every card, just above Details, so they line up across a row.
+    h("div", { class: "rc-bottom" }, reviewScores(c),
+      h("div", { class: "foot" }, h("button", { class: "btn", onclick: () => openDrawer(c.id) }, "Details"))));
 }
 
 // In or out of A'Pelago's and Redstone's thesis gates (Admin › Thesis criteria), with why on hover.
@@ -239,7 +252,6 @@ function openDrawer(id) {
 
 function closeDrawer() {
   state.open = null;
-  state.editing = null;
   history.replaceState(null, "", location.pathname);
   renderDrawer();
 }
@@ -314,7 +326,7 @@ function evidenceSect(c) {
         title: [x.label, x.source ? `source: ${SOURCE_LABEL[x.source] || x.source}` : "no source recorded", x.quote ? `“${x.quote}”` : null].filter(Boolean).join("\n") },
         h("span", { class: "k" }, x.short_label || x.label), h("span", { class: "t" }, h("i", { style: { width: `${(x.value / 5) * 100}%` } })),
         h("b", {}, fmt1(x.value))))) : null,
-      c.evidence_note ? clamp(`Sources: ${c.evidence_note}`, "note sources") : null) : null;
+      c.evidence_note ? h("p", { class: "note sources" }, `Sources: ${c.evidence_note}`) : null) : null;
 }
 
 // The call and the next move, beside the pitch in the header.
@@ -373,101 +385,12 @@ function thesisRow(t) {
     gates.length ? h("div", { class: "note" }, `Gates: ${gates.join(" · ")}`) : null);
 }
 
-async function answerWithAI(c) {
-  const key = `check${c.id}`;
-  state.busy.add(key);
-  renderDrawer();
-  try {
-    const r = await post(`/api/admin/companies/${c.id}/checklist/ai`, {});
-    PD.toast(`${r.tally.verified} answers quoted from its sources${r.tally.unverified ? `, ${r.tally.unverified} not (those don't count)` : ""}`, 5000);
-  } catch (e) { PD.toast(e.message, 6000); }
-  state.busy.delete(key);
-  await refresh(true);
-}
-
-function checklistButtons(c) {
-  const ai = data.reads && data.reads.fill;
-  const busy = state.busy.has(`check${c.id}`);
-  return h("div", { class: "row review-btns" },
-    h("button", { class: "pill ghost small", onclick: () => openEditor(c) }, state.editing === c.id ? "Close checklist" : "Answer the checklist"),
-    h("button", { class: `pill ghost small${busy ? " busy" : ""}`, disabled: !ai || busy, onclick: () => answerWithAI(c),
-      title: ai ? "Answer every rung from its website and news, each answer quoted; your own answers stay" : "Set OPENROUTER_API_KEY in .env, or answer by hand" },
-      busy ? "Reading its sources…" : "Answer with AI"),
-    ai ? null : h("span", { class: "note" }, "No AI key: answer by hand."));
-}
-
-async function openEditor(c) {
-  if (state.editing === c.id) { state.editing = null; renderDrawer(); return; }
-  try { state.rubric = state.rubric || await api("/api/admin/rubric"); } catch (e) { PD.toast(e.message); return; }
-  state.editing = c.id;
-  renderDrawer();
-}
-
-// The host's own answers: every rung of each ladder and Redstone's investment factors, each with its quote, link and
-// source. Only the rows the host changes are sent, so an AI answer never turns into a host one by accident.
-function checklistEditor(c) {
-  const rubric = state.rubric;
-  const dirty = {};
-  const sources = Object.keys(rubric.sources.rank).filter((s) => s !== "ai");
-  const srcSelect = (cur, onchange) => h("select", { "aria-label": "Source", onchange },
-    h("option", { value: "" }, "source…"), sources.map((s) => h("option", { value: s, selected: cur === s }, SOURCE_LABEL[s] || s)));
-  const field = (key, base, name, value) => { dirty[key] = { ...(dirty[key] || base), [name]: value }; };
-  const ladders = Object.entries(rubric.ladders).map(([lk, spec]) => {
-    const steps = Object.fromEntries((c.readiness[lk].steps || []).map((s) => [s.n, s]));
-    return h("details", { class: "ck-ladder", open: lk === "business" },
-      h("summary", {}, spec.label),
-      spec.rungs.map((r) => {
-        const s = steps[r.n] || { answer: "unknown", quote: "", url: "", source: "" };
-        const key = `${lk}.${r.n}`;
-        const base = { answer: s.answer, quote: s.quote, url: s.url, source: s.source === "ai" ? "" : s.source };
-        return h("div", { class: `ck-row ${s.by === "ai" ? "by-ai" : ""}`, title: r.question },
-          h("span", { class: "ck-q" }, `${r.n}. ${r.question}`),
-          h("select", { "aria-label": `${spec.scale} ${r.n}`, onchange: (e) => field(key, base, "answer", e.target.value) },
-            ["unknown", "yes", "no"].map((a) => h("option", { value: a, selected: s.answer === a }, a))),
-          h("input", { type: "text", placeholder: "Quote", value: s.quote, maxlength: 300, oninput: (e) => field(key, base, "quote", e.target.value) }),
-          h("input", { type: "text", placeholder: "https://…", value: s.url, maxlength: 500, oninput: (e) => field(key, base, "url", e.target.value) }),
-          srcSelect(base.source, (e) => field(key, base, "source", e.target.value)));
-      }));
-  });
-  const facts = Object.fromEntries(c.factors.map((f) => [f.key, f]));
-  const sup = {};
-  const invest = h("details", { class: "ck-ladder" }, h("summary", {}, "Investment factors (Redstone, 0–5)"),
-    Object.entries(rubric.investment.factors).map(([name, f]) => {
-      const key = `redstone.${name}`;
-      const cur = facts[key] || {};
-      const base = { value: cur.value ?? null, quote: cur.quote || "", url: cur.url || "", source: cur.source === "ai" ? "" : cur.source || "" };
-      const set = (n, v) => { sup[key] = { ...(sup[key] || base), [n]: v }; };
-      return h("div", { class: "ck-row", title: `1 = ${f.anchors["1"]} · 3 = ${f.anchors["3"]} · 5 = ${f.anchors["5"]}` },
-        h("span", { class: "ck-q" }, `${f.label}: ${f.def}`),
-        h("input", { type: "number", min: 0, max: 5, step: 0.5, value: cur.value ?? "", "aria-label": f.label,
-          oninput: (e) => set("value", e.target.value === "" ? null : Number(e.target.value)) }),
-        h("input", { type: "text", placeholder: "Quote", value: base.quote, maxlength: 300, oninput: (e) => set("quote", e.target.value) }),
-        h("input", { type: "text", placeholder: "https://…", value: base.url, maxlength: 500, oninput: (e) => set("url", e.target.value) }),
-        srcSelect(base.source, (e) => set("source", e.target.value)));
-    }));
-  const confirm = h("input", { type: "checkbox" });
-  async function save(btn) {
-    btn.disabled = true;
-    try {
-      await post(`/api/admin/companies/${c.id}/checklist`, { checklist: dirty, support: sup, confirm: confirm.checked }, "PUT");
-      PD.toast("Checklist saved");
-      state.editing = null;
-    } catch (e) { PD.toast(e.message, 6000); btn.disabled = false; return; }
-    await refresh(true);
-  }
-  return h("div", { class: "ck" }, ladders, invest,
-    h("div", { class: "row" }, h("label", { class: "check" }, confirm, "I've checked this evidence"), h("span", { class: "spacer" }),
-      h("button", { class: "pill small", onclick: (e) => save(e.currentTarget) }, "Save")));
-}
-
 function readCol(c) {
   return [
     sect(["Readiness", Tool.tip(DEFS.readiness)],
       h("div", { class: "bars-list" }, LEVELS.map(([k, label]) => levelRow(c, k, label))),
       c.coverage && c.coverage.unknown && c.coverage.unknown.length
-        ? clamp(`Unknown factors: ${c.coverage.unknown.join(", ")}`, "note") : null,
-      checklistButtons(c),
-      state.editing === c.id && state.rubric ? checklistEditor(c) : null),
+        ? clamp(`Unknown factors: ${c.coverage.unknown.join(", ")}`, "note") : null),
     sect(["Thesis fit", Tool.tip(DEFS.thesis)], Object.values(c.theses).map(thesisRow)),
     stepsSect(c),
   ];
@@ -710,20 +633,59 @@ function render() {
     h("button", { type: "button", "aria-pressed": String(cur === k), onclick: () => pick(k) }, label)));
 
   $app.replaceChildren(...[
-    h("div", { class: "head" }, h("h1", {}, "Dashboard"), h("span", { class: "spacer" }), searchRow()),
+    h("div", { class: "head" }, h("h1", {}, "Dashboard"), h("span", { class: "spacer" }), searchRow(), updateButton()),
     h("div", { class: "toolbar" },
       h("div", { class: "chips", role: "group", "aria-label": "Show" }, FILTERS.filter(([k]) => k === "all" || count[k]).map(([k, label]) =>
         h("button", { "aria-pressed": String(state.filter === k), onclick: () => { state.filter = k; render(); } }, label, h("b", {}, count[k] || 0)))),
       h("span", { class: "spacer" }),
       inScope.length ? h("button", { class: "btn primary", onclick: (e) => trackAllInScope(e.currentTarget),
         title: inScope.map((c) => c.name).join(", ") }, `Track all in scope (${inScope.length})`) : null,
-      h("label", { class: "sort" }, "Sort by",
-        h("select", { "aria-label": "Sort by", onchange: (e) => { state.sort = e.target.value; remember(); render(); } },
-          SORTS.map(([k, label]) => h("option", { value: k, selected: state.sort === k }, label)))),
+      h("div", { class: "sort" }, h("span", {}, "Sort by"),
+        Tool.dropdown({ label: "Sort by", options: SORTS, value: state.sort,
+          onChange: (k) => { state.sort = k; remember(); render(); } })),
       seg([["desc", "High → low"], ["asc", "Low → high"]], state.dir, (k) => { state.dir = k; remember(); render(); })),
     list.length ? h("div", { class: "grid" }, list.map(card))
       : h("p", { class: "empty" }, data.mode === "live" ? "No startups yet. Find some above." : "No companies."),
   ].filter(Boolean));
+}
+
+// Update all cards: every real startup's website and news looked at again. Unchanged sources cost nothing, changes
+// are checked on the default model, and only major ones get the AI reviews read again.
+function updateButton() {
+  const r = data.refresh || {};
+  if (data.mode !== "live") return null;
+  const running = r.running;
+  const label = running ? `Updating… ${r.checked || 0}/${r.total || 0}` : "Update all cards";
+  const last = r.finished_at ? `Last run ${r.finished_at.slice(0, 10)}: ${r.checked} checked, ${r.minor + r.major} updated, ${r.major} major` : "";
+  return h("button", { class: `btn${running ? " busy" : ""}`, disabled: running || !r.available, onclick: startUpdate,
+    title: r.available ? [`Looks at every card's sources again on ${r.model}; only major news re-runs the AI reviews.`, last].filter(Boolean).join("\n")
+      : "Set OPENROUTER_API_KEY in .env to update cards" }, label);
+}
+
+let updatePoll = null;
+async function startUpdate() {
+  try {
+    data.refresh = await post("/api/admin/refresh", {});
+  } catch (e) { PD.toast(e.message, 6000); return; }
+  render();
+  watchUpdate();
+}
+
+function watchUpdate() {
+  if (updatePoll) return;
+  updatePoll = setInterval(async () => {
+    let r;
+    try { r = await api("/api/admin/refresh"); } catch { return; }
+    data.refresh = r;
+    if (!r.running) {
+      clearInterval(updatePoll);
+      updatePoll = null;
+      PD.toast(`${r.checked} checked · ${r.minor + r.major} updated · ${r.major} major${r.errors.length ? ` · ${r.errors.length} failed` : ""}`, 6000);
+      await refresh(true);
+      return;
+    }
+    if (!document.querySelector(".dd.open")) render();
+  }, 3000);
 }
 
 async function refresh(force = false) {
@@ -741,11 +703,11 @@ async function refresh(force = false) {
   fresh.companies = fresh.companies.filter((c) => c.is_real === (fresh.mode === "live"));
   data = fresh;
   render();
+  if (data.refresh && data.refresh.running) watchUpdate();
   // The open card is redrawn only when something on it changed (a fill or a read landing), so it never jumps.
   const open = state.open && data.companies.find((c) => c.id === state.open);
   const openSig = open ? JSON.stringify(open) + JSON.stringify(data.reads.auto.running) : null;
-  // A half-filled checklist is never redrawn away by a background refresh.
-  if (state.open && (force || (openSig !== state.openSig && !state.editing))) renderDrawer();
+  if (state.open && (force || openSig !== state.openSig)) renderDrawer();
   state.openSig = openSig;
 }
 
@@ -755,7 +717,7 @@ refresh(true);
 // Quietly pick up autofill finds and new answers, never while the host is reading details or typing.
 setInterval(() => {
   const typing = document.activeElement && ["INPUT", "SELECT"].includes(document.activeElement.tagName);
-  if (!document.hidden && !state.open && !typing && !state.searching) refresh();
+  if (!document.hidden && !state.open && !typing && !state.searching && !document.querySelector(".dd.open")) refresh();
 }, 15000);
 // While cards are being filled or read in the background, check often, so profiles, evidence and ratings appear
 // on their own, on an open card too.

@@ -320,7 +320,7 @@ def short_error(e: Exception) -> str:
     code = getattr(e, "status_code", None) or getattr(e, "code", None)  # the SDKs' errors, or pitch.OpenRouterError
     if code == 402 or (code == 403 and "limit" in str(e).lower()):
         return ("Out of credit: the OpenRouter key's spending limit or the account's credit is used up. Raise the "
-                "key's limit or add credits on openrouter.ai, then Read missing now.")
+                "key's limit or add credits on openrouter.ai, then Run missing now on Admin.")
     return f"{type(e).__name__}: {e}"[:240]
 
 

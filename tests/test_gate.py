@@ -53,7 +53,21 @@ def test_one_that_fails_stays_out_with_the_reason(client, admin, ai):
 
 def test_a_card_without_a_pitch_never_reaches_the_check(client, admin, ai):
     cid = client.post("/api/admin/companies", json=REAL | {"one_liner": ""}, auth=admin).json()["id"]
-    assert company(client, admin, cid)["game"] == {"status": "out", "note": "no pitch yet"} and ai["shown"] == []
+    c = company(client, admin, cid)
+    assert c["game"] == {"status": "", "note": ""} and not c["active"] and ai["shown"] == []  # waits for its pitch
+
+
+def test_the_game_needs_only_what_a_player_sees(client, admin, ai, monkeypatch):
+    """The investor's profile can fail to fill (out of credit, say): the card players see is enough for the game."""
+    def broken(db, comp):
+        raise OSError("out of credit")
+    monkeypatch.setattr(profile, "fill", broken)
+    cid = client.post("/api/admin/companies", json=REAL, auth=admin).json()["id"]
+    c = company(client, admin, cid)
+    assert c["active"] is True and c["game"]["status"] == "in"
+    assert "Vision" not in ai["shown"][0]
+    no_ask = client.post("/api/admin/companies", json=REAL | {"name": "Askless", "claim_ask": ""}, auth=admin).json()["id"]
+    assert company(client, admin, no_ask)["game"]["status"] == ""
 
 
 def test_checked_once(client, admin, ai):

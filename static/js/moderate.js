@@ -172,6 +172,7 @@ function memberRows(u) {
   if (!open) return row;
   return [row, h("tr", { class: "detail" }, h("td", { colspan: COLUMNS.length },
     profileBody(u),
+    locked(u) ? null : passwordRow(u),
     data.viewer.admin ? h("div", { class: "row" },
       h("button", { class: "btn small", onclick: () => setModerator(u, !u.is_moderator) }, u.is_moderator ? "Remove moderator" : "Make moderator"),
       h("span", { class: "muted small" }, u.is_moderator ? "They keep their account and go back to being a member."
@@ -222,6 +223,27 @@ async function setModerator(u, on) {
     PD.toast(on ? `${u.username} can moderate now` : `${u.username} isn't a moderator any more`);
   } catch (e) { PD.toast(e.message); }
   await refresh();
+}
+
+// A new password the moderator types and then tells the member directly. Their old logins end.
+function passwordRow(u) {
+  const input = h("input", { type: "text", placeholder: "New password", autocomplete: "off", "aria-label": `New password for ${u.username}`,
+    onkeydown: (e) => { if (e.key === "Enter") resetPassword(u, input, btn); } });
+  const btn = h("button", { class: "btn small", onclick: () => resetPassword(u, input, btn) }, "Reset password");
+  return h("div", { class: "row pw-reset" }, h("span", { class: "caps muted" }, "Password"), input, btn,
+    h("span", { class: "muted small" }, "Tell them the new one yourself; they're logged out everywhere."));
+}
+
+async function resetPassword(u, input, btn) {
+  const password = input.value.trim();
+  if (!password) { input.focus(); return; }
+  btn.disabled = true;
+  try {
+    await post(`/api/mod/users/${u.id}/password`, { password }, "PUT");
+    PD.toast(`${u.username}'s password is now “${password}”`, 6000);
+    input.value = "";
+  } catch (e) { PD.toast(e.message); }
+  btn.disabled = false;
 }
 
 async function remove(u) {

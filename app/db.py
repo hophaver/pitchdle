@@ -197,6 +197,11 @@ MIGRATIONS = [
     ("companies", "game_note", "TEXT DEFAULT ''"),
     ("companies", "brief", "TEXT DEFAULT ''"),
     ("companies", "brief_key", "TEXT DEFAULT ''"),
+    # "Update all cards" (refresh.py): a fingerprint of the sources last checked, so unchanged ones cost no call; when
+    # the last major update was found (it brings a played startup back into the game once); and what changed.
+    ("companies", "source_key", "TEXT DEFAULT ''"),
+    ("companies", "major_update_at", "TEXT"),
+    ("companies", "update_note", "TEXT DEFAULT ''"),
 ]
 
 

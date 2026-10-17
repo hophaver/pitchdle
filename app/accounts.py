@@ -110,6 +110,15 @@ def register(db, username: str, password: str, profile: dict | None = None, stat
     return db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
 
 
+def set_password(db, uid: int, password: str) -> None:
+    """A new password, set by a moderator who then tells the member. Their old logins end."""
+    if len(password) < PASSWORD_MIN:
+        raise AccountError(f"Password: at least {PASSWORD_MIN} characters.")
+    db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), uid))
+    db.execute("DELETE FROM sessions WHERE user_id = ?", (uid,))
+    db.commit()
+
+
 def authenticate(db, username: str, password: str):
     user = db.execute("SELECT * FROM users WHERE username = ?", (username.strip(),)).fetchone()
     if not user or not check_password(password, user["password_hash"]):

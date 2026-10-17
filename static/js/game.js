@@ -1,19 +1,31 @@
 // Game: the sets already played (with the crowd's read next to the engine's) and what's queued, queued by hand or
-// generated for the next days. Who plays is on Moderation › People.
+// generated for the next days. In live mode a startup plays one day only, unless a major update brings it back.
+// Who plays is on Moderation › People.
 const { h, api, post, fmt1 } = PD;
 const $app = document.getElementById("app");
 
-const TABS = [{ key: "past", label: "Past games" }, { key: "next", label: "Next games" }];
-const S = { tab: Tool.hashTab(TABS.map((t) => t.key), "next"), dives: [], companies: [], open: new Map() };
+const TABS = [{ key: "next", label: "Next games" }, { key: "past", label: "Past games" }];
+const S = { tab: Tool.hashTab(TABS.map((t) => t.key), "next"), dives: [], companies: [], pool: null, open: new Map(),
+  picks: Array(5).fill("") };
 
-function names(d) {
-  const byId = Object.fromEntries(S.companies.map((c) => [c.id, c.name]));
-  return d.company_ids.map((id) => byId[id]).filter(Boolean).join(", ");
+const byId = () => Object.fromEntries(S.companies.map((c) => [c.id, c]));
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const dayLabel = (iso) => (iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }) : "Any day");
+
+// The startups in a game as chips; one a major update brought back is marked.
+function chips(d) {
+  const all = byId();
+  const back = new Set(S.pool ? S.pool.updated : []);
+  return h("div", { class: "g-chips" }, d.company_ids.map((id) => all[id]).filter(Boolean).map((c) =>
+    h("span", { class: `g-chip${back.has(c.id) && d.when !== "past" ? " back" : ""}`, title: c.sector || null },
+      c.name, back.has(c.id) && d.when !== "past" ? h("small", {}, " ↻ updated") : null)));
 }
 
 async function demoAnswers(d) {
-  const r = await post("/api/admin/demo-votes", { dive_id: d.id, players: 30 });
-  PD.toast(`${r.inserted} demo answers added`);
+  try {
+    const r = await post("/api/admin/demo-votes", { dive_id: d.id, players: 30 });
+    PD.toast(`${r.inserted} demo answers added`);
+  } catch (e) { PD.toast(e.message); }
   S.open.delete(d.id);
   await refresh();
 }
@@ -24,6 +36,24 @@ async function del(d) {
   await refresh();
 }
 
+function kpi(label, value, sub) {
+  return h("div", { class: "kpi" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), sub ? h("div", { class: "sub" }, sub) : null);
+}
+
+function kpis() {
+  const inGame = S.companies.filter((c) => c.active).length;
+  const next = S.dives.filter((d) => d.when !== "past");
+  const lastQueued = next.map((d) => d.date).filter(Boolean).sort().pop();
+  const played = S.dives.filter((d) => d.when === "past");
+  const live = S.pool && !S.pool.repeats;
+  return h("div", { class: "kpis" },
+    live ? kpi("Unplayed startups", S.pool.eligible.length,
+      S.pool.updated.length ? `of ${inGame} in the game · ${S.pool.updated.length} back after a major update` : `of ${inGame} in the game`)
+      : kpi("In the game", inGame, "demo companies rotate"),
+    kpi("Games queued", next.length, lastQueued ? `through ${dayLabel(lastQueued)}` : "nothing queued"),
+    kpi("Games played", played.length, played.length ? `${played.reduce((n, d) => n + d.players, 0)} players in all` : "none yet"));
+}
+
 // --- past games -------------------------------------------------------------------------------------
 
 async function toggle(d) {
@@ -32,38 +62,42 @@ async function toggle(d) {
   render();
 }
 
-function detailRows(d) {
-  const detail = S.open.get(d.id);
-  if (!detail) return null;
-  return h("tr", { class: "sub" }, h("td", { colspan: 6 }, h("table", { class: "data" },
-    h("thead", {}, h("tr", {}, ["Company", "Answers", "Crowd", "Engine", "Gap"].map((t, i) => h("th", { class: i ? "num" : "" }, t)))),
-    h("tbody", {}, detail.cards.map((c) => {
+function detail(d) {
+  const det = S.open.get(d.id);
+  if (!det) return null;
+  return h("div", { class: "table-wrap g-detail" }, h("table", { class: "data" },
+    h("thead", {}, h("tr", {}, ["Startup", "Answers", "Crowd", "Engine", "Gap"].map((t, i) => h("th", { class: i ? "num" : "" }, t)))),
+    h("tbody", {}, det.cards.map((c) => {
       const gap = c.crowd.n && c.engine !== null ? c.crowd.composite - c.engine : null;
       return h("tr", {}, h("td", {}, c.name), h("td", { class: "num" }, c.crowd.n),
         h("td", { class: "num" }, c.crowd.n ? fmt1(c.crowd.composite) : "–"), h("td", { class: "num" }, fmt1(c.engine)),
         h("td", { class: "num" }, gap === null ? "–" : `${gap > 0 ? "+" : ""}${gap.toFixed(1)}`));
-    })))));
+    }))));
+}
+
+function gameRow(d, actions) {
+  return h("article", { class: `g-row${d.when === "today" ? " today" : ""}` },
+    h("div", { class: "g-when" }, h("b", {}, d.when === "today" ? "Today" : dayLabel(d.date)), h("span", {}, d.label)),
+    h("div", { class: "g-body" }, chips(d), d.when === "past" ? detail(d) : null),
+    h("div", { class: "g-stats" }, d.when === "past" || d.answers ? [h("b", {}, d.players), h("span", {}, d.players === 1 ? "player" : "players")] : null),
+    h("div", { class: "g-actions" }, actions));
 }
 
 function pastTab() {
   const past = S.dives.filter((d) => d.when === "past");
-  if (!past.length) return h("p", { class: "empty" }, "No past games.");
-  return h("section", { class: "panel" }, h("div", { class: "table-wrap" }, h("table", { class: "data" },
-    h("thead", {}, h("tr", {}, ["Date", "Set", "Companies", "Players", "Answers", ""].map((t, i) =>
-      h("th", { class: i === 3 || i === 4 ? "num" : "" }, t)))),
-    h("tbody", {}, past.map((d) => [h("tr", {},
-      h("td", {}, d.date), h("td", {}, h("b", {}, d.label)), h("td", { class: "muted" }, names(d)),
-      h("td", { class: "num" }, d.players), h("td", { class: "num" }, d.answers),
-      h("td", { class: "num" }, h("button", { class: "btn link", onclick: () => toggle(d) }, S.open.has(d.id) ? "Hide" : "Crowd vs engine"))),
-    detailRows(d)])))));
+  return h("section", { class: "panel" },
+    h("div", { class: "panel-head" }, h("h2", {}, "Past games"), h("span", { class: "muted small" }, plural(past.length, "game"))),
+    past.length ? h("div", { class: "g-list" }, past.map((d) => gameRow(d,
+      h("button", { class: "btn small", onclick: () => toggle(d) }, S.open.has(d.id) ? "Hide" : "Crowd vs engine"))))
+      : h("p", { class: "empty" }, "No past games yet."));
 }
 
 // --- next games -------------------------------------------------------------------------------------
 
-// Queue the next games by themselves: one a day on the next days without a game, each with the in-game companies
-// shown least so far, so every company gets its turn.
+// Queue the next games by themselves: one a day on the next days without a game. Live startups play once.
 function generator() {
-  const inGame = S.companies.filter((c) => c.active).length;
+  const live = S.pool && !S.pool.repeats;
+  const left = live ? S.pool.eligible.length : S.companies.filter((c) => c.active).length;
   const count = h("input", { type: "number", min: 1, max: 60, value: S.genCount || 7, "aria-label": "How many games",
     oninput: (e) => { S.genCount = Number(e.target.value) || 7; } });
   const cards = h("input", { type: "number", min: 1, max: 10, value: S.genCards || 5, "aria-label": "Cards per game",
@@ -72,51 +106,57 @@ function generator() {
     btn.disabled = true;
     try {
       const made = await post("/api/admin/dives/generate", { count: Number(count.value), cards: Number(cards.value) });
-      PD.toast(`${made.length} game${made.length === 1 ? "" : "s"} queued: ${made[0].date} to ${made[made.length - 1].date}`);
+      const short = made.length < Number(count.value) ? ` (ran out of unplayed startups)` : "";
+      PD.toast(`${plural(made.length, "game")} queued: ${dayLabel(made[0].date)} to ${dayLabel(made[made.length - 1].date)}${short}`, 6000);
     } catch (e) { PD.toast(e.message, 6000); }
     await refresh();
   }
-  return h("section", { class: "panel" }, h("h2", {}, "Generate next games"),
-    h("p", { class: "muted small" }, `One game a day on the next days without one, rotating the ${inGame} companies in the game so `,
-      "the least-shown go first."),
-    h("div", { class: "form" },
-      h("label", {}, "How many games", count),
-      h("label", {}, "Cards per game", cards),
-      h("button", { class: "btn primary", disabled: !inGame, onclick: (e) => generate(e.currentTarget) },
-        inGame ? "Generate" : "No companies in the game yet")));
+  const enough = Math.floor(left / (S.genCards || 5));
+  return h("section", { class: "panel" },
+    h("div", { class: "panel-head" }, h("h2", {}, "Generate next games")),
+    h("p", { class: "muted small" }, live
+      ? `One game a day on the next free days. Each startup plays one day only; ${left} unplayed is enough for about ${plural(enough, "game")}. A major update from “Update all cards” makes a startup eligible once more.`
+      : `One game a day on the next free days, rotating the ${left} demo companies so the least-shown go first.`),
+    h("div", { class: "g-form" },
+      h("label", {}, "Games", count),
+      h("label", {}, "Cards each", cards),
+      h("button", { class: "btn primary", disabled: !left, onclick: (e) => generate(e.currentTarget) },
+        left ? "Generate" : live ? "No unplayed startups left" : "No companies in the game")));
 }
 
 function builder() {
-  const label = h("input", { type: "text", placeholder: "Label" });
-  const date = h("input", { type: "text", placeholder: "YYYY-MM-DD (blank = any day)" });
-  const pool = [...S.companies].sort((a, b) => b.active - a.active || a.name.localeCompare(b.name));
-  const picks = Array.from({ length: 5 }, (_, i) => h("select", { "aria-label": `Card ${i + 1}` }, h("option", { value: "" }, `Card ${i + 1}`),
-    pool.map((c) => h("option", { value: c.id }, `${c.name}${c.active ? "" : " (not in game)"}`))));
+  const label = h("input", { type: "text", placeholder: "e.g. Ocean week special", value: S.label || "", oninput: (e) => { S.label = e.target.value; } });
+  const date = h("input", { type: "date", value: S.date || "", oninput: (e) => { S.date = e.target.value; } });
+  const startups = [...S.companies].sort((a, b) => b.active - a.active || a.name.localeCompare(b.name))
+    .map((c) => [c.id, `${c.name}${c.active ? "" : " (not in game)"}`]);
+  const picks = S.picks.map((v, i) => Tool.dropdown({ label: `Card ${i + 1}`, options: [["", `Card ${i + 1}: empty`], ...startups], value: v, class: "dd-full",
+    onChange: (id) => { S.picks[i] = id; } }));
   async function create() {
-    const ids = picks.map((p) => Number(p.value)).filter(Boolean);
-    if (!label.value.trim() || !ids.length) return PD.toast("Add a label and at least one company");
+    const ids = S.picks.map(Number).filter(Boolean);
+    if (!label.value.trim() || !ids.length) return PD.toast("Add a label and at least one startup");
     try {
-      await post("/api/admin/dives", { label: label.value.trim(), company_ids: ids, date: date.value.trim() || null });
+      await post("/api/admin/dives", { label: label.value.trim(), company_ids: ids, date: date.value || null });
+      S.picks = Array(5).fill(""); S.label = ""; S.date = "";
       await refresh();
     } catch (e) { PD.toast(e.message); }
   }
-  return h("section", { class: "panel" }, h("h2", {}, "Queue a game"),
-    h("div", { class: "form" }, label, date, picks, h("button", { class: "btn primary", onclick: create }, "Add to queue")));
+  return h("section", { class: "panel" },
+    h("div", { class: "panel-head" }, h("h2", {}, "Queue a game by hand")),
+    h("p", { class: "muted small" }, "Any startup, played before or not."),
+    h("div", { class: "form" }, h("label", {}, "Label", label), h("label", {}, "Date (blank = any day)", date),
+      h("div", { class: "g-picks" }, picks), h("button", { class: "btn primary", onclick: create }, "Add to queue")));
 }
 
 function nextTab() {
   const next = S.dives.filter((d) => d.when !== "past").sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
-  return h("div", { class: "split" },
-    next.length ? h("section", { class: "panel" }, h("div", { class: "table-wrap" }, h("table", { class: "data" },
-      h("thead", {}, h("tr", {}, ["When", "Set", "Companies", "Answers", ""].map((t, i) => h("th", { class: i === 3 ? "num" : "" }, t)))),
-      h("tbody", {}, next.map((d) => h("tr", {},
-        h("td", {}, d.when === "today" ? h("b", {}, "Today") : d.date || "Any day"),
-        h("td", {}, h("b", {}, d.label)), h("td", { class: "muted" }, names(d)), h("td", { class: "num" }, d.answers),
-        h("td", { class: "num" }, h("div", { class: "row", style: { justifyContent: "flex-end", flexWrap: "nowrap" } },
-          h("a", { class: "btn link", href: `/play?dive=${d.id}`, target: "_blank" }, "Open"),
-          h("button", { class: "btn link", onclick: () => demoAnswers(d) }, "Demo answers"),
-          h("button", { class: "btn link", onclick: () => del(d) }, "Delete")))))))))
-      : h("p", { class: "empty" }, "Nothing queued."),
+  return h("div", { class: "split g-split" },
+    h("section", { class: "panel" },
+      h("div", { class: "panel-head" }, h("h2", {}, "Queue"), h("span", { class: "muted small" }, plural(next.length, "game"))),
+      next.length ? h("div", { class: "g-list" }, next.map((d) => gameRow(d, [
+        h("a", { class: "btn small", href: `/play?dive=${d.id}`, target: "_blank" }, "Open ↗"),
+        h("button", { class: "btn small", onclick: () => demoAnswers(d) }, "Demo answers"),
+        h("button", { class: "btn small danger", onclick: () => del(d) }, "Delete")])))
+        : h("p", { class: "empty" }, "Nothing queued. Generate the next games →")),
     h("div", {}, generator(), builder()));
 }
 
@@ -128,12 +168,14 @@ function render() {
   $app.replaceChildren(
     h("div", { class: "head" }, h("h1", {}, "Game"),
       Tool.tabs(TABS.map((t) => ({ ...t, count: counts[t.key] })), S.tab, (k) => { S.tab = k; Tool.setHash(k); render(); })),
+    kpis(),
     body);
 }
 
 async function refresh() {
   try {
-    [S.dives, S.companies] = await Promise.all([api("/api/host/dives"), api("/api/admin/companies?pool=current")]);
+    [S.dives, S.companies, S.pool] = await Promise.all([api("/api/host/dives"), api("/api/admin/companies?pool=current"),
+      api("/api/host/game-pool")]);
     render();
   } catch (e) {
     $app.replaceChildren(h("p", { class: "callout" }, e.message));

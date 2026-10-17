@@ -42,3 +42,40 @@ def test_needs_companies_in_the_game(client, admin):
     r = client.post("/api/admin/dives/generate", json={"count": 2}, auth=admin)
     assert r.status_code == 409 and "activate" in r.json()["detail"]
     assert client.post("/api/admin/dives/generate", json={"count": 0}, auth=admin).status_code == 422
+
+
+def live_with(client, admin, n):
+    """Live mode with n real startups in the game."""
+    from app.db import connect, now
+    client.post("/api/admin/mode", json={"mode": "live"}, auth=admin)
+    db = connect()
+    ids = [db.execute("INSERT INTO companies (name, name_key, one_liner, is_real, active, created_at) VALUES (?, ?, 'x', 1, 1, ?)",
+                      (f"Real{i}", f"real{i}", now())).lastrowid for i in range(n)]
+    db.commit()
+    db.close()
+    return ids
+
+
+def test_live_startups_play_one_day_only(client, admin):
+    ids = live_with(client, admin, 12)
+    made = client.post("/api/admin/dives/generate", json={"count": 5, "cards": 5}, auth=admin).json()
+    assert len(made) == 3  # 12 startups: two full games and one of two, then they've all had their day
+    used = [i for d in made for i in d["company_ids"]]
+    assert sorted(used) == sorted(ids)
+    assert client.get("/api/host/game-pool", auth=admin).json()["eligible"] == []
+    r = client.post("/api/admin/dives/generate", json={"count": 1}, auth=admin)
+    assert r.status_code == 409 and "had its day" in r.json()["detail"]
+
+
+def test_a_major_update_brings_a_startup_back_once(client, admin):
+    from app.db import connect, now
+    ids = live_with(client, admin, 5)
+    client.post("/api/admin/dives/generate", json={"count": 1}, auth=admin)
+    db = connect()
+    db.execute("UPDATE companies SET major_update_at = ? WHERE id = ?", (now(), ids[0]))
+    db.commit()
+    db.close()
+    pool = client.get("/api/host/game-pool", auth=admin).json()
+    assert pool["eligible"] == [ids[0]] and pool["updated"] == [ids[0]]
+    made = client.post("/api/admin/dives/generate", json={"count": 3}, auth=admin).json()
+    assert [d["company_ids"] for d in made] == [[ids[0]]]

@@ -10,6 +10,7 @@ platforms already searched without finding anything, count as done.
 Sample startups are made up, so they get AI ratings only: a social search could only find their namesakes.
 """
 import logging
+import re
 import threading
 
 from . import brief, opinions, reads
@@ -46,8 +47,11 @@ def needs_profile(comp) -> bool:
 
 
 def needs_check(comp) -> bool:
-    """A filled real startup the game's automatic moderation hasn't passed or kept out yet."""
-    return bool(comp["is_real"]) and comp["profile_status"] == "ai" and not comp["game_status"] and pitch.available()
+    """A real startup the game's automatic moderation hasn't passed or kept out yet, once its card has what a player
+    sees (gate.playable). The investor's profile and evidence aren't needed for the game."""
+    # Kept out only for an incomplete card ("no pitch yet"): checked again once the card is complete.
+    incomplete = comp["game_status"] == "out" and re.fullmatch(r"no .+ yet", comp["game_note"] or "")
+    return bool(comp["is_real"]) and gate.playable(comp) and (not comp["game_status"] or bool(incomplete)) and pitch.available()
 
 
 def gaps(db, comp) -> tuple[list[str], list[str]]:
@@ -104,7 +108,7 @@ def fill(db) -> dict:
                         st["errors"].append(f"{comp['name']}, checklist: {reads.short_error(e)}")
                 except Exception as e:  # noqa: BLE001 - stays unfilled for the next run
                     st["errors"].append(f"{comp['name']}, profile: {reads.short_error(e)}")
-            if needs_check(comp):  # filled: now it joins the game, or is kept out with the reason
+            if needs_check(comp):  # its card is complete: now it joins the game, or is kept out with the reason
                 try:
                     gate.check(db, comp)
                 except Exception as e:  # noqa: BLE001 - stays unchecked for the next run

@@ -117,8 +117,7 @@ def todays_dive(db):
     """
     today = date.today().isoformat()
     pool = get_mode(db)
-    ids = [r["id"] for r in db.execute("SELECT id FROM companies WHERE active = 1 AND is_real = ? ORDER BY id",
-                                       (pool_is_real(pool),))]
+    ids = eligible_ids(db, pool)
     picked = random.Random(f"{today}:{pool}" if pool != "demo" else today).sample(ids, min(5, len(ids)))
     row = db.execute("SELECT * FROM dives WHERE mode = 'daily' AND date = ? AND pool = ? ORDER BY id DESC LIMIT 1",
                      (today, pool)).fetchone()
@@ -134,6 +133,23 @@ def todays_dive(db):
     return get_dive(db, cur.lastrowid)
 
 
+def eligible_ids(db, pool: str) -> list[int]:
+    """The in-game companies a new set may use. In live mode a startup plays one day only: once it has been in any of
+    the pool's games it stays out, unless a major update (refresh.py) came after its last game. The demo sample is
+    small and fixed, so it keeps rotating."""
+    ids = [r["id"] for r in db.execute("SELECT id FROM companies WHERE active = 1 AND is_real = ? ORDER BY id",
+                                       (pool_is_real(pool),))]
+    if pool == "demo":
+        return ids
+    last = {}
+    for row in db.execute("SELECT company_ids, created_at FROM dives WHERE pool = ?", (pool,)):
+        for i in j(row["company_ids"], []):
+            last[i] = max(last.get(i, ""), row["created_at"] or "")
+    updated = {r["id"]: r["major_update_at"] or "" for r in db.execute(
+        "SELECT id, major_update_at FROM companies WHERE major_update_at IS NOT NULL")}
+    return [i for i in ids if i not in last or updated.get(i, "") >= last[i]]  # same second counts as after
+
+
 def daily_label(db, pool: str) -> str:
     count = db.execute("SELECT COUNT(*) FROM dives WHERE mode = 'daily' AND pool = ?", (pool,)).fetchone()[0]
     return f"#{count + 1}" if pool == "demo" else f"Live #{count + 1}"
@@ -141,13 +157,14 @@ def daily_label(db, pool: str) -> str:
 
 def generate_dives(db, count: int, cards: int = 5) -> list:
     """Queue the next `count` daily games for the current mode, one per day on the first days from today that have no
-    game yet. Each takes the `cards` in-game companies shown least so far (in any of the mode's games), so every
-    company gets its turn before one repeats; ties are broken at random. Returns the new games, oldest first."""
+    game yet. Each takes the `cards` eligible companies shown least so far (eligible_ids), ties broken at random. Live
+    startups don't repeat, so fewer games may be queued than asked for. Returns the new games, oldest first."""
     pool = get_mode(db)
-    ids = [r["id"] for r in db.execute("SELECT id FROM companies WHERE active = 1 AND is_real = ? ORDER BY id",
-                                       (pool_is_real(pool),))]
-    if not ids:
+    if not db.execute("SELECT 1 FROM companies WHERE active = 1 AND is_real = ?", (pool_is_real(pool),)).fetchone():
         raise ValueError("No companies are in the game yet: activate some first.")
+    ids = eligible_ids(db, pool)
+    if not ids:
+        raise ValueError("Every startup in the game has had its day. New ones, or a major update, bring more.")
     shown = {i: 0 for i in ids}
     taken = set()
     for row in db.execute("SELECT date, company_ids FROM dives WHERE pool = ?", (pool,)):
@@ -157,11 +174,17 @@ def generate_dives(db, count: int, cards: int = 5) -> list:
                 shown[i] += 1
     rng = random.Random()
     day, made = date.today(), []
+    left = list(ids)
     while len(made) < count:
         if day.isoformat() not in taken:
-            picked = sorted(ids, key=lambda i: (shown[i], rng.random()))[:min(cards, len(ids))]
+            if pool != "demo" and not left:
+                break  # live startups don't repeat: queue what there's enough for
+            pool_ids = ids if pool == "demo" else left
+            picked = sorted(pool_ids, key=lambda i: (shown[i], rng.random()))[:min(cards, len(pool_ids))]
             for i in picked:
                 shown[i] += 1
+            if pool != "demo":
+                left = [i for i in left if i not in picked]
             cur = db.execute("INSERT INTO dives (label, date, company_ids, mode, pool, created_at) "
                              "VALUES (?, ?, ?, 'daily', ?, ?)", (daily_label(db, pool), day.isoformat(), dumps(picked), pool, now()))
             made.append(get_dive(db, cur.lastrowid))
@@ -489,6 +512,8 @@ def company_insight(db, comp, real_only: bool) -> dict:
         "divergence": divergence({"crowd": room["composite"] if room["n"] else None, "engine": engine_known,
                                   "outside": outside["composite"]}),
         "quiet": opinions.quiet(db, comp["id"]),
+        # What "Update all cards" last found (refresh.py), and when it was last major.
+        "update": {"note": comp["update_note"] or "", "major_at": comp["major_update_at"]},
     }
     return out | {"call": call(out), "next": next_move(out)}
 
