@@ -601,8 +601,68 @@ function showAuth(mode = "login") {
   show(paperCard("Log in",
     h("h1", { class: "account-head" }, "Welcome ", h("span", { class: "hand" }, "back")),
     form,
+    h("button", { class: "switch-link", type: "button", onclick: () => showForgot(username.value.trim()) },
+      "Forgot your password? ", h("b", {}, "Ask for a new one")),
     h("button", { class: "switch-link", type: "button", onclick: () => showSignup() }, "New here? ", h("b", {}, "Sign up"))));
   setTimeout(() => username.focus(), 50);
+}
+
+// Forgot your password: pick a new one and a moderator approves it (there's no email to send a link to). The old one
+// works until then. Mirrors PasswordRequestIn in app/main.py.
+function showForgot(typedName = "") {
+  closeMenu();
+  S.overlay = true;
+  const username = h("input", { name: "username", type: "text", required: true, minlength: 3, maxlength: 20,
+    autocomplete: "username", autocapitalize: "none", spellcheck: "false", placeholder: "alexm", value: typedName });
+  const password = h("input", { name: "password", type: "password", required: true, minlength: 4, maxlength: 200,
+    autocomplete: "new-password", placeholder: "at least 4 characters" });
+  const again = h("input", { name: "again", type: "password", required: true, maxlength: 200, autocomplete: "new-password" });
+  const note = h("textarea", { name: "note", rows: 3, maxlength: 300,
+    placeholder: "The email you signed up with, when you joined, what you've played…" });
+  const send = h("button", { class: "pill block", type: "submit" }, "Send to a moderator");
+  const field = (label, el, optional = false) => h("label", { class: "submit-field" },
+    h("span", { class: "row" }, h("span", { class: "caps" }, label), optional ? h("span", { class: "optional" }, "optional") : null),
+    el);
+
+  const form = h("form", { novalidate: true },
+    field("Username", username),
+    field("New password", password),
+    field("New password again", again),
+    field("Anything that shows it's you", note, true),
+    h("div", { class: "actions" }, send));
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (username.value.trim().length < 3) { username.focus(); return PD.toast("Username: at least 3 characters"); }
+    if (password.value.length < 4) { password.focus(); return PD.toast("Password: at least 4 characters"); }
+    if (again.value !== password.value) { again.focus(); return PD.toast("The two passwords don't match"); }
+    send.disabled = true;
+    try {
+      await post("/api/account/password-request",
+        { username: username.value.trim(), password: password.value, note: note.value.trim() });
+      showAsked();
+    } catch (err) {
+      PD.toast(err.message, 5000);
+      send.disabled = false;
+    }
+  });
+
+  show(paperCard("Log in",
+    h("h1", { class: "account-head" }, "New ", h("span", { class: "hand" }, "password")),
+    h("p", { class: "submit-intro" }, "Pick a new password and a moderator checks the request. Once they approve it, log in with the new one. Until then, your old one still works."),
+    form,
+    h("button", { class: "switch-link", type: "button", onclick: () => showAuth("login") }, "Remembered it? ", h("b", {}, "Log in"))));
+  setTimeout(() => (typedName ? password : username).focus(), 50);
+}
+
+function showAsked() {
+  document.querySelector(".toast")?.classList.add("hidden"); // an error fixed a moment ago shouldn't linger here
+  show(paperCard("Log in",
+    h("div", { class: "big-mark" }, "✓"),
+    h("div", { class: "wait-title" }, "Request sent"),
+    h("p", { class: "submit-intro applied" },
+      "A moderator will check it. Once they approve it, log in with your new password. Until then, your old one still works."),
+    h("div", { class: "actions stack" }, pill("Back to the game →", resume),
+      h("button", { class: "switch-link", type: "button", onclick: () => showAuth("login") }, "Back to ", h("b", {}, "Log in")))));
 }
 
 // A player signs up with the first section alone and is in at once. An investor fills in all of it, which is what a
@@ -832,6 +892,11 @@ async function startSolo() {
   try {
     S.user = (await api("/api/me")).user; // also sets the device cookie before anything else
     await startSolo();
+    // /play#forgot, from the staff sign-in page: straight to asking for a new password.
+    if (location.hash === "#forgot" && !S.user) {
+      history.replaceState(null, "", location.pathname + location.search);
+      showForgot();
+    }
   } catch (e) {
     show(waitCard(colorFor(0), -1, 0, "!", "Something broke", e.message));
   }

@@ -1,7 +1,10 @@
-"""Staff accounts: moderators reset members' passwords and moderate; admins get the whole host tool from their login."""
+"""Staff accounts: moderators reset members' passwords and moderate; admins get the whole host tool from their login.
+Admins are the accounts ADMINS in .env names, and only those."""
 from fastapi.testclient import TestClient
 
-from tests.conftest import join, new_player, staff, user_id
+from app import accounts, config
+from app.db import connect
+from tests.conftest import apply, join, new_player, staff, user_id
 
 
 def test_a_moderator_resets_a_members_password(client, moderator):
@@ -34,8 +37,16 @@ def test_only_an_admin_resets_a_moderators_password(client, moderator):
 HOST_TOOL = ("/host", "/game", "/admin", "/api/host/radar", "/api/admin/companies")
 
 
-def promote(client, username, role, on=True, auth=None):
-    return client.put(f"/api/mod/users/{user_id(client, username)}/{role}", json={role: on}, auth=auth or staff())
+def promote(client, username, on=True, auth=None):
+    return client.put(f"/api/mod/users/{user_id(client, username)}/moderator", json={"moderator": on},
+                      auth=auth or staff())
+
+
+def set_admins(monkeypatch, admins):
+    """ADMINS in .env, as the next start reads it. Returns what couldn't be set up."""
+    monkeypatch.setattr(config, "ADMINS", admins)
+    with connect() as db:
+        return accounts.ensure_admins(db)
 
 
 def test_a_moderator_gets_moderation_only(client, moderator):
@@ -46,9 +57,9 @@ def test_a_moderator_gets_moderation_only(client, moderator):
         assert mod.get(path).status_code == 401, path
 
 
-def test_an_admin_account_gets_the_whole_tool(client):
+def test_an_admin_account_gets_the_whole_tool(client, monkeypatch):
     join(new_player(client), "ada", "adapass1")
-    assert promote(client, "ada", "admin").json()["is_admin"] is True
+    assert set_admins(monkeypatch, {"ada": ""}) == []
     ada = TestClient(client.app)
     r = ada.post("/api/account/login", json={"username": "ada", "password": "adapass1"})
     assert r.json()["user"]["is_admin"] is True and r.json()["user"]["is_moderator"] is False
@@ -58,20 +69,57 @@ def test_an_admin_account_gets_the_whole_tool(client):
     # On /moderate an admin account has the admin's powers, under its own name.
     assert ada.get("/api/mod/users").json()["viewer"] == {"name": "ada", "admin": True}
     join(new_player(client), "bodil")
-    assert promote(client, "bodil", "moderator", auth=("ada", "adapass1")).status_code == 200
-    # Taking it away ends their access at once.
-    promote(client, "ada", "admin", on=False)
+    assert promote(client, "bodil", auth=("ada", "adapass1")).status_code == 200
+    # Out of ADMINS, they lose it from the next start on.
+    set_admins(monkeypatch, {})
     assert ada.get("/host").status_code == 401 and ada.get("/api/mod/users").status_code == 401
 
 
-def test_roles_are_independent_and_only_admins_grant_them(client, moderator):
-    join(new_player(client), "both")
-    promote(client, "both", "moderator")
-    r = promote(client, "both", "admin")
-    assert r.json()["is_admin"] is True and r.json()["is_moderator"] is True
-    assert promote(client, "both", "moderator", on=False).json()["is_admin"] is True
+def test_nothing_on_the_site_makes_an_admin(client, moderator):
     join(new_player(client), "pia")
-    assert promote(client, "pia", "admin", auth=moderator).status_code == 403
+    uid = user_id(client, "pia")
+    for auth in (staff(), moderator):
+        assert client.put(f"/api/mod/users/{uid}/admin", json={"admin": True}, auth=auth).status_code == 404
+    assert not any(u["is_admin"] for u in client.get("/api/mod/users", auth=staff()).json()["users"])
+
+
+def test_admins_from_env_get_their_accounts(client, monkeypatch):
+    # With a password, the account is made (and its password kept to it); a listed account that was waiting is let in.
+    apply(new_player(client), "waiting1")
+    problems = set_admins(monkeypatch, {"boss": "bosspass", "waiting1": "", "ghost": ""})
+    assert len(problems) == 1 and "'ghost'" in problems[0]
+    c = TestClient(client.app)
+    assert c.post("/api/account/login", json={"username": "boss", "password": "bosspass"}).json()["user"]["is_admin"]
+    assert c.post("/api/account/login", json={"username": "waiting1", "password": "pass1234"}).json()["user"]["is_admin"]
+    set_admins(monkeypatch, {"boss": "newboss1", "waiting1": "", "ghost": ""})
+    assert c.post("/api/account/login", json={"username": "boss", "password": "newboss1"}).status_code == 200
+    # Nobody can sign up with a listed name, whatever the case.
+    for name in ("ghost", "GHOST"):
+        r = join(new_player(client), name)
+        assert r.status_code == 400 and r.json()["detail"] == "That username is taken."
+
+
+def test_admin_accounts_are_deleted_in_env_only(client, monkeypatch, moderator):
+    join(new_player(client), "ada", "adapass1")
+    set_admins(monkeypatch, {"ada": ""})
+    uid = user_id(client, "ada")
+    assert client.delete(f"/api/mod/users/{uid}", auth=staff()).status_code == 403
+    assert client.delete(f"/api/admin/users/{uid}", auth=staff()).status_code == 403
+    ada = TestClient(client.app)
+    ada.post("/api/account/login", json={"username": "ada", "password": "adapass1"})
+    assert ada.delete("/api/account").status_code == 403
+    set_admins(monkeypatch, {})
+    assert client.delete(f"/api/mod/users/{uid}", auth=staff()).status_code == 200
+
+
+def test_roles_are_independent_and_only_admins_grant_them(client, monkeypatch, moderator):
+    join(new_player(client), "both")
+    promote(client, "both")
+    set_admins(monkeypatch, {"both": ""})
+    r = promote(client, "both", on=False)
+    assert r.json()["is_admin"] is True and r.json()["is_moderator"] is False
+    join(new_player(client), "pia")
+    assert promote(client, "pia", auth=moderator).status_code == 403
     # A moderator can't touch an admin's account either.
     uid = user_id(client, "both")
     assert client.put(f"/api/mod/users/{uid}/password", json={"password": "x1234"}, auth=moderator).status_code == 403
@@ -106,9 +154,9 @@ def test_the_admin_password_signs_in_and_out(client):
     assert c.get("/host").status_code == 401
 
 
-def test_a_staff_account_signs_in_as_itself(client, moderator):
+def test_a_staff_account_signs_in_as_itself(client, monkeypatch, moderator):
     join(new_player(client), "ada", "adapass1")
-    promote(client, "ada", "admin")
+    set_admins(monkeypatch, {"ada": ""})
     c = TestClient(client.app)
     assert staff_login(c, "ada", "adapass1").json()["user"]["username"] == "ada"
     assert c.get("/host").status_code == 200
@@ -122,3 +170,11 @@ def test_a_staff_account_signs_in_as_itself(client, moderator):
     # A plain member can't sign in here at all.
     join(new_player(client), "pia", "pass1234")
     assert staff_login(TestClient(client.app), "pia", "pass1234", need="moderator").status_code == 403
+
+
+def test_signing_in_as_a_moderator_ends_the_admin_password_sign_in(client, moderator):
+    c = TestClient(client.app)
+    staff_login(c, "", "secret")
+    assert staff_login(c, *moderator, need="moderator").status_code == 200
+    assert c.get("/api/mod/users").json()["viewer"] == {"name": "mira", "admin": False}
+    assert c.get("/host").status_code == 401

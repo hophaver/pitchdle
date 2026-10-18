@@ -1,4 +1,5 @@
 """Runtime configuration from environment variables, optionally loaded from a .env file."""
+import json
 import os
 from pathlib import Path
 
@@ -23,8 +24,31 @@ def _csv(value: str | None) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
 
 
+def _admins(value: str | None) -> dict[str, str]:
+    """ADMINS as {username: password}: usernames as a list (alice,bob or ["alice", "bob"]), or an object of
+    username: password ({"alice": "their password"}). The password is "" where none is given."""
+    value = (value or "").strip()
+    if value[:1] not in ("[", "{"):
+        return {name: "" for name in _csv(value)}
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        # Unquoted in .env, the shell (run.sh) drops the inner quotes: [alice,bob] or {alice:pw}.
+        parts = _csv(value[1:-1])
+        parsed = dict(part.partition(":")[::2] for part in parts) if value[0] == "{" else parts
+    if isinstance(parsed, dict):
+        return {str(k).strip(): "" if v is None or v is True else str(v).strip()
+                for k, v in parsed.items() if str(k).strip() and v is not False}
+    return {str(name).strip(): "" for name in parsed if str(name).strip()}
+
+
 DB_PATH = os.environ.get("DB_PATH") or str(ROOT / "data" / "pitchdle.db")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or "admin"
+# Admin accounts: every page, under their own name, like the admin password. Only this makes an admin; nothing on the
+# site can. A list names accounts that exist (players sign up on /play first); an object of username: password also
+# creates the account on startup, or brings its password back in line, like the test accounts. Nobody can sign up
+# with a name listed here.
+ADMINS = _admins(os.environ.get("ADMINS"))
 MIN_VOTES = int(os.environ.get("MIN_VOTES") or 5)
 # Optional test account, created (or its password reset) on startup. Only it gets "Reset my data".
 TEST_USERNAME = (os.environ.get("TEST_USERNAME") or "").strip()
@@ -37,8 +61,8 @@ TEST_MODERATOR_PASSWORD = os.environ.get("TEST_MODERATOR_PASSWORD") or ""
 # score guests together can make up once members have answered it. See scoring.vote_weights.
 GUEST_WEIGHT = float(os.environ.get("GUEST_WEIGHT") or 0.5)
 GUEST_MAX_SHARE = float(os.environ.get("GUEST_MAX_SHARE") or 0.4)
-# How much a player account's and an investor account's answer count. These four are the defaults: moderation's
-# admin can change them, and saved changes (the settings table) win over these.
+# How much a player account's and an investor account's answer count. These four are the defaults: an admin can
+# change them on /admin, and saved changes (the settings table) win over these.
 PLAYER_WEIGHT = max(0.0, float(os.environ.get("PLAYER_WEIGHT") or 1.0))
 INVESTOR_WEIGHT = max(0.0, float(os.environ.get("INVESTOR_WEIGHT") or 2.0))
 # Outside reads, run from Admin and never on the game's path: AI models rate each startup, and AI searches

@@ -350,6 +350,7 @@ a.fact:hover { background: var(--soft-2); }
   color: var(--muted); font-size: .95rem;
 }
 .switch-link b { color: var(--orange); }
+.switch-link + .switch-link { margin-top: 2px; }
 .actions.stack { flex-direction: column; align-items: center; gap: 10px; }
 .pill.small { min-height: 40px; padding: 0 18px; font-size: .78rem; letter-spacing: .14em; }
 
@@ -443,6 +444,12 @@ body.tool {
 .seg button { border: 0; border-left: 1px solid var(--line); background: none; cursor: pointer; font: inherit; font-weight: 600; font-size: .82rem; padding: .35rem .8rem; color: var(--muted); }
 .seg button:first-child { border-left: 0; }
 .seg button[aria-pressed="true"] { background: var(--ink); color: var(--on-ink); }
+/* .fit: on a phone, a row too long for the screen wraps onto more lines, the lines between buttons kept */
+@media (max-width: 640px) {
+  .seg.fit { display: flex; flex-wrap: wrap; gap: 1px; width: 100%; background: var(--line); }
+  .seg.fit button { flex: 1 1 auto; border-left: 0; background: var(--control); }
+  .seg.fit button[aria-pressed="true"] { background: var(--ink); }
+}
 
 /* controls */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: .35rem; min-height: 32px; padding: .25rem .8rem;
@@ -656,6 +663,7 @@ table.data tr.sub > td { background: var(--paper); }
 .login-note { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: .55rem .7rem; font-weight: 600; font-size: .82rem; }
 .login-error { color: var(--bad); font-weight: 600; font-size: .85rem; }
 .login-hint { text-align: center; }
+.login-hint + .login-hint { margin-top: -.5rem; }
 .topnav .signout { color: var(--muted); font-weight: 600; }
 .topnav .signout:hover { color: var(--ink); }
 .split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 1rem; align-items: start; }
@@ -999,7 +1007,7 @@ table.data tr.detail > td .pf { margin: .2rem 0 .2rem 1.3rem; }
 .pf-action input { width: 200px; }
 .rc .meta .tag { margin-right: .35rem; }
 
-/* moderation: the vote weights, four numbers in a row */
+/* admin: the vote weights, four numbers in a row */
 .w-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
 .w-field { display: grid; gap: .35rem; align-content: start; background: var(--page); border: 1px solid var(--line); border-radius: var(--r);
   padding: .75rem .9rem; }
@@ -1008,7 +1016,7 @@ table.data tr.detail > td .pf { margin: .2rem 0 .2rem 1.3rem; }
 .w-unit { font-size: 1.1rem; font-weight: 800; color: var(--muted); }
 .tool .w-input input[type=number] { width: 6rem; font-size: 1.15rem; font-weight: 800; padding: .3rem .55rem; font-variant-numeric: tabular-nums; }
 .w-help { font-size: .76rem; color: var(--muted); line-height: 1.35; }
-.w-note { margin: .7rem 0 0; }
+.w-actions { margin-top: .8rem; }
 
 /* results: one row per read across the card, the same chart in each, then the total posts */
 .rs { display: grid; gap: 6px; margin-top: 14px; }

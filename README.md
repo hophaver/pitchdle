@@ -21,12 +21,16 @@ The first run creates `.venv`, installs dependencies and seeds `data/pitchdle.db
 | `/play` | The daily game (5 cards) | anyone |
 | `/host` | Dashboard: the radar, calls, details, next steps | admin |
 | `/game` | Players, past and upcoming games | admin |
-| `/admin` | Background AI jobs, exports, resets | admin |
-| `/moderate` | Approve investors, manage members, A'Pelago's ratings, vote weights | moderator or admin |
+| `/admin` | Background AI jobs, vote weights, exports, resets | admin |
+| `/moderate` | Approve investors and new passwords, manage members, A'Pelago's ratings | moderator or admin |
 
 Staff pages show a sign-in page: use the admin password `ADMIN_PASSWORD` (default `admin`) with no username, or
-a staff account. An admin can make members **admins** (every page) or **moderators** (`/moderate` only), or both,
-from `/moderate` → Members.
+a staff account. **Admins** (every page) are the accounts listed in `ADMINS` in `.env`, and only those. An admin
+makes members **moderators** (`/moderate` only) from `/moderate` → Members.
+
+Forgot a password? On the game's login, **Forgot your password?** lets a member pick a new one. It works once a
+moderator approves it on `/moderate` → New passwords (a moderator's or admin's own request needs an admin); the old
+one works until then. Moderators can also set a member's password directly.
 
 ## Config
 
@@ -35,6 +39,7 @@ Copy `.env.example` to `.env`. The main settings:
 | Var | Default | |
 |---|---|---|
 | `ADMIN_PASSWORD` | `admin` | Change for any real deployment |
+| `ADMINS` | empty | Admin accounts: `alice,bob`, or `'{"alice": "password"}'` to create them on startup |
 | `DB_PATH` | `./data/pitchdle.db` | |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | |
 | `APP_MODE` | `demo` | `demo` = seeded companies, `live` = discovered ones |
@@ -63,7 +68,8 @@ is skipped. See `.env.example` for the rest (discovery limits, exclusions, vote 
 - **Reviews.** Claude, GPT and Grok rate each card, and social media (X, LinkedIn, Reddit, …) is searched for real
   startups. This runs in the background, never on the game's path, and uses paid APIs (model calls plus web searches per card).
 - **Accounts.** Guests play via a device cookie. Players sign up instantly; investors need moderator approval and
-  rate a fuller card. Votes are weighted: guest 0.5 (capped at 40% of a card), player 1, investor 2.
+  rate a fuller card. Votes are weighted: guest 0.5 (capped at 40% of a card), player 1, investor 2. An admin changes
+  the weights in `/admin`.
 
 Engine weights live in `weights.json`; after editing, run `.venv/bin/python -m app.seed --rescore`.
 
@@ -90,8 +96,8 @@ app/
   engine.py      evidence → readiness scores (weights.json)
   landscape.py   next-step matching (landscape.json)
   scoring.py     crowd stats and vote weights
-  accounts.py    sign-up, login, sessions
-  moderation.py  investor review, member stats
+  accounts.py    sign-up, login, sessions, admins from .env, password requests
+  moderation.py  investor and password review, member stats, vote weights
   opinions.py    A'Pelago, AI and social opinions
   reads.py       AI model and social media calls
   autoread.py    background reads

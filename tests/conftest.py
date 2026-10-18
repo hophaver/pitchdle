@@ -1,20 +1,24 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config
+from app import config, moderation
 
 
 @pytest.fixture(autouse=True)
 def no_local_settings(monkeypatch):
-    """Tests don't depend on a local .env: no test accounts, no API keys and default models, unless a test sets its own."""
+    """Tests don't depend on a local .env: no test accounts or admins, no API keys and default models, unless a test sets
+    its own."""
     for name in ("TEST_USERNAME", "TEST_PASSWORD", "TEST_MODERATOR_USERNAME", "TEST_MODERATOR_PASSWORD",
                  "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
                  "CLAUDE_MODEL", "GPT_MODEL", "GROK_MODEL"):
         monkeypatch.setattr(config, name, "")
+    monkeypatch.setattr(config, "ADMINS", {})
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     # The vote weights at their defaults; a test that saves new ones gets them put back afterwards.
-    for name, value in (("PLAYER_WEIGHT", 1.0), ("INVESTOR_WEIGHT", 2.0), ("GUEST_WEIGHT", 0.5), ("GUEST_MAX_SHARE", 0.4)):
-        monkeypatch.setattr(config, name, value)
+    defaults = {"player": 1.0, "investor": 2.0, "guest": 0.5, "guest_max_share": 0.4}
+    for key, value in defaults.items():
+        monkeypatch.setattr(config, moderation.WEIGHT_ATTRS[key], value)
+    monkeypatch.setattr(moderation, "DEFAULT_WEIGHTS", defaults)
 
 
 @pytest.fixture(autouse=True)

@@ -66,8 +66,8 @@ def seed_if_empty(db) -> bool:
 
 
 def reset(db) -> None:
-    for table in ("votes", "sessions", "players", "users", "opportunities", "opinions", "dives", "candidates",
-                  "companies", "settings"):
+    for table in ("votes", "sessions", "password_requests", "players", "users", "opportunities", "opinions", "dives",
+                  "candidates", "companies", "settings"):
         db.execute(f"DELETE FROM {table}")
     db.commit()
     seed(db)

@@ -1,9 +1,10 @@
 """Player accounts: username + password, cookie sessions, and folding a guest's answers into an account.
 
-Deliberately light (no reset, nothing emailed). Accounts exist so a crowd score can trust signed-in players
-more than anonymous devices, and so players keep their history across days and devices. There are two kinds:
-a player signs up with a username and password and is in at once; an investor gives the full profile and waits
-for a moderator (see moderation.py), can't log in until one approves it, and then counts for more.
+Deliberately light (nothing emailed: a forgotten password is a request for a new one, which a moderator approves).
+Accounts exist so a crowd score can trust signed-in players more than anonymous devices, and so players keep their
+history across days and devices. There are two kinds: a player signs up with a username and password and is in at
+once; an investor gives the full profile and waits for a moderator (see moderation.py), can't log in until one
+approves it, and then counts for more. Admins are the accounts ADMINS in .env names, and only those.
 """
 import hashlib
 import hmac
@@ -57,21 +58,53 @@ def public_user(user) -> dict:
             "kind": user["kind"] or "player"}
 
 
+def is_admin_name(username: str) -> bool:
+    return username.strip().lower() in {name.lower() for name in config.ADMINS}
+
+
+def _from_env(db, username: str, password: str):
+    """An account .env sets up: created, or its password brought in line, and approved."""
+    user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    if user is None:
+        user = _create(db, username, password, None, "approved", "player")
+    elif not check_password(password, user["password_hash"]):
+        db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), user["id"]))
+    db.execute("UPDATE users SET status = 'approved' WHERE id = ?", (user["id"],))
+    return user
+
+
 def ensure_test_accounts(db) -> None:
     """Create the test account and the test moderator from .env, or bring their passwords and standing in line."""
     for username, password, moderator in ((config.TEST_USERNAME, config.TEST_PASSWORD, False),
                                           (config.TEST_MODERATOR_USERNAME, config.TEST_MODERATOR_PASSWORD, True)):
         if not username or not password:
             continue
-        user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-        if user is None:
-            user = register(db, username, password, status="approved")
-        elif not check_password(password, user["password_hash"]):
-            db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), user["id"]))
-        db.execute("UPDATE users SET status = 'approved' WHERE id = ?", (user["id"],))
+        user = _from_env(db, username, password)
         if moderator:
             db.execute("UPDATE users SET is_moderator = 1 WHERE id = ?", (user["id"],))
         db.commit()
+
+
+def ensure_admins(db) -> list[str]:
+    """Make exactly the accounts in ADMINS admins, on startup: any other account loses it. A name with a password
+    gets its account made, or its password brought in line; a listed account is let in if it was waiting. Returns
+    what couldn't be done, to log."""
+    db.execute("UPDATE users SET is_admin = 0")
+    problems = []
+    for username, password in config.ADMINS.items():
+        try:
+            user = _from_env(db, username, password) if password else \
+                db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        except AccountError as e:
+            problems.append(f"ADMINS: can't set up '{username}': {e}")
+            continue
+        if user is None:
+            problems.append(f"ADMINS: no account '{username}' yet, and nobody can sign up with that name. Give it a "
+                            f"password in ADMINS to create it.")
+            continue
+        db.execute("UPDATE users SET is_admin = 1, status = 'approved' WHERE id = ?", (user["id"],))
+    db.commit()
+    return problems
 
 
 def reset_player_data(db, uid: int) -> int:
@@ -94,7 +127,14 @@ def player_for(db, user):
 
 def register(db, username: str, password: str, profile: dict | None = None, status: str = "pending",
              kind: str = "player"):
-    """A new account. Investor sign-ups wait for a moderator; players and the test accounts start out approved."""
+    """A new account. Investor sign-ups wait for a moderator; players start out approved. Names in ADMINS are kept
+    for the admins."""
+    if is_admin_name(username):
+        raise AccountError("That username is taken.")
+    return _create(db, username, password, profile, status, kind)
+
+
+def _create(db, username: str, password: str, profile: dict | None, status: str, kind: str):
     username = username.strip()
     if not USERNAME_RE.match(username):
         raise AccountError("Username: 3-20 letters, numbers, dots, dashes or underscores.")
@@ -112,17 +152,57 @@ def register(db, username: str, password: str, profile: dict | None = None, stat
 
 
 def set_password(db, uid: int, password: str) -> None:
-    """A new password, set by a moderator who then tells the member. Their old logins end."""
+    """A new password, set by a moderator who then tells the member. Their old logins end, and a request for a new
+    password still waiting is dropped: this answers it."""
     if len(password) < PASSWORD_MIN:
         raise AccountError(f"Password: at least {PASSWORD_MIN} characters.")
     db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), uid))
     db.execute("DELETE FROM sessions WHERE user_id = ?", (uid,))
+    db.execute("DELETE FROM password_requests WHERE user_id = ? AND status = 'pending'", (uid,))
     db.commit()
+
+
+# --- forgotten passwords ----------------------------------------------------------------------------------------
+# A member who forgot their password picks a new one on /play, and a moderator approves or declines it on /moderate
+# (moderation.answer_request). Their old password works until then. Only the hash is kept, so nobody sees it.
+
+def request_password(db, username: str, password: str, note: str = "") -> None:
+    """Ask for a new password. A newer request replaces one still waiting."""
+    user = db.execute("SELECT * FROM users WHERE username = ?", (username.strip(),)).fetchone()
+    if user is None:
+        raise AccountError("There's no account with that username.")
+    if user["status"] == "rejected":
+        raise NotApproved(NOT_APPROVED["rejected"])
+    if len(password) < PASSWORD_MIN:
+        raise AccountError(f"Password: at least {PASSWORD_MIN} characters.")
+    db.execute("DELETE FROM password_requests WHERE user_id = ? AND status = 'pending'", (user["id"],))
+    db.execute("INSERT INTO password_requests (user_id, password_hash, note, status, created_at) "
+               "VALUES (?, ?, ?, 'pending', ?)", (user["id"], hash_password(password), note, now()))
+    db.commit()
+
+
+REQUEST_HINTS = {
+    "pending": "That's the new password you asked for: it works once a moderator approves it. Until then, log in "
+               "with your old one.",
+    "declined": "A moderator declined the new password you asked for. Log in with your old one, or ask again.",
+}
+
+
+def _request_hint(db, user, password: str) -> str | None:
+    """Why the password from their last request doesn't open the account (yet), if that's what they typed."""
+    last = db.execute("SELECT * FROM password_requests WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                      (user["id"],)).fetchone()
+    if last and last["status"] in REQUEST_HINTS and check_password(password, last["password_hash"]):
+        return REQUEST_HINTS[last["status"]]
+    return None
 
 
 def authenticate(db, username: str, password: str):
     user = db.execute("SELECT * FROM users WHERE username = ?", (username.strip(),)).fetchone()
     if not user or not check_password(password, user["password_hash"]):
+        hint = user and _request_hint(db, user, password)
+        if hint:
+            raise NotApproved(hint)
         raise AccountError("Wrong username or password.")
     if user["status"] != "approved":
         raise NotApproved(NOT_APPROVED.get(user["status"], NOT_APPROVED["pending"]))
@@ -185,6 +265,7 @@ def delete_user(db, uid: int) -> bool:
         return False
     db.execute("DELETE FROM opinions WHERE source = 'apelago' AND author = ?", (user["username"],))
     db.execute("DELETE FROM sessions WHERE user_id = ?", (uid,))
+    db.execute("DELETE FROM password_requests WHERE user_id = ?", (uid,))
     pids = [r["id"] for r in db.execute("SELECT id FROM players WHERE user_id = ?", (uid,))]
     for pid in pids:
         db.execute("DELETE FROM votes WHERE player_id = ?", (pid,))

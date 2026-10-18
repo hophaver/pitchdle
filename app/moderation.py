@@ -1,8 +1,10 @@
-"""Moderation: every investor sign-up waits for a moderator (players are in at once). How much a member's answers
-count in crowd scores follows from their account kind (scoring.vote_weights).
+"""Moderation: every investor sign-up waits for a moderator (players are in at once), and so does every request for a
+new password. How much a member's answers count in crowd scores follows from their account kind
+(scoring.vote_weights); the admin sets those weights on /admin.
 
-Moderators and admins are members an admin has promoted (either role, or both), and sign in with their own
-account; the admin password is an admin too. Whoever acts is recorded on each review.
+Moderators are members an admin has promoted; admins are the accounts ADMINS in .env names, and nothing here changes
+that. Both sign in with their own account, and the admin password is an admin too. Whoever acts is recorded on each
+review.
 """
 from dataclasses import dataclass
 from statistics import fmean
@@ -56,13 +58,38 @@ def set_moderator(db, user, moderator: bool, staff: Staff) -> None:
     db.commit()
 
 
-def set_admin(db, user, admin: bool, staff: Staff) -> None:
-    """Admins make members admins (the whole tool), or take it back. Independent of moderating."""
-    if not staff.admin:
-        raise NotAllowed("Only an admin can make or remove admins.")
-    if user["status"] != "approved":
-        raise ModerationError("Only members can be admins. Approve the sign-up first.")
-    db.execute("UPDATE users SET is_admin = ? WHERE id = ?", (int(admin), user["id"]))
+def check_deletable(user, staff: Staff) -> None:
+    """Admin accounts come from ADMINS in .env, so they're deleted there, not here."""
+    check_manageable(user, staff)
+    if user["is_admin"]:
+        raise NotAllowed(f"{user['username']} is an admin, set in .env (ADMINS). Take them out there and restart "
+                         "before deleting the account.")
+
+
+# --- requests for a new password ------------------------------------------------------------------------------
+
+def get_request(db, rid: int):
+    return db.execute("SELECT * FROM password_requests WHERE id = ?", (rid,)).fetchone()
+
+
+def waiting_requests(db, uid: int | None = None) -> dict[int, dict]:
+    """The request for a new password each account has waiting, by account. Never the password itself."""
+    sql = "SELECT id, user_id, note, created_at FROM password_requests WHERE status = 'pending'"
+    rows = db.execute(sql + " AND user_id = ?", (uid,)) if uid is not None else db.execute(sql)
+    return {r["user_id"]: {"id": r["id"], "note": r["note"], "created_at": r["created_at"]} for r in rows}
+
+
+def answer_request(db, request, status: str, staff: Staff) -> None:
+    """Approve a new password (it opens the account from now on, and their other logins end) or decline it.
+    A moderator's or admin's own request is an admin's to answer."""
+    check_manageable(get_user(db, request["user_id"]), staff)
+    if request["status"] != "pending":
+        raise ModerationError("This request has been answered already.")
+    if status == "approved":
+        db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (request["password_hash"], request["user_id"]))
+        db.execute("DELETE FROM sessions WHERE user_id = ?", (request["user_id"],))
+    db.execute("UPDATE password_requests SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?",
+               (status, staff.name, now(), request["id"]))
     db.commit()
 
 
@@ -97,35 +124,37 @@ def activity(db, uid: int | None = None) -> dict[int, dict]:
 NO_ACTIVITY = {"answers": 0, "sets": 0, "last_played": None, "engine_gap": None, "flat_share": None}
 
 
-def user_payload(user, played: dict | None) -> dict:
+def user_payload(user, played: dict | None, request: dict | None = None) -> dict:
     return {
         "id": user["id"], "username": user["username"], "created_at": user["created_at"],
         "status": user["status"], "kind": user["kind"] or "player", "profile": j(user["profile"], {}),
         "reviewed_by": user["reviewed_by"], "reviewed_at": user["reviewed_at"],
         "is_moderator": bool(user["is_moderator"]), "is_admin": bool(user["is_admin"]), "is_test": accounts.is_test(user),
+        "password_request": request,  # a new password they asked for, waiting for a moderator
         **(played or NO_ACTIVITY),
     }
 
 
 def member(db, uid: int) -> dict:
-    return user_payload(get_user(db, uid), activity(db, uid).get(uid))
+    return user_payload(get_user(db, uid), activity(db, uid).get(uid), waiting_requests(db, uid).get(uid))
 
 
 def overview(db) -> dict:
-    """Every account (waiting, members and turned down), with what moderators need to judge them."""
+    """Every account (waiting, members and turned down), with what moderators need to judge them. The weights are
+    for showing what a member's answer counts; they're changed on /admin."""
     played = activity(db)
+    asked = waiting_requests(db)
     users = db.execute("SELECT * FROM users ORDER BY created_at DESC, id DESC").fetchall()
     return {
-        "users": [user_payload(u, played.get(u["id"])) for u in users],
+        "users": [user_payload(u, played.get(u["id"]), asked.get(u["id"])) for u in users],
         "guests": accounts.guest_count(db),
         "weights": weights(),
-        "weight_defaults": dict(DEFAULT_WEIGHTS),
     }
 
 
 # --- how much each kind of answer counts ------------------------------------------------------------------
-# The four numbers scoring.vote_weights reads from config. .env sets the defaults; the admin changes them on the
-# moderation page, and the change is saved in the settings table and put back into config at startup.
+# The four numbers scoring.vote_weights reads from config. .env sets the defaults; an admin changes them on /admin,
+# and the change is saved in the settings table and put back into config at startup.
 WEIGHT_ATTRS = {"player": "PLAYER_WEIGHT", "investor": "INVESTOR_WEIGHT", "guest": "GUEST_WEIGHT",
                 "guest_max_share": "GUEST_MAX_SHARE"}
 DEFAULT_WEIGHTS = {k: getattr(config, attr) for k, attr in WEIGHT_ATTRS.items()}
@@ -142,8 +171,8 @@ def _apply(values: dict) -> None:
 
 
 def load_weights(db) -> None:
-    """Put the saved weights (if any) over the .env defaults."""
-    _apply(service.get_setting(db, "vote_weights", {}) or {})
+    """The saved weights (if any) over the .env defaults. With none saved (as after a reset), the defaults."""
+    _apply(DEFAULT_WEIGHTS | (service.get_setting(db, "vote_weights", {}) or {}))
 
 
 def save_weights(db, values: dict) -> dict:

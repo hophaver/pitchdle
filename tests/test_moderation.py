@@ -221,14 +221,18 @@ def test_accounts_from_before_review_stay_members(tmp_path, monkeypatch):
 
 
 def test_the_admin_sets_the_vote_weights(client, admin, moderator):
+    defaults = {"player": 1.0, "investor": 2.0, "guest": 0.5, "guest_max_share": 0.4}
     new = {"player": 1.5, "investor": 3, "guest": 0.25, "guest_max_share": 0.3}
-    assert client.put("/api/mod/weights", json=new, auth=moderator).status_code == 403  # moderators only see them
-    assert client.put("/api/mod/weights", json=new | {"guest_max_share": 1}, auth=admin).status_code == 422
-    assert client.put("/api/mod/weights", json=new, auth=admin).json() == new
-    body = client.get("/api/mod/users", auth=moderator).json()
-    assert body["weights"] == new and body["weight_defaults"]["investor"] == 2.0
+    assert client.put("/api/admin/weights", json=new, auth=moderator).status_code == 401  # on /admin, for admins
+    assert client.put("/api/mod/weights", json=new, auth=admin).status_code == 404  # not on /moderate any more
+    assert client.put("/api/admin/weights", json=new | {"guest_max_share": 1}, auth=admin).status_code == 422
+    assert client.put("/api/admin/weights", json=new, auth=admin).json() == {"weights": new, "defaults": defaults}
+    assert client.get("/api/mod/users", auth=moderator).json()["weights"] == new  # moderators see what answers count
     assert scoring.vote_weights([{"user_id": 1, "kind": "player"}, {"user_id": 2, "kind": "investor"}]) == [1.5, 3.0]
     config.PLAYER_WEIGHT = 1.0  # a restart puts the saved weights back over the defaults
     with connect() as db:
         moderation.load_weights(db)
     assert config.PLAYER_WEIGHT == 1.5
+    # Resetting everything forgets them.
+    client.post("/api/admin/reset", json={"scope": "everything"}, auth=admin)
+    assert client.get("/api/admin/weights", auth=admin).json()["weights"] == defaults

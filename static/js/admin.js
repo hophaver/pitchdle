@@ -1,8 +1,10 @@
-// Admin: the background AI work, exports and resets. Companies need no hand-keeping: real startups fill, check and
-// join the game by themselves, and their reviews are a click on their Dashboard details card.
+// Admin: the background AI work, exports, vote weights, thesis criteria and resets. Companies need no hand-keeping: real
+// startups fill, check and join the game by themselves, and their reviews are a click on their Dashboard details card.
 const { h, api, post } = PD;
 const $app = document.getElementById("app");
-const S = { mode: null, poll: null, theses: null };
+const S = { mode: null, poll: null, theses: null,
+  weights: null, // { weights, defaults } as saved
+  weightDraft: null }; // the weights being changed, until saved
 
 // Every real startup is filled, checked for the game and reviewed by itself, when it's added and on startup.
 // This shows the last run, what went wrong (each problem once, with what it hit), and starts one by hand.
@@ -66,6 +68,65 @@ function readsPanel() {
     h("dl", { class: "ai-models" },
       h("dt", {}, "Cards, profiles, game check"), h("dd", {}, S.mode.discover.ai.model, h("small", {}, " OPENROUTER_MODEL")),
       h("dt", {}, "Reviews"), h("dd", {}, [models.claude, models.gpt, models.grok].join(" · "))));
+}
+
+// How much one answer counts in a card's crowd score, by who gave it (scoring.vote_weights). Moderation shows what each
+// member's answer counts; it's set here. The share is shown and typed as a percentage.
+const WEIGHTS = [
+  { key: "player", label: "Player", help: "One answer from a player account." },
+  { key: "investor", label: "Investor", help: "One answer from an approved investor." },
+  { key: "guest", label: "Guest", help: "One answer from someone playing without an account." },
+  { key: "guest_max_share", label: "Guests' max share", help: "The most all guests together make up of a card's crowd score.", pct: true },
+];
+const sameWeights = (a, b) => WEIGHTS.every(({ key }) => Number(a[key]) === Number(b[key]));
+
+function weightsSection() {
+  if (!S.weights) return null;
+  const { weights: saved, defaults } = S.weights;
+  const w = S.weightDraft || saved;
+  const field = ({ key, label, help, pct }) => {
+    const input = h("input", { type: "number", min: 0, max: pct ? 95 : 10, step: pct ? 5 : 0.1,
+      "aria-label": label, value: pct ? Math.round(w[key] * 100) : w[key],
+      oninput: (e) => {
+        const v = e.target.valueAsNumber;
+        S.weightDraft = { ...(S.weightDraft || saved), [key]: Number.isFinite(v) ? (pct ? v / 100 : v) : NaN };
+        paint();
+      } });
+    return h("label", { class: "w-field" },
+      h("span", { class: "w-label" }, label),
+      h("span", { class: "w-input" }, pct ? null : h("span", { class: "w-unit" }, "×"), input, pct ? h("span", { class: "w-unit" }, "%") : null),
+      h("span", { class: "w-help" }, help));
+  };
+  const note = h("span", { class: "muted small" }, "Not saved yet.");
+  const save = h("button", { class: "btn primary", onclick: saveWeights }, "Save weights");
+  const undo = h("button", { class: "btn", onclick: () => { S.weightDraft = null; render(); } }, "Undo");
+  const back = h("button", { class: "btn link", onclick: () => { S.weightDraft = { ...defaults }; render(); } }, "Back to defaults");
+  function paint() {
+    const changed = !!S.weightDraft && !sameWeights(S.weightDraft, saved);
+    save.disabled = !changed;
+    undo.classList.toggle("hidden", !changed);
+    note.classList.toggle("hidden", !changed);
+    back.classList.toggle("hidden", sameWeights(S.weightDraft || saved, defaults));
+  }
+  paint();
+  return h("section", { class: "a-section" },
+    h("div", { class: "a-section-head" }, h("h2", {}, "Vote weights"),
+      h("p", { class: "muted small" }, "How much one answer counts in a card's crowd score, by who gave it. Saved weights count at once, ",
+        "for every card. The defaults come from .env.")),
+    h("div", { class: "panel" },
+      h("div", { class: "w-grid" }, WEIGHTS.map(field)),
+      h("div", { class: "row w-actions" }, note, h("span", { class: "spacer" }), back, undo, save)));
+}
+
+async function saveWeights() {
+  const w = S.weightDraft;
+  if (!w || WEIGHTS.some(({ key }) => !Number.isFinite(w[key]))) { PD.toast("Fill in all four weights"); return; }
+  try {
+    S.weights = await post("/api/admin/weights", w, "PUT");
+    S.weightDraft = null;
+    PD.toast("Weights saved: every crowd score uses them now");
+  } catch (e) { PD.toast(e.message, 6000); }
+  render();
 }
 
 // The thesis criteria the dashboard's fit is judged by (rubric.json): gates, the stage window and where they came from.
@@ -146,6 +207,7 @@ function render() {
         h("div", { class: "row" },
           h("a", { class: "btn", href: "/api/admin/export.csv" }, "Download CSV"),
           h("a", { class: "btn", href: "/api/admin/export.json" }, "Download JSON")))),
+    weightsSection(),
     thesisSection(),
     h("section", { class: "a-section" }, h("div", { class: "a-section-head" }, h("h2", {}, "Danger zone")),
       h("div", { class: "panel a-danger" },
@@ -154,15 +216,18 @@ function render() {
         reset("everything", "Reset everything", "Delete all data and reload the sample companies and sets?", "Deletes all data and reloads the sample companies and sets.", true))));
 }
 
-async function refresh() {
+async function refresh(opts = {}) {
   try {
     S.mode = await api("/api/admin/mode");
     if (!S.theses) S.theses = (await api("/api/admin/rubric")).theses;
+    if (!S.weights) S.weights = await api("/api/admin/weights");
     Tool.setInfo(S.mode);
-    render();
+    // A poll never redraws under someone typing in a field.
+    const typing = $app.contains(document.activeElement) && document.activeElement.matches("input, textarea, select");
+    if (!(opts.poll && typing)) render();
     // Keep polling while the background work runs, so its progress shows up on its own.
     clearTimeout(S.poll);
-    if (S.mode.reads.auto.running) S.poll = setTimeout(refresh, 3000);
+    if (S.mode.reads.auto.running) S.poll = setTimeout(() => refresh({ poll: true }), 3000);
   } catch (e) {
     $app.replaceChildren(h("p", { class: "callout" }, e.message));
   }

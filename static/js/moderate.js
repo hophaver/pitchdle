@@ -1,12 +1,12 @@
-// Moderation: every investor sign-up waits here until a moderator lets it in (players are in at once), and every
-// member's profile and play is here. Moderators sign in with their own account; admins (an admin account or the admin
-// password) also make and remove moderators and admins and change their accounts.
-// Both also give A'Pelago's own read of each startup, as its representatives.
+// Moderation: every investor sign-up waits here until a moderator lets it in (players are in at once), and so does
+// every member's request for a new password; every member's profile and play is here. Moderators sign in with their own
+// account; admins (an admin account or the admin password) also make and remove moderators and change their accounts.
+// Admins themselves come from ADMINS in .env, never from here. Both also give A'Pelago's own read of each startup, as
+// its representatives.
 const { h, api, post, fmt1, ROLES, AXES, AXIS } = PD;
 const $app = document.getElementById("app");
 const state = { view: location.pathname === "/review" ? "startups" : "people", tab: null, open: new Set(), sort: { key: "joined", dir: -1 }, kind: "all",
-  drafts: {}, // evaluations being filled in, by company id, so a refresh never loses them
-  weights: null }; // vote weights being changed, until saved
+  drafts: {} }; // evaluations being filled in, by company id, so a refresh never loses them
 let data = null; // people: /api/mod/users
 let startups = null; // /api/mod/evaluations
 let lastSig = null;
@@ -28,13 +28,15 @@ const times = (w) => `×${Number(w)}`;
 // Moderator and admin accounts, the viewer's own included, are changed by admins only (the server checks this too).
 const locked = (u) => (u.is_moderator || u.is_admin) && !data.viewer.admin;
 
-function who(u) {
+// `asked`: flag a request for a new password (not on the request's own card, which says so already).
+function who(u, asked = true) {
   const p = u.profile;
   const meta = [ROLES[p.role], p.organisation, p.location].filter(Boolean).join(" · ");
   return h("div", {},
     h("div", { class: "co-name" }, p.full_name ? [p.full_name, " ", h("span", { class: "handle" }, `@${u.username}`)] : u.username,
       u.is_admin ? h("span", { class: "chip" }, "admin") : null,
-      u.is_moderator ? h("span", { class: "chip" }, "moderator") : null, u.is_test ? h("span", { class: "chip" }, "test account") : null),
+      u.is_moderator ? h("span", { class: "chip" }, "moderator") : null, u.is_test ? h("span", { class: "chip" }, "test account") : null,
+      asked && u.password_request ? h("span", { class: "chip" }, "password request") : null),
     meta ? h("div", { class: "co-meta" }, meta) : null);
 }
 
@@ -165,12 +167,14 @@ function memberRows(u) {
   h("td", { class: "num" }, u.flat_share === null ? "–" : `${Math.round(u.flat_share * 100)}%`),
   h("td", {}, day(u.last_played)),
   h("td", {}, day(u.created_at)),
-  h("td", {}, locked(u) ? null : h("button", { class: "btn small danger", onclick: (e) => { e.stopPropagation(); remove(u); } }, "Delete")));
+  h("td", {}, locked(u) || u.is_admin ? null
+    : h("button", { class: "btn small danger", onclick: (e) => { e.stopPropagation(); remove(u); } }, "Delete")));
   if (!open) return row;
   return [row, h("tr", { class: "detail" }, h("td", { colspan: COLUMNS.length }, profileBody(u, accountBox(u))))];
 }
 
-// Password, moderator and admin rights, each on its own line. Nothing for staff a moderator can't change.
+// Password and moderator rights, each on its own line. Nothing for staff a moderator can't change. Admins are set in
+// .env, so for them that's said instead of a button.
 function accountBox(u) {
   if (locked(u)) return null;
   return h("section", { class: "pf-box pf-account" }, h("div", { class: "pf-title" }, "Account"),
@@ -179,16 +183,14 @@ function accountBox(u) {
       h("button", { class: "btn small", onclick: () => setModerator(u, !u.is_moderator) }, u.is_moderator ? "Remove moderator" : "Make moderator"),
       h("span", { class: "muted small" }, u.is_moderator ? "They keep their account and go back to being a member."
         : "They sign in here with their own username and password.")) : null,
-    data.viewer.admin ? h("div", { class: "pf-action" },
-      h("button", { class: "btn small", onclick: () => setAdmin(u, !u.is_admin) }, u.is_admin ? "Remove admin" : "Make admin"),
-      h("span", { class: "muted small" }, u.is_admin ? "They lose the dashboard, game and admin pages."
-        : "The whole tool: dashboard, game, admin, and everything here.")) : null);
+    u.is_admin ? h("p", { class: "muted small pf-note" },
+      "An admin: set in the server's .env (ADMINS), which is also the only place to remove them or delete the account.") : null);
 }
 
 // All members, or only investors or only players.
 function kindSeg(list) {
   const n = (k) => (k === "all" ? list.length : list.filter((u) => (k === "mods" ? u.is_moderator : k === "admins" ? u.is_admin : u.kind === k)).length);
-  return h("div", { class: "seg", role: "group", "aria-label": "Show accounts" },
+  return h("div", { class: "seg fit", role: "group", "aria-label": "Show accounts" },
     [["all", "All"], ["investor", "Investors"], ["player", "Players"], ["mods", "Moderators"], ["admins", "Admins"]].map(([k, label]) => h("button", { type: "button",
       "aria-pressed": String(state.kind === k), onclick: () => { state.kind = k; render(); } }, `${label} (${n(k)})`)));
 }
@@ -206,66 +208,8 @@ function membersView(list) {
         : h("tr", {}, h("td", { colspan: COLUMNS.length, class: "muted" }, list.length ? "No members match." : "No members yet."))))),
     h("p", { class: "muted small", style: { margin: ".7rem 0 0" } },
       "Vs engine and Flat are hints for judging a member's reads; hover the headers for what they measure. Click a row for the profile",
-      data.viewer.admin ? ", and to make them a moderator or admin." : "."),
+      data.viewer.admin ? ", and to make them a moderator." : "."),
   ];
-}
-
-// --- vote weights -----------------------------------------------------------------------------------------
-
-// How much one answer counts in crowd scores, by who gave it. The share is shown and typed as a percentage.
-const WEIGHTS = [
-  { key: "player", label: "Player", help: "One answer from a player account." },
-  { key: "investor", label: "Investor", help: "One answer from an approved investor." },
-  { key: "guest", label: "Guest", help: "One answer from someone playing without an account." },
-  { key: "guest_max_share", label: "Guests' max share", help: "The most all guests together make up of a card's crowd score.", pct: true },
-];
-const sameWeights = (a, b) => WEIGHTS.every(({ key }) => Number(a[key]) === Number(b[key]));
-
-function weightsPanel() {
-  const can = data.viewer.admin;
-  const w = state.weights || data.weights;
-  const dirty = !!state.weights && !sameWeights(state.weights, data.weights);
-  const field = ({ key, label, help, pct }) => {
-    const input = h("input", { type: "number", min: 0, max: pct ? 95 : 10, step: pct ? 5 : 0.1, disabled: !can,
-      "aria-label": label, value: pct ? Math.round(w[key] * 100) : w[key],
-      oninput: (e) => {
-        const v = e.target.valueAsNumber;
-        state.weights = { ...(state.weights || data.weights), [key]: Number.isFinite(v) ? (pct ? v / 100 : v) : NaN };
-        paintButtons();
-      } });
-    return h("label", { class: "w-field" },
-      h("span", { class: "w-label" }, label),
-      h("span", { class: "w-input" }, pct ? null : h("span", { class: "w-unit" }, "×"), input, pct ? h("span", { class: "w-unit" }, "%") : null),
-      h("span", { class: "w-help" }, help));
-  };
-  const save = h("button", { class: "btn primary", onclick: saveWeights }, "Save weights");
-  const undo = h("button", { class: "btn", onclick: () => { state.weights = null; render(); } }, "Undo");
-  const defaults = h("button", { class: "btn link", onclick: () => { state.weights = { ...data.weight_defaults }; render(); } }, "Back to defaults");
-  function paintButtons() {
-    const changed = !!state.weights && !sameWeights(state.weights, data.weights);
-    save.disabled = !changed;
-    undo.classList.toggle("hidden", !changed);
-    defaults.classList.toggle("hidden", sameWeights(state.weights || data.weights, data.weight_defaults));
-  }
-  paintButtons();
-  return h("section", { class: "panel" },
-    h("div", { class: "panel-head" }, h("h2", {}, "Vote weights"),
-      h("span", { class: "muted small" }, "How much one answer counts in a card's crowd score."),
-      h("span", { class: "spacer" }),
-      can ? [defaults, undo, save] : h("span", { class: "muted small" }, "Only the admin can change these.")),
-    h("div", { class: "w-grid" }, WEIGHTS.map(field)),
-    dirty ? h("p", { class: "muted small w-note" }, "Not saved yet. Saved weights count at once, for every card's crowd score.") : null);
-}
-
-async function saveWeights() {
-  const w = state.weights;
-  if (!w || WEIGHTS.some(({ key }) => !Number.isFinite(w[key]))) { PD.toast("Fill in all four weights"); return; }
-  try {
-    data.weights = await post("/api/mod/weights", w, "PUT");
-    state.weights = null;
-    PD.toast("Weights saved");
-  } catch (e) { PD.toast(e.message); }
-  await refresh();
 }
 
 // --- actions --------------------------------------------------------------------------------------------
@@ -282,14 +226,6 @@ async function setModerator(u, on) {
   try {
     await post(`/api/mod/users/${u.id}/moderator`, { moderator: on }, "PUT");
     PD.toast(on ? `${u.username} can moderate now` : `${u.username} isn't a moderator any more`);
-  } catch (e) { PD.toast(e.message); }
-  await refresh();
-}
-
-async function setAdmin(u, on) {
-  try {
-    await post(`/api/mod/users/${u.id}/admin`, { admin: on }, "PUT");
-    PD.toast(on ? `${u.username} is an admin now` : `${u.username} isn't an admin any more`);
   } catch (e) { PD.toast(e.message); }
   await refresh();
 }
@@ -313,6 +249,35 @@ async function resetPassword(u, input, btn) {
     input.value = "";
   } catch (e) { PD.toast(e.message); }
   btn.disabled = false;
+}
+
+// A forgotten password: the member picked a new one on /play. Approving it lets whoever sent it in, so the card puts
+// what they wrote next to everything known about the account.
+function requestCard(u) {
+  const r = u.password_request;
+  const can = !locked(u);
+  return h("article", { class: "signup" },
+    h("div", { class: "signup-head" }, who(u, false), h("span", { class: "spacer" }),
+      h("span", { class: "co-meta" }, `Asked for a new password ${day(r.created_at)}`)),
+    h("div", { class: "pf" },
+      h("section", { class: "pf-box" }, h("div", { class: "pf-title" }, "What they wrote"),
+        r.note ? h("p", { class: "motivation" }, r.note) : h("p", { class: "muted small pf-note" }, "Nothing."))),
+    profileBody(u),
+    h("div", { class: "signup-actions" },
+      h("span", { class: "muted small" }, can
+        ? "Approve only if you're sure it's them: whoever sent this can log in with the new password. Their other logins end."
+        : "Only an admin can answer a moderator's or admin's request."),
+      h("span", { class: "spacer" }),
+      h("button", { class: "btn danger", disabled: !can, onclick: () => answerRequest(u, "declined") }, "Decline"),
+      h("button", { class: "btn primary", disabled: !can, onclick: () => answerRequest(u, "approved") }, "Approve")));
+}
+
+async function answerRequest(u, status) {
+  try {
+    await post(`/api/mod/password-requests/${u.password_request.id}`, { status });
+    PD.toast(status === "approved" ? `${u.username} can log in with their new password` : `${u.username}'s request declined`);
+  } catch (e) { PD.toast(e.message); }
+  await refresh();
 }
 
 async function remove(u) {
@@ -450,10 +415,12 @@ function render() {
 }
 
 function peopleView() {
-  const by = { pending: [], approved: [], rejected: [] };
+  const by = { pending: [], approved: [], rejected: [], passwords: [] };
   for (const u of data.users) (by[u.status] || by.pending).push(u);
+  by.passwords = data.users.filter((u) => u.password_request)
+    .sort((a, b) => a.password_request.created_at.localeCompare(b.password_request.created_at));
   by.pending.reverse(); // oldest first: first come, first reviewed
-  state.tab ||= by.pending.length ? "pending" : "approved";
+  state.tab ||= by.pending.length ? "pending" : by.passwords.length ? "passwords" : "approved";
   const members = by.approved;
   const tab = (key, label) => h("button", { class: `btn${state.tab === key ? " primary" : ""}`, "aria-pressed": String(state.tab === key),
     onclick: () => { state.tab = key; render(); } }, `${label} (${by[key].length})`);
@@ -462,16 +429,19 @@ function peopleView() {
     h("div", { class: "kpis" },
       kpi("Waiting", by.pending.length, by.pending.length ? `sign-up${by.pending.length === 1 ? "" : "s"} to review` : "all caught up"),
       kpi("Members", members.length, `${plural(members.filter((u) => u.kind === "investor").length, "investor")} · ${plural(members.filter((u) => u.kind !== "investor").length, "player")}`),
-      kpi("Guests", data.guests, "devices playing without an account")),
-    weightsPanel(),
+      kpi("Guests", data.guests, "devices playing without an account"),
+      kpi("New passwords", by.passwords.length, by.passwords.length ? "asked for, to approve or decline" : "none asked for")),
     h("section", { class: "panel" },
       h("div", { class: "panel-head" },
-        h("div", { class: "seg", role: "group", "aria-label": "Show" },
-          tab("pending", "Waiting"), tab("approved", "Members"), tab("rejected", "Rejected"))),
+        h("div", { class: "seg fit", role: "group", "aria-label": "Show" },
+          tab("pending", "Waiting"), tab("approved", "Members"), tab("rejected", "Rejected"), tab("passwords", "New passwords"))),
       state.tab === "approved" ? membersView(members)
-        : list.length ? h("div", { class: "signups" }, list.map(signupCard))
-          : h("p", { class: "muted", style: { margin: 0 } },
-            state.tab === "pending" ? "No investor sign-ups waiting. New ones show up here." : "No rejected sign-ups.")),
+        : list.length ? h("div", { class: "signups" }, list.map(state.tab === "passwords" ? requestCard : signupCard))
+          : h("p", { class: "muted", style: { margin: 0 } }, {
+            pending: "No investor sign-ups waiting. New ones show up here.",
+            rejected: "No rejected sign-ups.",
+            passwords: "Nobody has asked for a new password. Members who forgot theirs ask on the game's login, and it shows up here.",
+          }[state.tab])),
   ];
 }
 

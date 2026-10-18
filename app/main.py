@@ -38,6 +38,8 @@ async def lifespan(_app: FastAPI):
         log.warning("Pitchdle: empty database, loaded seed data into %s", config.DB_PATH)
     seed.fill_profiles(db)  # sample companies from before card profiles get theirs
     accounts.ensure_test_accounts(db)
+    for problem in accounts.ensure_admins(db):  # admins are the accounts ADMINS in .env names, and only those
+        log.warning("Pitchdle: %s", problem)
     moderation.load_weights(db)  # the admin's vote weights over the .env defaults
     money.tidy(db)  # amounts on stored cards in euros (no model call)
     fixed = autofill.tidy(db)
@@ -351,6 +353,28 @@ def register(request: Request, response: Response, payload: dict = Body(...), db
     return {"status": "pending"}
 
 
+class PasswordRequestIn(Credentials):
+    note: str = Field("", max_length=300)
+
+
+MAX_PASSWORD_REQUESTS = 200
+
+
+@app.post("/api/account/password-request")
+def password_request(body: PasswordRequestIn, db=Depends(get_db)):
+    """Forgot your password: ask for a new one. It opens the account once a moderator approves it on /moderate; the
+    old one works until then."""
+    if db.execute("SELECT COUNT(*) FROM password_requests WHERE status = 'pending'").fetchone()[0] >= MAX_PASSWORD_REQUESTS:
+        raise HTTPException(503, "Requests are paused while the moderators catch up. Try again later.")
+    try:
+        accounts.request_password(db, body.username, body.password, clean_paragraph(body.note))
+    except accounts.NotApproved as e:
+        raise HTTPException(403, str(e))
+    except accounts.AccountError as e:
+        raise HTTPException(400, str(e))
+    return {"status": "pending"}
+
+
 @app.post("/api/account/login")
 def login(body: Credentials, request: Request, response: Response, db=Depends(get_db)):
     try:
@@ -384,6 +408,7 @@ def staff_login(body: StaffCredentials, request: Request, response: Response, db
         if not (user["is_admin"] or (body.need == "moderator" and user["is_moderator"])):
             raise HTTPException(403, "This page needs an admin account." if body.need == "admin"
                                 else "This page needs a moderator or admin account.")
+        response.delete_cookie(ADMIN_COOKIE)  # they act as this account now, not as an earlier admin password sign-in
         return sign_in(request, response, db, user)
     if is_admin_password(body.password):
         response.set_cookie(ADMIN_COOKIE, admin_token(), max_age=30 * 24 * 3600, samesite="lax", httponly=True)
@@ -411,6 +436,8 @@ def logout(request: Request, response: Response, db=Depends(get_db)):
 def delete_account(response: Response, user=Depends(current_user), db=Depends(get_db)):
     if not user:
         raise HTTPException(401, "You're not logged in.")
+    if user["is_admin"]:
+        raise HTTPException(403, "Your account is an admin's, set in .env (ADMINS). Take it out there first.")
     accounts.delete_user(db, user["id"])
     response.delete_cookie(SESSION_COOKIE)
     return {"ok": True}
@@ -625,8 +652,7 @@ def host_dive(dive_id: int, db=Depends(get_db)):
 
 
 # --- moderation ------------------------------------------------------------------------------------
-# Sign-ups wait on /moderate until a moderator lets them in.
-
+# Sign-ups wait on /moderate until a moderator lets them in, and so do requests for a new password.
 
 
 def mod_user(db, uid: int):
@@ -675,17 +701,6 @@ def mod_moderator(uid: int, body: ModeratorIn, staff: moderation.Staff = Depends
     return moderation.member(db, uid)
 
 
-class AdminIn(BaseModel):
-    admin: bool
-
-
-@app.put("/api/mod/users/{uid}/admin")
-def mod_admin(uid: int, body: AdminIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
-    with refusals():
-        moderation.set_admin(db, mod_user(db, uid), body.admin, staff)
-    return moderation.member(db, uid)
-
-
 class PasswordIn(BaseModel):
     password: str
 
@@ -704,9 +719,25 @@ def mod_password(uid: int, body: PasswordIn, staff: moderation.Staff = Depends(r
 @app.delete("/api/mod/users/{uid}")
 def mod_delete_user(uid: int, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
     with refusals():
-        moderation.check_manageable(mod_user(db, uid), staff)
+        moderation.check_deletable(mod_user(db, uid), staff)
     accounts.delete_user(db, uid)
     return {"ok": True}
+
+
+class RequestAnswerIn(BaseModel):
+    status: str = Field(pattern="^(approved|declined)$")
+
+
+@app.post("/api/mod/password-requests/{rid}")
+def mod_password_request(rid: int, body: RequestAnswerIn, staff: moderation.Staff = Depends(require_moderator),
+                         db=Depends(get_db)):
+    """Approve or decline a member's request for a new password. Returns the member as they are now."""
+    asked = moderation.get_request(db, rid)
+    if not asked:
+        raise HTTPException(404, "No such request.")
+    with refusals():
+        moderation.answer_request(db, asked, body.status, staff)
+    return moderation.member(db, asked["user_id"])
 
 
 # A'Pelago's own opinion: moderators and admins evaluate as A'Pelago representatives, not as players. Each keeps
@@ -728,21 +759,6 @@ def evaluated_company(db, cid: int):
     if not comp:
         raise HTTPException(404, "No such company.")
     return comp
-
-
-class WeightsIn(BaseModel):
-    player: float = Field(ge=0, le=10)
-    investor: float = Field(ge=0, le=10)
-    guest: float = Field(ge=0, le=10)
-    guest_max_share: float = Field(ge=0, le=0.95)
-
-
-@app.put("/api/mod/weights")
-def mod_weights(body: WeightsIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
-    """How much each kind of answer counts in crowd scores. Admin only; scores use the new weights at once."""
-    if not staff.admin:
-        raise HTTPException(403, "Only the admin can change the weights.")
-    return moderation.save_weights(db, body.model_dump())
 
 
 @app.get("/api/mod/evaluations")
@@ -965,10 +981,31 @@ def admin_users(db=Depends(get_db)):
 
 
 @app.delete("/api/admin/users/{uid}", dependencies=[Depends(require_admin)])
-def admin_delete_user(uid: int, db=Depends(get_db)):
-    if not accounts.delete_user(db, uid):
-        raise HTTPException(404, "No such user.")
+def admin_delete_user(uid: int, staff=Depends(optional_staff), db=Depends(get_db)):
+    with refusals():
+        moderation.check_deletable(mod_user(db, uid), staff)
+    accounts.delete_user(db, uid)
     return {"ok": True}
+
+
+# How much each kind of answer counts in crowd scores. Scores use new weights at once.
+
+class WeightsIn(BaseModel):
+    player: float = Field(ge=0, le=10)
+    investor: float = Field(ge=0, le=10)
+    guest: float = Field(ge=0, le=10)
+    guest_max_share: float = Field(ge=0, le=0.95)
+
+
+@app.get("/api/admin/weights", dependencies=[Depends(require_admin)])
+def admin_weights():
+    return {"weights": moderation.weights(), "defaults": dict(moderation.DEFAULT_WEIGHTS)}
+
+
+@app.put("/api/admin/weights", dependencies=[Depends(require_admin)])
+def admin_set_weights(body: WeightsIn, db=Depends(get_db)):
+    moderation.save_weights(db, body.model_dump())
+    return admin_weights()
 
 
 class Opportunity(BaseModel):
@@ -1483,7 +1520,9 @@ class ResetIn(BaseModel):
 def admin_reset(body: ResetIn, db=Depends(get_db)):
     if body.scope == "everything":
         seed.reset(db)
-        accounts.ensure_test_accounts(db)  # the test account and test moderator from .env come straight back
+        accounts.ensure_test_accounts(db)  # the test account, test moderator and admins from .env come straight back
+        accounts.ensure_admins(db)
+        moderation.load_weights(db)  # no saved weights any more: the .env defaults
         return {"ok": True}
     if body.scope in ("seed", "all"):
         db.execute("DELETE FROM votes WHERE is_seed = 1")

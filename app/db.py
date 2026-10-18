@@ -124,6 +124,18 @@ CREATE TABLE IF NOT EXISTS opinions (
   updated_at  TEXT,
   UNIQUE (company_id, source, author)
 );
+-- Forgotten passwords: a member asks for a new one on /play and a moderator approves or declines it on /moderate.
+-- Only the new password's hash is kept; approving copies it onto the account.
+CREATE TABLE IF NOT EXISTS password_requests (
+  id            INTEGER PRIMARY KEY,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  password_hash TEXT NOT NULL,
+  note          TEXT DEFAULT '',         -- what they told the moderators to show it's them
+  status        TEXT DEFAULT 'pending',  -- pending | approved | declined
+  reviewed_by   TEXT,
+  reviewed_at   TEXT,
+  created_at    TEXT
+);
 -- Small key/value store for runtime switches: the demo/live mode and the autofill status.
 CREATE TABLE IF NOT EXISTS settings (
   key    TEXT PRIMARY KEY,
@@ -178,7 +190,7 @@ MIGRATIONS = [
     ("users", "badge_by", "TEXT"),
     ("users", "badge_at", "TEXT"),
     ("users", "is_moderator", "INTEGER DEFAULT 0"),  # set by an admin on /moderate
-    ("users", "is_admin", "INTEGER DEFAULT 0"),  # set by an admin on /moderate: the whole tool, like the admin password
+    ("users", "is_admin", "INTEGER DEFAULT 0"),  # ADMINS in .env, put in line on startup: the whole tool, like the admin password
     # player: signs up with a username and password, in at once, plays the simple cards. investor: signs up with
     # the full profile, waits for a moderator, rates the full cards and counts INVESTOR_WEIGHT in crowd scores.
     ("users", "kind", "TEXT DEFAULT 'player'"),
