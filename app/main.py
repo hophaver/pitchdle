@@ -701,6 +701,18 @@ def mod_moderator(uid: int, body: ModeratorIn, staff: moderation.Staff = Depends
     return moderation.member(db, uid)
 
 
+class KindIn(BaseModel):
+    kind: str = Field(pattern="^(player|investor)$")
+
+
+@app.put("/api/mod/users/{uid}/kind")
+def mod_kind(uid: int, body: KindIn, staff: moderation.Staff = Depends(require_moderator), db=Depends(get_db)):
+    """Make a member an investor or a player. All their answers count by their new kind from now on."""
+    with refusals():
+        moderation.set_kind(db, mod_user(db, uid), body.kind, staff)
+    return moderation.member(db, uid)
+
+
 class PasswordIn(BaseModel):
     password: str
 
@@ -1566,11 +1578,21 @@ def admin_autofill(db=Depends(get_db)):
     return mode_payload(db) | {"autofill_start": started}
 
 
+MAX_SET_CARDS = 20  # a game queued by hand; mirrors MAX_CARDS in game.js
+
+
 class DiveIn(BaseModel):
     label: str = Field(min_length=1)
-    company_ids: list[int] = Field(min_length=1)
+    company_ids: list[int] = Field(min_length=1, max_length=MAX_SET_CARDS)
     mode: str = Field("daily", pattern="^daily$")
     date: str | None = None
+
+    @field_validator("company_ids")
+    @classmethod
+    def once_each(cls, value: list[int]) -> list[int]:
+        if len(set(value)) != len(value):
+            raise ValueError("a startup can be in a game only once")
+        return value
 
 
 @app.post("/api/admin/dives", dependencies=[Depends(require_admin)])

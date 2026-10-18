@@ -79,3 +79,17 @@ def test_a_major_update_brings_a_startup_back_once(client, admin):
     assert pool["eligible"] == [ids[0]] and pool["updated"] == [ids[0]]
     made = client.post("/api/admin/dives/generate", json={"count": 3}, auth=admin).json()
     assert [d["company_ids"] for d in made] == [[ids[0]]]
+
+
+def test_a_game_queued_by_hand_can_hold_more_than_five(client, admin):
+    companies = client.get("/api/admin/companies?pool=current", auth=admin).json()[:8]
+    r = client.post("/api/admin/dives", json={"label": "Ocean week", "company_ids": [c["id"] for c in companies]},
+                    auth=admin)
+    assert r.status_code == 200
+    cards = client.get(f"/api/host/dives/{r.json()['id']}", auth=admin).json()["cards"]
+    assert [c["name"] for c in cards] == [c["name"] for c in companies]  # all eight, in the order picked
+    # Each startup once, and at most 20 of them.
+    twice = [companies[0]["id"], companies[1]["id"], companies[0]["id"]]
+    assert client.post("/api/admin/dives", json={"label": "Twice", "company_ids": twice}, auth=admin).status_code == 422
+    many = list(range(1, 22))
+    assert client.post("/api/admin/dives", json={"label": "Too many", "company_ids": many}, auth=admin).status_code == 422

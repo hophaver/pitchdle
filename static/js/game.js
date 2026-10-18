@@ -5,8 +5,12 @@ const { h, api, post, fmt1 } = PD;
 const $app = document.getElementById("app");
 
 const TABS = [{ key: "next", label: "Next games" }, { key: "past", label: "Past games" }];
+// A game queued by hand starts with five cards, like the daily ones. "+ Add a card" takes it up to MAX_CARDS
+// (MAX_SET_CARDS in app/main.py) and each card's ✕ down to one.
+const DEFAULT_CARDS = 5;
+const MAX_CARDS = 20;
 const S = { tab: Tool.hashTab(TABS.map((t) => t.key), "next"), dives: [], companies: [], pool: null, open: new Map(),
-  picks: Array(5).fill("") };
+  picks: Array(DEFAULT_CARDS).fill("") };
 
 const byId = () => Object.fromEntries(S.companies.map((c) => [c.id, c]));
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -129,14 +133,37 @@ function builder() {
   const date = h("input", { type: "date", value: S.date || "", oninput: (e) => { S.date = e.target.value; } });
   const startups = [...S.companies].sort((a, b) => b.active - a.active || a.name.localeCompare(b.name))
     .map((c) => [c.id, `${c.name}${c.active ? "" : " (not in game)"}`]);
-  const picks = S.picks.map((v, i) => Tool.dropdown({ label: `Card ${i + 1}`, options: [["", `Card ${i + 1}: empty`], ...startups], value: v, class: "dd-full",
-    onChange: (id) => { S.picks[i] = id; } }));
+  const last = S.picks.length <= 1;
+  const picks = S.picks.map((v, i) => h("div", { class: "g-pick" },
+    Tool.dropdown({ label: `Card ${i + 1}`, options: [["", `Card ${i + 1}: empty`], ...startups], value: v, class: "dd-full",
+      onChange: (id) => { S.picks[i] = id; } }),
+    h("button", { type: "button", class: "btn link g-remove", disabled: last, "aria-label": `Remove card ${i + 1}`,
+      title: last ? "A game needs at least one card" : `Remove card ${i + 1}`,
+      onclick: () => {
+        S.picks.splice(i, 1);
+        render();
+        // Stay where you were, so a few cards come off one after another.
+        const at = Math.min(i, S.picks.length - 1);
+        const next = $app.querySelectorAll(".g-picks .g-pick")[at];
+        (S.picks.length > 1 ? next?.querySelector(".g-remove") : next?.querySelector(".dd-btn"))?.focus();
+      } }, "✕")));
+  const full = S.picks.length >= MAX_CARDS;
+  const more = h("button", { type: "button", class: "btn small g-add", disabled: full,
+    title: full ? `A game holds at most ${MAX_CARDS} startups` : "Add another card to this game",
+    onclick: () => {
+      S.picks.push("");
+      render();
+      const slots = $app.querySelectorAll(".g-picks .dd-btn");
+      slots[slots.length - 1]?.focus();
+    } }, "+ Add a card");
   async function create() {
     const ids = S.picks.map(Number).filter(Boolean);
     if (!label.value.trim() || !ids.length) return PD.toast("Add a label and at least one startup");
+    const twice = ids.find((id, i) => ids.indexOf(id) !== i);
+    if (twice) return PD.toast(`${byId()[twice]?.name || "A startup"} is in this game twice`);
     try {
       await post("/api/admin/dives", { label: label.value.trim(), company_ids: ids, date: date.value || null });
-      S.picks = Array(5).fill(""); S.label = ""; S.date = "";
+      S.picks = Array(DEFAULT_CARDS).fill(""); S.label = ""; S.date = "";
       await refresh();
     } catch (e) { PD.toast(e.message); }
   }
@@ -144,7 +171,7 @@ function builder() {
     h("div", { class: "panel-head" }, h("h2", {}, "Queue a game by hand")),
     h("p", { class: "muted small" }, "Any startup, played before or not."),
     h("div", { class: "form" }, h("label", {}, "Label", label), h("label", {}, "Date (blank = any day)", date),
-      h("div", { class: "g-picks" }, picks), h("button", { class: "btn primary", onclick: create }, "Add to queue")));
+      h("div", { class: "g-picks" }, picks, more), h("button", { class: "btn primary", onclick: create }, "Add to queue")));
 }
 
 function nextTab() {

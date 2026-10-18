@@ -54,6 +54,7 @@ h1, h2, h3 { margin: 0; line-height: 1.05; letter-spacing: -0.02em; }
 .pips { display: flex; gap: 5px; }
 .pips i { width: 7px; height: 7px; border-radius: 50%; background: var(--soft-2); }
 .pips i.on { background: var(--on-card); }
+.pips-count { font-variant-numeric: tabular-nums; }
 
 /* start screen */
 .hero { text-align: center; padding: 18px 0 8px; }
@@ -601,6 +602,10 @@ body.tool {
 .g-form label { display: grid; gap: .2rem; font-size: .75rem; font-weight: 600; color: var(--muted); }
 .g-form input[type=number] { width: 5.5rem; }
 .g-picks { display: grid; gap: .35rem; }
+.g-picks .g-add { justify-self: start; }
+.g-pick { display: flex; align-items: center; gap: .35rem; }
+.g-pick .dd { flex: 1; min-width: 0; }
+.g-pick .g-remove { flex: none; width: 1.8rem; justify-content: center; font-size: .9rem; }
 @media (max-width: 900px) {
   .g-split { grid-template-columns: 1fr; }
   .g-row { grid-template-columns: 1fr auto; }

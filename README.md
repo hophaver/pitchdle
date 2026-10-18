@@ -72,8 +72,8 @@ is skipped. See `.env.example` for the rest (discovery limits, exclusions, vote 
 - **Reviews.** Claude, GPT and Grok rate each card, and social media (X, LinkedIn, Reddit, …) is searched for real
   startups. This runs in the background, never on the game's path, and uses paid APIs (model calls plus web searches per card).
 - **Accounts.** Guests play via a device cookie. Players sign up instantly; investors need moderator approval and
-  rate a fuller card. Votes are weighted: guest 0.5 (capped at 40% of a card), player 1, investor 2. An admin changes
-  the weights in `/admin`.
+  rate a fuller card. A moderator can also make a player an investor, or back, from `/moderate` → Members. Votes
+  are weighted: guest 0.5 (capped at 40% of a card), player 1, investor 2. An admin changes the weights in `/admin`.
 
 Engine weights live in `weights.json`; after editing, run `.venv/bin/python -m app.seed --rescore`.
 

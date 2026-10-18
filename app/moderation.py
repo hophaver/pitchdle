@@ -3,7 +3,7 @@ new password. How much a member's answers count in crowd scores follows from the
 (scoring.vote_weights); the admin sets those weights on /admin.
 
 Moderators are members an admin has promoted; admins are the accounts ADMINS in .env names, and nothing here changes
-that. Both sign in with their own account, and the admin password is an admin too. Whoever acts is recorded on each
+that. Moderators also make a member an investor, or a player again, as they let investors' sign-ups in. Both sign in with their own account, and the admin password is an admin too. Whoever acts is recorded on each
 review.
 """
 from dataclasses import dataclass
@@ -55,6 +55,16 @@ def set_moderator(db, user, moderator: bool, staff: Staff) -> None:
     if user["status"] != "approved":
         raise ModerationError("Only members can moderate. Approve the sign-up first.")
     db.execute("UPDATE users SET is_moderator = ? WHERE id = ?", (int(moderator), user["id"]))
+    db.commit()
+
+
+def set_kind(db, user, kind: str, staff: Staff) -> None:
+    """Make a member an investor (they rate the full card and their answers count for more, earlier ones too) or a
+    player again. A moderator's call, as letting an investor's sign-up in is; a staff account's is an admin's."""
+    check_manageable(user, staff)
+    if user["status"] != "approved":
+        raise ModerationError("Only members can be made investors or players. Approve the sign-up first.")
+    db.execute("UPDATE users SET kind = ? WHERE id = ?", (kind, user["id"]))
     db.commit()
 
 

@@ -27,8 +27,10 @@ function card(color, ...kids) {
 function cardTop(index, total, right) {
   return h("div", { class: "card-top" },
     accountTag(),
-    total ? h("span", { class: "pips", "aria-label": `Card ${index + 1} of ${total}` },
-      Array.from({ length: total }, (_, i) => h("i", { class: i <= index ? "on" : "" }))) : null,
+    // A dot per card, or for a long set (one queued by hand can hold up to 20) "3 / 14", which fits a phone.
+    total > 10 ? h("span", { class: "pips-count", "aria-label": `Card ${index + 1} of ${total}` }, `${index + 1} / ${total}`)
+      : total ? h("span", { class: "pips", "aria-label": `Card ${index + 1} of ${total}` },
+        Array.from({ length: total }, (_, i) => h("i", { class: i <= index ? "on" : "" }))) : null,
     h("span", {}, right ?? setLabel()));
 }
 
@@ -45,7 +47,7 @@ const TUTORIAL = [
   ["📣", "Read the pitch", "Each card is a real or made-up startup: one line on what it does and what it's asking for."],
   ["🎚️", "Make your four calls", "Tap 0–5 for each: Novel (is it new?), Useful (does it solve a real problem?), "
     + "Plausible (can they pull it off?) and Investable (would you put money in?)."],
-  ["🔒", "Lock it in", "When all four are set, lock it in and the next startup comes up. A set is five startups."],
+  ["🔒", "Lock it in", "When all four are set, lock it in and the next startup comes up. A daily set is usually five startups."],
   ["📊", "See how you compare", "At the end: your read next to everyone else's, the AI models' average, social media's "
     + "average and how many posts were found. A new set comes out every day at midnight."],
 ];

@@ -1,6 +1,7 @@
 // Moderation: every investor sign-up waits here until a moderator lets it in (players are in at once), and so does
 // every member's request for a new password; every member's profile and play is here. Moderators sign in with their own
-// account; admins (an admin account or the admin password) also make and remove moderators and change their accounts.
+// account, and make a member an investor or a player again; admins (an admin account or the admin password) also make
+// and remove moderators and change their accounts.
 // Admins themselves come from ADMINS in .env, never from here. Both also give A'Pelago's own read of each startup, as
 // its representatives.
 const { h, api, post, fmt1, ROLES, AXES, AXIS } = PD;
@@ -64,7 +65,7 @@ function profileBody(u, extra = null) {
   if (!p.full_name) {
     return h("div", { class: "pf" },
       h("p", { class: "pf-note muted small" }, u.kind === "player" ? "A player: they sign up with a username and password only."
-        : "No sign-up details: this account didn't come through the sign-up form."),
+        : "No investor profile: they didn't sign up through the investor form."),
       play, extra);
   }
   const links = Object.entries(p.links || {}).filter(([, url]) => safeLink(url));
@@ -173,12 +174,18 @@ function memberRows(u) {
   return [row, h("tr", { class: "detail" }, h("td", { colspan: COLUMNS.length }, profileBody(u, accountBox(u))))];
 }
 
-// Password and moderator rights, each on its own line. Nothing for staff a moderator can't change. Admins are set in
-// .env, so for them that's said instead of a button.
+// Password, investor or player, and moderator rights, each on its own line. Nothing for staff a moderator can't change.
+// Admins are set in .env, so for them that's said instead of a button.
 function accountBox(u) {
   if (locked(u)) return null;
+  const investor = u.kind === "investor";
   return h("section", { class: "pf-box pf-account" }, h("div", { class: "pf-title" }, "Account"),
     passwordRow(u),
+    h("div", { class: "pf-action" },
+      h("button", { class: "btn small", onclick: () => setKind(u, investor ? "player" : "investor") }, investor ? "Make player" : "Make investor"),
+      h("span", { class: "muted small" }, investor
+        ? `They rate the pitch alone again, and every answer of theirs counts ${times(data.weights.player)}.`
+        : `They rate the full card, with every review, and every answer of theirs counts ${times(data.weights.investor)}, earlier ones too.`)),
     data.viewer.admin ? h("div", { class: "pf-action" },
       h("button", { class: "btn small", onclick: () => setModerator(u, !u.is_moderator) }, u.is_moderator ? "Remove moderator" : "Make moderator"),
       h("span", { class: "muted small" }, u.is_moderator ? "They keep their account and go back to being a member."
@@ -208,7 +215,7 @@ function membersView(list) {
         : h("tr", {}, h("td", { colspan: COLUMNS.length, class: "muted" }, list.length ? "No members match." : "No members yet."))))),
     h("p", { class: "muted small", style: { margin: ".7rem 0 0" } },
       "Vs engine and Flat are hints for judging a member's reads; hover the headers for what they measure. Click a row for the profile",
-      data.viewer.admin ? ", and to make them a moderator." : "."),
+      data.viewer.admin ? ", and to make them an investor or a moderator." : ", and to make them an investor."),
   ];
 }
 
@@ -218,6 +225,14 @@ async function review(u, status) {
   try {
     await post(`/api/mod/users/${u.id}/review`, { status });
     PD.toast(status === "approved" ? `${u.username} is in` : `${u.username} rejected`);
+  } catch (e) { PD.toast(e.message); }
+  await refresh();
+}
+
+async function setKind(u, kind) {
+  try {
+    await post(`/api/mod/users/${u.id}/kind`, { kind }, "PUT");
+    PD.toast(kind === "investor" ? `${u.username} is an investor now` : `${u.username} is a player now`);
   } catch (e) { PD.toast(e.message); }
   await refresh();
 }

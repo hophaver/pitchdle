@@ -64,3 +64,27 @@ def test_a_members_weight_is_their_kind_alone():
 def test_the_dashboard_shows_the_profile_and_opinions(client, admin):
     c = client.get("/api/host/radar", auth=admin).json()["companies"][0]
     assert {"vision", "stages", "raised_eur", "investors", "opinions", "quiet"} <= set(c)
+
+
+def test_a_moderator_makes_a_player_an_investor_and_back(client, moderator):
+    pia = new_player(client)
+    join(pia)
+    uid = user_id(client, "pia")
+    assert "opinions" not in today(pia)["cards"][0]  # a player rates the pitch alone
+    r = client.put(f"/api/mod/users/{uid}/kind", json={"kind": "investor"}, auth=moderator)
+    assert r.status_code == 200 and r.json()["kind"] == "investor"
+    assert "opinions" in today(pia)["cards"][0]  # the full card, from their next request
+    assert pia.get("/api/me").json()["user"]["kind"] == "investor"
+    assert client.put(f"/api/mod/users/{uid}/kind", json={"kind": "player"}, auth=moderator).json()["kind"] == "player"
+    assert client.put(f"/api/mod/users/{uid}/kind", json={"kind": "whale"}, auth=moderator).status_code == 422
+
+
+def test_only_members_change_kind_and_staff_only_by_an_admin(client, moderator):
+    apply(new_player(client), "ivy")  # still waiting for a moderator
+    assert client.put(f"/api/mod/users/{user_id(client, 'ivy')}/kind", json={"kind": "player"},
+                      auth=moderator).status_code == 409
+    mira = user_id(client, "mira")  # the moderator themself
+    assert client.put(f"/api/mod/users/{mira}/kind", json={"kind": "investor"}, auth=moderator).status_code == 403
+    assert client.put(f"/api/mod/users/{mira}/kind", json={"kind": "investor"}, auth=staff()).json()["kind"] == "investor"
+    join(new_player(client), "pia")
+    assert client.put(f"/api/mod/users/{user_id(client, 'pia')}/kind", json={"kind": "investor"}).status_code == 401
