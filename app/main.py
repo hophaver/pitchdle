@@ -94,9 +94,28 @@ def admin_token() -> str:
     return hmac.new(config.ADMIN_PASSWORD.encode(), b"pitchdle admin session", hashlib.sha256).hexdigest()
 
 
+# TEMPORARY: the bypass button on the sign-in page. Its cookie makes an admin that can't delete anything.
+BYPASS_COOKIE = "pd_bypass"
+
+
+def bypass_token() -> str:
+    return hmac.new(config.ADMIN_PASSWORD.encode(), b"pitchdle bypass session", hashlib.sha256).hexdigest()
+
+
 def staff_for(request: Request, creds: HTTPBasicCredentials | None, user, db) -> moderation.Staff | None:
     """Who's acting, if they're staff: the admin password (the sign-in page's cookie, or Basic auth for scripts),
     or a moderator's or admin's own account (logged in, or Basic auth). None for everyone else."""
+    staff = _staff_for(request, creds, user, db)
+    if staff is None and secrets.compare_digest(request.cookies.get(BYPASS_COOKIE, "").encode(),
+                                                bypass_token().encode()):
+        staff = moderation.Staff("guest admin", admin=True, bypass=True)
+    # TEMPORARY: the bypass can look and change things, but deletes nothing.
+    if staff and staff.bypass and request.method == "DELETE":
+        raise HTTPException(403, "The bypass login can't delete anything.")
+    return staff
+
+
+def _staff_for(request: Request, creds: HTTPBasicCredentials | None, user, db) -> moderation.Staff | None:
     if secrets.compare_digest(request.cookies.get(ADMIN_COOKIE, "").encode(), admin_token().encode()):
         return moderation.Staff("admin", admin=True)
     if creds and is_admin_password(creds.password):
@@ -104,7 +123,8 @@ def staff_for(request: Request, creds: HTTPBasicCredentials | None, user, db) ->
     if not (user and (user["is_moderator"] or user["is_admin"])) and creds:
         user = accounts.staff_login(db, creds.username, creds.password)
     if user and (user["is_moderator"] or user["is_admin"]):
-        return moderation.Staff(user["username"], admin=bool(user["is_admin"]))
+        return moderation.Staff(user["username"], admin=bool(user["is_admin"]),
+                                env_admin=bool(user["is_admin"]) and accounts.is_admin_name(user["username"]))
     return None
 
 
@@ -117,6 +137,13 @@ def require_admin(staff: moderation.Staff | None = Depends(optional_staff)) -> N
     """The admin password, or an admin account."""
     if not (staff and staff.admin):
         raise HTTPException(401, "Sign in with an admin account or the admin password.")
+
+
+def require_env_admin(staff: moderation.Staff | None = Depends(optional_staff)) -> None:
+    """TEMPORARY: the danger zone is only for the admin accounts ADMINS in .env names (not the admin password, not
+    the bypass)."""
+    if not (staff and staff.env_admin):
+        raise HTTPException(403, "Only an admin account from .env (ADMINS) can use the danger zone.")
 
 
 def require_moderator(staff: moderation.Staff | None = Depends(optional_staff)) -> moderation.Staff:
@@ -408,6 +435,7 @@ def staff_login(body: StaffCredentials, request: Request, response: Response, db
         if not (user["is_admin"] or (body.need == "moderator" and user["is_moderator"])):
             raise HTTPException(403, "This page needs an admin account." if body.need == "admin"
                                 else "This page needs a moderator or admin account.")
+        response.delete_cookie(BYPASS_COOKIE)
         response.delete_cookie(ADMIN_COOKIE)  # they act as this account now, not as an earlier admin password sign-in
         return sign_in(request, response, db, user)
     if is_admin_password(body.password):
@@ -416,12 +444,20 @@ def staff_login(body: StaffCredentials, request: Request, response: Response, db
     raise HTTPException(401, "Wrong username or password.")
 
 
+# TEMPORARY: the sign-in page's bypass button. Anyone who presses it is an admin that can't delete anything.
+@app.post("/api/staff/bypass")
+def staff_bypass(response: Response):
+    response.set_cookie(BYPASS_COOKIE, bypass_token(), max_age=30 * 24 * 3600, samesite="lax", httponly=True)
+    return {"user": None, "admin": True, "bypass": True}
+
+
 @app.post("/api/staff/logout")
 def staff_logout(request: Request, response: Response, db=Depends(get_db)):
     """Signs out of the host pages: the admin password's cookie and any account login."""
     accounts.end_session(db, request.cookies.get(SESSION_COOKIE))
     response.delete_cookie(SESSION_COOKIE)
     response.delete_cookie(ADMIN_COOKIE)
+    response.delete_cookie(BYPASS_COOKIE)
     return {"ok": True}
 
 
@@ -1560,8 +1596,9 @@ class ModeIn(BaseModel):
 
 
 @app.get("/api/admin/mode", dependencies=[Depends(require_admin)])
-def admin_mode(db=Depends(get_db)):
-    return mode_payload(db)
+def admin_mode(db=Depends(get_db), staff=Depends(optional_staff)):
+    # TEMPORARY: can_reset tells /admin whether to offer the danger zone.
+    return mode_payload(db) | {"can_reset": staff.env_admin, "bypass": staff.bypass}
 
 
 @app.post("/api/admin/mode", dependencies=[Depends(require_admin)])
@@ -1632,7 +1669,7 @@ class ResetIn(BaseModel):
     scope: str = Field(pattern="^(real|seed|all|everything)$")
 
 
-@app.post("/api/admin/reset", dependencies=[Depends(require_admin)])
+@app.post("/api/admin/reset", dependencies=[Depends(require_admin), Depends(require_env_admin)])
 def admin_reset(body: ResetIn, db=Depends(get_db)):
     if body.scope == "everything":
         seed.reset(db)

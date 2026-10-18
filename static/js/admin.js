@@ -209,7 +209,8 @@ function render() {
           h("a", { class: "btn", href: "/api/admin/export.json" }, "Download JSON")))),
     weightsSection(),
     thesisSection(),
-    h("section", { class: "a-section" }, h("div", { class: "a-section-head" }, h("h2", {}, "Danger zone")),
+    // TEMPORARY: only the admin accounts from .env (ADMINS) get the danger zone.
+    S.mode.can_reset && h("section", { class: "a-section" }, h("div", { class: "a-section-head" }, h("h2", {}, "Danger zone")),
       h("div", { class: "panel a-danger" },
         reset("seed", "Clear demo answers", "Remove the seeded players and their answers?", "Removes the seeded demo players and their answers."),
         reset("real", "Clear real answers", "Remove every real player's answers?", "Removes every real player's answers. Accounts stay.", true),

@@ -24,6 +24,23 @@
     note.hidden = false;
   }).catch(() => { /* no note */ });
 
+  // TEMPORARY: the bypass button, first thing on /host.
+  if (location.pathname === "/host") {
+    const bypass = document.getElementById("login-bypass");
+    bypass.hidden = false;
+    document.getElementById("login-bypass-note").hidden = false;
+    bypass.addEventListener("click", async () => {
+      bypass.disabled = true;
+      try {
+        await PD.post("/api/staff/bypass", {});
+        location.reload();
+      } catch (err) {
+        show(err.message);
+        bypass.disabled = false;
+      }
+    });
+  }
+
   const show = (msg) => { error.textContent = msg; error.hidden = !msg; };
 
   form.addEventListener("submit", async (e) => {

@@ -19,6 +19,8 @@ class Staff:
     """Who is acting on /moderate: a moderator's or admin's own account, or the admin password."""
     name: str  # their username, or "admin"
     admin: bool = False
+    env_admin: bool = False  # TEMPORARY: an account named in ADMINS (.env), the only ones allowed the danger zone
+    bypass: bool = False  # TEMPORARY: the /host bypass button; an admin that can't delete anything
 
 
 class ModerationError(ValueError):

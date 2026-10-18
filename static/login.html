@@ -18,6 +18,9 @@
     </header>
     <main class="login">
       <form class="panel login-card" id="login" novalidate>
+        <!-- TEMPORARY: bypass login, only offered on /host -->
+        <button class="btn primary login-submit" type="button" id="login-bypass" hidden>Enter the dashboard as admin</button>
+        <p class="muted small login-hint" id="login-bypass-note" hidden>Temporary bypass: can't delete anything.</p>
         <h1 id="login-title">Sign in</h1>
         <p class="muted" id="login-sub">Staff only.</p>
         <p class="login-note" id="login-note" hidden></p>
