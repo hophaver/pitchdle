@@ -11,6 +11,10 @@ headlines about the company and fills both in:
   estimated by AI until the host confirms it.
 
 Only empty fields are filled, and evidence the host confirmed is never touched, so nothing typed by hand is lost.
+
+A startup the host adds by hand brings more to go on: whatever they typed on its card, and their notes (a deck, a
+call, a meeting). Both go to the model as reliable, so the more the host gives it, the better the fill. Such a
+startup's game card can have gaps too (no pitch or ask yet): fill_card() has the card writer fill just those.
 """
 import logging
 
@@ -92,10 +96,12 @@ def _factor_lines() -> str:
     return "\n".join(out)
 
 
-SYSTEM = f"""You fill in a startup's card for investors, from the only sources given: text from its website and
-news headlines. Use those sources only. Never invent amounts, investors, dates, customers or claims. Some headlines
-may be about something else with the same name (a person, an animal, another company): ignore anything that isn't
-clearly about this company. Anything the sources don't say stays empty.
+SYSTEM = f"""You fill in a startup's card for investors, from the only sources given: text from its website, news
+headlines and, when there are any, notes from the host (the team running this radar) and what its card already says.
+Use those sources only. Never invent amounts, investors, dates, customers or claims. The host's notes and what the
+card already says are reliable: keep to them, never contradict them, and use them to tell which headlines are about
+this company. Some headlines may be about something else with the same name (a person, an animal, another company):
+ignore anything that isn't clearly about this company. Anything the sources don't say stays empty.
 
 Profile:
 - vision: what the company does and is trying to achieve, in its own terms, as one plain paragraph of at most
@@ -118,7 +124,7 @@ score low on proof.
   trl_stage: how far the technology has got, from evidence such as pilots, deployments and customers, never a
     self-claim: {TRL_HELP}. Empty if the sources don't show it.
   patents: the number of granted patents the sources state, else null.
-  basis: one or two sentences on what the scores rest on (which facts from the sources).
+  basis: one or two sentences on what the scores rest on (which facts, from the website, the news or the host).
 Use British English."""
 
 
@@ -127,14 +133,21 @@ def complete(messages: list[dict]) -> dict:
     return pitch._post("profile", SCHEMA, messages, task="profile")
 
 
+def _field(comp, key: str):
+    return comp[key] if key in comp.keys() else None
+
+
 def gather(comp) -> tuple[str, list[str]]:
     """The sources for one company as text for the model, and what they were (for the note). A dead website or
-    feed just means fewer sources."""
+    feed just means fewer sources. The host's notes on a startup they added by hand count as a source."""
     used, lines = [], [f"Company name: {comp['name']}"]
     if comp["sector"]:
         lines.append(f"Field: {comp['sector']}")
     if comp["one_liner"]:
         lines.append(f"Its card's pitch: {comp['one_liner']}")
+    if notes := (_field(comp, "host_notes") or "").strip():
+        lines += ["", "Notes from the host (the team running this radar; reliable, though not public):", notes]
+        used.append("the host's notes")
     if comp["website"]:
         try:
             page = website.fetch(comp["website"])
@@ -159,6 +172,30 @@ def gather(comp) -> tuple[str, list[str]]:
         lines += ["", "Headlines:"] + [f"- {t}" for t in dict.fromkeys(titles)]
         used.append(f"{len(titles)} headline{'s' if len(titles) != 1 else ''}")
     return "\n".join(lines), used
+
+
+def _investor(i: dict) -> str:
+    said = "interested" if i.get("status") == "interested" else "invested"
+    if i.get("amount_eur"):
+        said += f", €{i['amount_eur']:,}"
+    return f"{i['name']} ({said})"
+
+
+def known(comp) -> str:
+    """What the card already says beyond its name, field and pitch (gather has those), for the model to keep to and
+    build on: what the host typed for a startup they added by hand, or what an earlier fill put there. Empty when
+    there's nothing. Kept out of gather() so a fill or an update changing the card never changes its sources."""
+    stages, investors = j(comp["stages"], []), j(comp["investors"], [])
+    lines = [f"{label}: {value}" for label, value in (
+        ("Based in", comp["country"]), ("Ask", comp["claim_ask"]),
+        ("Raised so far", f"€{comp['raised_eur']:,}" if comp["raised_eur"] is not None else ""),
+        ("Stages passed", "; ".join(stages)), ("Investors", "; ".join(_investor(i) for i in investors)),
+        ("Vision", " ".join((comp["vision"] or "").split()))) if value]
+    if not lines:
+        return ""
+    head = ("Entered by the host, who added this startup by hand (reliable):" if _field(comp, "origin") == "manual"
+            else "What its card says so far:")
+    return "\n".join(["", "", head, *lines])
 
 
 def to_eur(amount, currency: str) -> int | None:
@@ -229,7 +266,7 @@ def fill(db, comp) -> dict:
     from .. import seed  # seed imports the crawler package; imported here to keep that one-way
 
     text, used = gather(comp)
-    found = clean(complete([{"role": "system", "content": SYSTEM}, {"role": "user", "content": text}]))
+    found = clean(complete([{"role": "system", "content": SYSTEM}, {"role": "user", "content": text + known(comp)}]))
     updates = {}
     if found["vision"] and not (comp["vision"] or "").strip():
         from .. import money
@@ -261,3 +298,35 @@ def fill(db, comp) -> dict:
         seed.score_company(db, comp["id"])  # readiness, thesis fit and the call follow from the new evidence
     db.commit()
     return {"filled": filled, "used": used, "note": note, "sources": text}
+
+
+# --- the game card of a startup added by hand ------------------------------------------------------------------
+
+CARD_FIELDS = ("emoji", "sector", "one_liner", "claim_ask")
+
+
+def card_gaps(comp) -> list[str]:
+    """The game card's fields still empty."""
+    return [k for k in CARD_FIELDS if not (comp[k] or "").strip()]
+
+
+def fill_card(db, comp) -> dict:
+    """Write the empty fields of a hand-added startup's game card (emoji, field, pitch, ask, and facts) with the card
+    writer, from the same sources as the profile plus what the host typed. Whatever the host wrote stays. If the writer
+    doubts it's a startup at all, nothing is written and card_status says it needs a pass by hand: the host chose it,
+    so it stays for them to judge. Returns {"filled": [field, ...], "doubt": why it doubts, or ""}. Raises on an API or
+    format error, leaving the card as it was for the next run."""
+    text, _ = gather(comp)
+    card = pitch.write_card(text + known(comp))
+    if not card["is_startup"]:
+        db.execute("UPDATE companies SET card_status = 'manual' WHERE id = ?", (comp["id"],))
+        db.commit()
+        return {"filled": [], "doubt": card["reject_reason"] or "not a startup"}
+    updates = {k: card[k] for k in CARD_FIELDS if card[k] and not (comp[k] or "").strip()}
+    if card["facts"] and not j(comp["facts"], []):
+        updates["facts"] = dumps(card["facts"])
+    sets = "".join(f"{k} = ?, " for k in updates)
+    db.execute(f"UPDATE companies SET {sets}card_status = ? WHERE id = ?",
+               (*updates.values(), "ai" if updates else "", comp["id"]))
+    db.commit()
+    return {"filled": list(updates), "doubt": ""}

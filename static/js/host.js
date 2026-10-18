@@ -286,8 +286,30 @@ function fillState(c) {
   const r = data.reads || {};
   if (!r.fill) return "Fills automatically once OPENROUTER_API_KEY is set in .env.";
   const err = (r.auto.errors || []).find((e) => e.startsWith(`${c.name}, profile:`));
-  if (r.auto.running) return "Filling from its website and news…";
-  return err ? `Couldn't fill it: ${err.slice(c.name.length + 11)}` : "Waiting to be filled from its website and news.";
+  const from = c.origin === "manual" ? "what you entered, its website and news" : "its website and news";
+  if (r.auto.running) return `Filling from ${from}…`;
+  return err ? `Couldn't fill it: ${err.slice(c.name.length + 11)}` : `Waiting to be filled from ${from}.`;
+}
+
+// A startup added by hand with the AI fill off: its card is what was typed, until the host asks the AI to fill the gaps.
+function fillLater(c) {
+  if (!c.profile || c.profile.status !== "manual") return null;
+  const busy = state.busy.has(`fill${c.id}`);
+  return h("div", { class: "row fill-later" },
+    h("span", { class: "note" }, "Added by hand with the AI fill off."),
+    h("button", { class: `pill ghost small${busy ? " busy" : ""}`, disabled: busy || !data.reads.fill,
+      title: data.reads.fill ? "The AI fills what's still empty from its website, news and what you entered"
+        : "Set OPENROUTER_API_KEY in .env to fill cards with AI",
+      onclick: async () => {
+        state.busy.add(`fill${c.id}`);
+        renderDrawer();
+        try {
+          await post(`/api/admin/companies/${c.id}/fill`, {});
+          PD.toast(`Filling ${c.name}'s gaps…`);
+        } catch (e) { PD.toast(e.message, 6000); }
+        state.busy.delete(`fill${c.id}`);
+        await refresh(true);
+      } }, busy ? "Starting…" : "Fill the gaps with AI"));
 }
 
 // The facts as the investor's game card shows them: raised so far, investors and stage, then every stage passed
@@ -305,7 +327,8 @@ function factsSect(c) {
       h("ul", { class: "investor-list" }, c.investors.map((i) => h("li", {}, h("b", {}, i.name), " ",
         i.status === "interested" ? h("span", { class: "interested" }, "interested")
           : i.amount_eur ? PD.money(i.amount_eur) : "invested")))] : null,
-    fillState(c) ? h("p", { class: "note fill-state" }, fillState(c)) : null);
+    fillState(c) ? h("p", { class: "note fill-state" }, fillState(c)) : null,
+    fillLater(c));
 }
 
 function startupCol(c) {
@@ -565,7 +588,181 @@ function renderDrawer() {
   if (!was) card.querySelector(".close-x").focus({ preventScroll: true });
 }
 
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.open) closeDrawer(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (document.querySelector(".add-wrap")) closeAdd();
+  else if (state.open) closeDrawer();
+});
+
+// --- add a startup by hand ----------------------------------------------------------------------------
+// Only the name is needed. With the AI on, it fills whatever is left empty from the startup's website and news and
+// everything typed here, notes included: the more it's given, the better it fills. Off, the card is what's typed.
+// What's typed survives closing the form, until the startup is added.
+
+const NEW_DRAFT = () => ({ fill: true, name: "", website: "", sector: "", country: "", emoji: "", one_liner: "",
+  claim_ask: "", raised: "", stages: "", vision: "", notes: "", investors: [] });
+let draft = NEW_DRAFT();
+
+// "€650k", "1.2M", "€1 200 000", "800,000" → euros; "" → null; anything else → NaN.
+function parseMoney(text) {
+  const t = String(text || "").trim().replace(/^€\s*|\s*(€|eur|euros?)$/gi, "").trim();
+  if (!t) return null;
+  const m = /^(\d+(?:[.,]\d+)?)\s*([km])$/i.exec(t);
+  if (m) return Math.round(parseFloat(m[1].replace(",", ".")) * (m[2].toLowerCase() === "k" ? 1e3 : 1e6));
+  if (/^\d{1,3}([ ,.])\d{3}(\1\d{3})*$/.test(t)) return Number(t.replace(/[ ,.]/g, ""));
+  if (/^\d+(?:[.,]\d+)?$/.test(t)) return Math.round(parseFloat(t.replace(",", ".")));
+  return NaN;
+}
+
+function addButton() {
+  return data.mode === "live" ? h("button", { class: "btn add-btn", onclick: openAdd,
+    title: "Add a startup you know of: fill in what you have, and the AI can fill the rest" }, "+ Add startup") : null;
+}
+
+function closeAdd() {
+  document.querySelectorAll(".add-wrap").forEach((el) => el.remove());
+  document.body.classList.remove("add-open");
+}
+
+function openAdd() {
+  closeAdd();
+  const ai = !!data.reads.fill; // an OpenRouter key is set
+  const filling = () => ai && draft.fill;
+  const bind = (el, key) => { el.value = draft[key]; el.addEventListener("input", () => { draft[key] = el.value; }); return el; };
+  const text = (key, attrs = {}) => bind(h("input", { type: "text", name: key, autocomplete: "off", ...attrs }), key);
+  const area = (key, attrs = {}) => bind(h("textarea", { name: key, rows: 3, ...attrs }), key);
+  const counted = (el, max) => {
+    const count = h("span", { class: "count" });
+    const tally = () => { count.textContent = `${el.value.length}/${max}`; };
+    el.addEventListener("input", tally);
+    tally();
+    return count;
+  };
+  const field = (label, el, { hint = null, wide = false, extra = null } = {}) => h("label", { class: `af-field${wide ? " wide" : ""}` },
+    h("span", { class: "af-label" }, label, hint ? h("small", {}, hint) : null, extra), el);
+  const group = (title, note, ...kids) => h("fieldset", { class: "af-group" }, h("legend", {}, title),
+    note ? h("p", { class: "af-note" }, note) : null, kids);
+
+  const f = {
+    name: text("name", { maxlength: 80, "aria-required": "true" }),
+    website: text("website", { maxlength: 200, placeholder: "example.com", inputmode: "url" }),
+    sector: text("sector", { maxlength: 30, placeholder: "water tech" }),
+    country: text("country", { maxlength: 60, placeholder: "Finland" }),
+    one_liner: text("one_liner", { maxlength: 90, placeholder: "Sensors that find leaks in city water pipes." }),
+    claim_ask: text("claim_ask", { maxlength: 60, placeholder: "€1.5M to roll out in 10 cities" }),
+    emoji: text("emoji", { maxlength: 8, class: "af-emoji" }),
+    raised: text("raised", { maxlength: 30, placeholder: "€650k" }),
+    stages: area("stages", { rows: 3, placeholder: "One per line, oldest first:\nBlueTech Accelerator (2024)\nSeed round: €650k (2025)" }),
+    vision: area("vision", { rows: 4, placeholder: "What it does and is trying to achieve" }),
+    notes: area("notes", { rows: 4, maxlength: 4000,
+      placeholder: "Anything you know from a deck, a call or a meeting: customers, pilots, team, revenue, patents…" }),
+  };
+  const words = h("span", { class: "count" });
+  const tallyWords = () => {
+    const n = f.vision.value.trim() ? f.vision.value.trim().split(/\s+/).length : 0;
+    words.textContent = `${n}/400 words`;
+    words.classList.toggle("over", n > 400);
+  };
+  f.vision.addEventListener("input", tallyWords);
+  tallyWords();
+
+  // Investors: a row each, with who they are, invested or interested, and how much.
+  const rows = h("div", { class: "af-investors" });
+  function paintInvestors() {
+    rows.replaceChildren(...draft.investors.map((inv, i) => {
+      const name = h("input", { type: "text", placeholder: "Blue Fund", maxlength: 80, "aria-label": "Investor",
+        value: inv.name, oninput: (e) => { inv.name = e.target.value; } });
+      const status = h("select", { "aria-label": "Invested or interested", onchange: (e) => { inv.status = e.target.value; } },
+        [["invested", "Invested"], ["interested", "Interested"]].map(([v, l]) => h("option", { value: v, selected: inv.status === v }, l)));
+      const amount = h("input", { type: "text", placeholder: "€300k", maxlength: 30, "aria-label": "Amount",
+        value: inv.amount, oninput: (e) => { inv.amount = e.target.value; } });
+      const drop = h("button", { type: "button", class: "btn link", "aria-label": "Remove investor",
+        onclick: () => { draft.investors.splice(i, 1); paintInvestors(); } }, "✕");
+      return h("div", { class: "af-investor" }, name, status, amount, drop);
+    }), h("button", { type: "button", class: "btn small", onclick: () => {
+      draft.investors.push({ name: "", status: "invested", amount: "" });
+      paintInvestors();
+      rows.querySelector(".af-investor:last-of-type input").focus();
+    } }, "+ Add investor"));
+  }
+  paintInvestors();
+
+  const intro = h("p", { class: "af-intro" });
+  const send = h("button", { type: "submit", class: "btn primary" });
+  const notesHint = h("small", {});
+  const modeSeg = h("div", { class: "seg fit", role: "group", "aria-label": "How to fill the card" });
+  function paintMode() {
+    modeSeg.replaceChildren(...[[true, "Fill the gaps with AI"], [false, "Only what I enter"]].map(([on, label]) =>
+      h("button", { type: "button", "aria-pressed": String(filling() === on), disabled: on && !ai,
+        title: on && !ai ? "Set OPENROUTER_API_KEY in .env to fill cards with AI" : null,
+        onclick: () => { draft.fill = on; paintMode(); } }, label)));
+    intro.textContent = filling()
+      ? "Only the name is needed. The AI reads its website and news, plus everything you enter here, and fills only what you leave empty: the more you give it, the better it gets. Check its work before relying on it."
+      : `Only the name is needed. The card shows exactly what you enter${ai ? "; you can still have the AI fill the gaps later" : ""}.`;
+    send.textContent = filling() ? "Add and fill with AI" : "Add startup";
+    notesHint.textContent = filling() ? "for the AI; never shown to players" : "kept for the AI, if you have it fill the gaps later";
+  }
+  paintMode();
+
+  const form = h("form", { class: "af", novalidate: true },
+    h("div", { class: "af-mode" }, modeSeg), intro,
+    group("The startup", null,
+      field("Name", f.name, { hint: "required" }),
+      field("Website", f.website),
+      field("Field", f.sector),
+      field("Based in", f.country)),
+    group("Game card", "What players see.",
+      field("Pitch", f.one_liner, { wide: true, hint: "what the product does, in plain words", extra: counted(f.one_liner, 90) }),
+      field("Ask", f.claim_ask, { hint: "money and what for", extra: counted(f.claim_ask, 60) }),
+      field("Emoji", f.emoji, { hint: "one, like 💧" })),
+    group("Profile", "What investors see beside the pitch.",
+      field("Raised so far", f.raised, { hint: "in euros" }),
+      field("Stages passed", f.stages, { wide: true }),
+      h("div", { class: "af-field wide" }, h("span", { class: "af-label" }, "Investors"), rows),
+      field("Vision", f.vision, { wide: true, extra: words })),
+    group("Notes", null, field("What else you know", f.notes, { wide: true, extra: notesHint })),
+    h("div", { class: "af-actions" }, h("span", { class: "spacer" }),
+      h("button", { type: "button", class: "btn", onclick: closeAdd }, "Cancel"), send));
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = draft.name.trim();
+    if (!name) { f.name.focus(); return PD.toast("Give the startup a name"); }
+    const raised = parseMoney(draft.raised);
+    if (Number.isNaN(raised)) { f.raised.focus(); return PD.toast("Raised: an amount like €650k or €1.2M"); }
+    const investors = [];
+    for (const inv of draft.investors.filter((x) => x.name.trim())) {
+      const amount = parseMoney(inv.amount);
+      if (Number.isNaN(amount)) return PD.toast(`${inv.name.trim()}: an amount like €300k, or leave it empty`);
+      investors.push({ name: inv.name.trim(), status: inv.status, amount_eur: inv.status === "invested" ? amount : null });
+    }
+    send.disabled = true;
+    try {
+      const r = await post("/api/admin/startups", {
+        name, website: draft.website.trim(), sector: draft.sector.trim(), country: draft.country.trim(),
+        emoji: draft.emoji.trim(), one_liner: draft.one_liner.trim(), claim_ask: draft.claim_ask.trim(),
+        raised_eur: raised, stages: draft.stages.split("\n").map((x) => x.trim()).filter(Boolean),
+        investors, vision: draft.vision.trim(), notes: draft.notes.trim(), fill: filling() });
+      draft = NEW_DRAFT();
+      closeAdd();
+      PD.toast(r.filling ? `${r.name} added: the AI is filling the gaps` : `${r.name} added`);
+      state.filter = "all";
+      await refresh(true);
+      openDrawer(r.id);
+    } catch (err) {
+      PD.toast(err.message, 6000);
+      send.disabled = false;
+    }
+  });
+
+  const card = h("div", { class: "add-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "add-title" },
+    h("button", { type: "button", class: "close-x", "aria-label": "Close", title: "Close (Esc). What you typed stays.", onclick: closeAdd }, "✕"),
+    h("h2", { id: "add-title" }, "Add a startup"),
+    form);
+  document.body.append(h("div", { class: "add-wrap" }, card));
+  document.body.classList.add("add-open");
+  f.name.focus();
+}
 
 // --- page -------------------------------------------------------------------------------------------
 
@@ -611,7 +808,7 @@ function searchRow() {
   }
   const btn = h("button", { class: "btn primary", disabled: state.searching, onclick: find }, state.searching ? "Finding…" : "Find startups");
   [country, field].forEach((el) => el.addEventListener("keydown", (e) => { if (e.key === "Enter") find(); }));
-  return data.mode === "live" ? h("div", { class: "search" }, scopeSeg, country, field, btn) : null;
+  return data.mode === "live" ? h("div", { class: "search" }, scopeSeg, country, field, btn, addButton()) : null;
 }
 
 function render() {
@@ -716,7 +913,7 @@ Tool.onMode(() => { state.open = null; state.filter = "all"; renderDrawer(); ref
 refresh(true);
 // Quietly pick up autofill finds and new answers, never while the host is reading details or typing.
 setInterval(() => {
-  const typing = document.activeElement && ["INPUT", "SELECT"].includes(document.activeElement.tagName);
+  const typing = document.activeElement && ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName);
   if (!document.hidden && !state.open && !typing && !state.searching && !document.querySelector(".dd.open")) refresh();
 }, 15000);
 // While cards are being filled or read in the background, check often, so profiles, evidence and ratings appear

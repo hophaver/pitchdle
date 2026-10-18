@@ -46,6 +46,8 @@ SCHEMA = {
 SYSTEM = """You write cards for a game where players rate startups from a short pitch.
 You get a company name, the field it was found under, and the only sources available: news headlines and
 maybe text from its website. Use those sources only. Never invent numbers, customers, dates or claims.
+Some companies also come with notes from the host (the team running this radar) or with what the host already wrote
+on the card: those are reliable sources, so use them and keep the card consistent with them.
 
 First decide is_startup: true only if the name is an operating company (startup or young scaleup) with its own
 product or service. False for investors and funds, accelerators, publishers, news aggregators, events,

@@ -175,7 +175,8 @@ MIGRATIONS = [
     # confirm; 'pending' = found by discovery with nothing estimable yet, awaiting the host's review.
     ("companies", "evidence_status", "TEXT DEFAULT ''"),
     # Who wrote the game card: '' = the host (or seed data); 'ai' = written by the card writer, host to check;
-    # 'manual' = discovery filed it with only its headline as the pitch, so it needs a pass by hand.
+    # 'manual' = discovery filed it with only its headline as the pitch, so it needs a pass by hand; 'fill' = the
+    # host added it by hand with gaps (no pitch, ask, ...) the card writer fills in the background.
     ("companies", "card_status", "TEXT DEFAULT ''"),
     ("companies", "country", "TEXT DEFAULT ''"),  # where it's based, from discovery's screen when known
     ("candidates", "screen", "TEXT"),       # the relevance screen's verdict for the last search that saw it
@@ -215,6 +216,9 @@ MIGRATIONS = [
     ("companies", "source_key", "TEXT DEFAULT ''"),
     ("companies", "major_update_at", "TEXT"),
     ("companies", "update_note", "TEXT DEFAULT ''"),
+    # A startup the host added by hand (origin 'manual'): what they know that its website and news may not say (a
+    # deck, a call, a meeting). The AI fill reads it as a source, beside the website and news.
+    ("companies", "host_notes", "TEXT DEFAULT ''"),
 ]
 
 

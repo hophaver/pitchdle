@@ -523,7 +523,8 @@ body.tool {
 .dash-head { display: flex; align-items: center; gap: 1rem 1.5rem; flex-wrap: wrap; padding: 1.6rem 0 1.2rem; }
 .dash-head h1 { font-size: 2rem; }
 .dash-head .search { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
-.dash-head .search input { width: 13rem; }
+.dash-head .search input { width: 10rem; }
+.dash-head .search .add-btn { margin-left: .4rem; }
 .dash-head .seg, .dash-bar .seg { border-radius: 12px; }
 .dash-head .seg button, .dash-bar .seg button { min-height: 44px; padding: 0 1.1rem; font-size: .92rem; font-weight: 700; }
 .tool .dash-head input[type=text] { min-height: 44px; padding: 0 .9rem; border-radius: 12px; font-size: .92rem; }
@@ -713,6 +714,43 @@ table.data td.wide { min-width: 260px; }
 .tool .op-row { border-top: 1px solid var(--line); }
 .tool .op-row small { color: var(--muted); }
 .tool .op-note { font-size: .8rem; color: var(--muted); margin: 0; }
+
+/* dashboard: add a startup by hand, a form over the radar in the Admin page's style */
+body.add-open { overflow: hidden; }
+.add-wrap { position: fixed; inset: 0; z-index: 60; overflow-y: auto; background: rgba(20, 20, 20, .45); padding: 24px 16px;
+  overscroll-behavior: contain; }
+.add-card { position: relative; max-width: 760px; margin: 0 auto; background: var(--page); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 14px; padding: 1.2rem 1.4rem 1.3rem; box-shadow: 0 24px 60px -24px rgba(0, 0, 0, .45); }
+.add-card h2 { font-size: 1.35rem; margin: 0 2.6rem 0 0; }
+.add-card .close-x { position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+  border: 1px solid var(--line); background: var(--control); color: var(--ink); font-weight: 800; font-size: .85rem; line-height: 1; }
+.add-card .close-x:hover { border-color: var(--ink); }
+.af-mode { margin-top: .9rem; }
+.af-intro { margin: .55rem 0 0; color: var(--muted); font-size: .85rem; max-width: 66ch; }
+.af-group { border: 0; border-top: 1px solid var(--line); margin: 1rem 0 0; padding: .8rem 0 0; min-width: 0;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem 1rem; }
+.af-group legend { padding: 0 .4rem 0 0; font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+.af-note { grid-column: 1 / -1; margin: -.3rem 0 0; font-size: .78rem; color: var(--muted); }
+.af-field { display: grid; gap: .3rem; align-content: start; min-width: 0; }
+.af-field.wide { grid-column: 1 / -1; }
+.af-label { display: flex; align-items: baseline; gap: .45rem; font-size: .8rem; font-weight: 600; }
+.af-label small { font-size: .72rem; font-weight: 500; color: var(--muted); }
+.af-label .count { margin-left: auto; font-size: .72rem; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+.af-label .count.over { color: var(--bad); }
+.tool .af input, .tool .af select, .tool .af textarea { width: 100%; min-height: 36px; }
+.tool .af .af-emoji { width: 5rem; }
+.af-investors { display: grid; gap: .4rem; justify-items: start; }
+.af-investor { display: grid; grid-template-columns: minmax(0, 1fr) 8.5rem 7rem 1.6rem; gap: .4rem; align-items: center; width: 100%; }
+.af-investor .btn.link { justify-content: center; font-size: .9rem; }
+.af-actions { display: flex; align-items: center; gap: .6rem; margin-top: 1.2rem; padding-top: .9rem; border-top: 1px solid var(--line); }
+@media (max-width: 640px) {
+  .add-wrap { padding: 8px; }
+  .add-card { padding: 1rem 1rem 1.1rem; }
+  .af-group { grid-template-columns: minmax(0, 1fr); }
+  .af-investor { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 1.6rem; }
+  .af-investor > input:first-child { grid-column: 1 / -1; }
+}
+.dossier .fill-later { margin-top: 6px; gap: .5rem; }
 
 /* dashboard details: the startup's full card over the radar. The card is as tall as its content and centred;
    the boxes in each column grow so all three columns end on one line, with no empty card left over. */

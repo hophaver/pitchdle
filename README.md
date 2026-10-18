@@ -19,7 +19,7 @@ The first run creates `.venv`, installs dependencies and seeds `data/pitchdle.db
 | Page | What it's for | Access |
 |---|---|---|
 | `/play` | The daily game (5 cards) | anyone |
-| `/host` | Dashboard: the radar, calls, details, next steps | admin |
+| `/host` | Dashboard: the radar, calls, details, next steps; add startups by hand | admin |
 | `/game` | Players, past and upcoming games | admin |
 | `/admin` | Background AI jobs, vote weights, exports, resets | admin |
 | `/moderate` | Approve investors and new passwords, manage members, A'Pelago's ratings | moderator or admin |
@@ -61,6 +61,10 @@ is skipped. See `.env.example` for the rest (discovery limits, exclusions, vote 
 - **Fill.** Each tracked startup's card, profile and evidence are filled by AI from its site and headlines. Only
   stated facts are used; AI evidence is marked unconfirmed, so the call is never Back until the host confirms it.
   A game check then decides if the card enters the daily game.
+- **Adding by hand.** In Live mode, **+ Add startup** on the Dashboard takes whatever you know; only the name is
+  needed. *Fill the gaps with AI* fills only what you left empty, from its site, headlines and everything you typed
+  (notes from a deck or a call included), so the more you give it, the better the fill. *Only what I enter* keeps the
+  card as typed; its details card can still have the AI fill the gaps later.
 - **The call.** Back (best thesis fit ≥ 3.5), Watch, or Avoid (< 2.5), softened to Watch if the crowd overrates it,
   coverage is negative, or evidence is unconfirmed. **Needs evidence** when nothing is known.
 - **Next steps** match the startup against `landscape.json` (sector, TRL, region). The next move targets the

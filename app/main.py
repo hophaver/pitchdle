@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from . import accounts, autofill, autoread, brief, config, engine, moderation, money, opinions, reads, refresh, scoring, seed, service
 from .db import connect, dumps, get_db, init_db, j, name_key, now
-from .crawler import checklist, pitch
+from .crawler import checklist, pitch, profile
 from .engine import AXES, full_score as engine_full
 
 log = logging.getLogger("pitchdle")
@@ -941,6 +941,100 @@ def admin_delete(cid: int, db=Depends(get_db)):
     db.execute("DELETE FROM companies WHERE id = ?", (cid,))
     db.commit()
     return {"ok": True}
+
+
+# --- startups the host adds by hand, from the dashboard ------------------------------------------------------
+# Only the name is needed. With fill on, the AI fills whatever is left empty from the startup's website and news and
+# everything the host typed, their notes included (crawler/profile.py): the more they give, the better it gets. Off,
+# the card is exactly what they typed. Either way it's a real startup like a discovery find: checked for the game,
+# and reviewed by the AI models and social media.
+
+class StartupIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    website: str = ""
+    sector: str = Field("", max_length=pitch.LIMITS["sector"])
+    country: str = Field("", max_length=60)
+    emoji: str = Field("", max_length=16)
+    one_liner: str = Field("", max_length=pitch.LIMITS["one_liner"])
+    claim_ask: str = Field("", max_length=pitch.LIMITS["claim_ask"])
+    vision: str = Field("", max_length=4000)
+    stages: list[str] = Field([], max_length=12)
+    raised_eur: int | None = Field(None, ge=0)
+    investors: list[Investor] = Field([], max_length=30)
+    notes: str = Field("", max_length=4000)  # for the AI only: a deck, a call, a meeting
+    fill: bool = True
+
+    @field_validator("name", "sector", "country", "emoji", "one_liner", "claim_ask")
+    @classmethod
+    def one_line(cls, value: str, info) -> str:
+        value = clean_text(value)
+        if info.field_name == "name" and not value:
+            raise ValueError("a startup needs a name")
+        return value
+
+    @field_validator("website")
+    @classmethod
+    def site(cls, value: str) -> str:
+        return web_link(value, "the website") if value.strip() else ""
+
+    @field_validator("vision", "notes")
+    @classmethod
+    def paragraphs(cls, value: str, info) -> str:
+        value = clean_paragraph(value)
+        if info.field_name == "vision" and len(value.split()) > VISION_WORDS:
+            raise ValueError(f"the vision must be {VISION_WORDS} words or fewer")
+        return value
+
+    @field_validator("stages")
+    @classmethod
+    def stage_names(cls, value: list[str]) -> list[str]:
+        return [stage for stage in (clean_text(v)[:80] for v in value) if stage]
+
+
+@app.post("/api/admin/startups", dependencies=[Depends(require_admin)])
+def admin_add_startup(body: StartupIn, db=Depends(get_db)):
+    """Add a real startup by hand. Out of the game until the automatic check passes its card, like any real one."""
+    if hit := autofill.exclusion(body.name, url=body.website):
+        raise HTTPException(409, f"{body.name} is excluded (matches “{hit}”): funds, publishers and the event's partners "
+                                 "are never rated as startups.")
+    gaps = body.fill and not all((body.emoji, body.sector, body.one_liner, body.claim_ask))
+    try:
+        cid = db.execute(
+            "INSERT INTO companies (name, name_key, emoji, sector, one_liner, claim_ask, website, country, vision, stages, "
+            "raised_eur, investors, host_notes, facts, evidence, evidence_status, card_status, profile_status, "
+            "profile_note, is_real, active, origin, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '{}', 'pending', ?, ?, ?, 1, 0, 'manual', ?)",
+            (body.name, name_key(body.name), body.emoji, body.sector, body.one_liner, body.claim_ask, body.website,
+             body.country, body.vision, dumps(body.stages), body.raised_eur,
+             dumps([i.model_dump() for i in body.investors]), body.notes, "fill" if gaps else "",
+             "" if body.fill else "manual", "" if body.fill else f"Added by hand on {now()[:10]}, AI fill off.",
+             now())).lastrowid
+    except sqlite3.IntegrityError:
+        db.rollback()
+        raise HTTPException(409, f"There's already a real company called {body.name}.")
+    # The same startup waiting among discovery's finds is this one now.
+    db.execute("UPDATE candidates SET status = 'approved', company_id = ? WHERE name_key = ? AND status IN ('new', 'queued')",
+               (cid, name_key(body.name)))
+    seed.score_company(db, cid)
+    db.commit()
+    autoread.kick()  # its gaps filled if asked, then the game check and the reviews, in the background
+    return {"id": cid, "name": body.name, "filling": body.fill and pitch.available()}
+
+
+@app.post("/api/admin/companies/{cid}/fill", dependencies=[Depends(require_admin)])
+def admin_fill(cid: int, db=Depends(get_db)):
+    """A startup added by hand with the AI fill off: fill its gaps now, the same way as on adding it."""
+    comp = service.get_company(db, cid)
+    if not comp or not comp["is_real"]:
+        raise HTTPException(404, "No such startup.")
+    if not pitch.available():
+        raise HTTPException(400, "Set OPENROUTER_API_KEY in .env to fill cards with AI.")
+    if comp["profile_status"] != "manual":
+        raise HTTPException(409, f"{comp['name']} is filled by AI already.")
+    db.execute("UPDATE companies SET profile_status = '', card_status = ? WHERE id = ?",
+               ("fill" if profile.card_gaps(comp) else comp["card_status"], cid))
+    db.commit()
+    return {"started": autoread.kick()}
 
 
 @app.get("/api/admin/submissions", dependencies=[Depends(require_admin)])

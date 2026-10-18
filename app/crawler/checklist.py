@@ -16,7 +16,8 @@ from .. import config, engine
 from ..db import dumps, j, now
 from . import pitch, profile
 
-SOURCES = ("site", "news", "none")
+SOURCES = ("site", "news", "host", "none")
+QUOTED = ("site", "news", "host")  # where a quote can come from
 QUOTE_MAX = 300
 MIN_QUOTE = 8  # shorter than this proves nothing ("yes", "pilot")
 
@@ -56,14 +57,16 @@ def system(rubric: dict) -> str:
         a = f["anchors"]
         lines.append(f"  {name}: {f['def']} 1 = {a['1']}; 3 = {a['3']}; 5 = {a['5']}.")
     return f"""You assess a startup for an accelerator and a venture fund, from the only sources given: text from its
-website and news headlines. Answer every checklist rung below and score the investment factors.
+website, news headlines and, for a startup the host added by hand, the host's notes. Answer every checklist rung below
+and score the investment factors.
 
 Rules:
 - answer "yes" only when the sources show it; "no" only when they show it is not the case (e.g. "no paying
   customers"); otherwise "unknown". An honest unknown is better than a guess.
 - quote: copy the exact words from the sources that support the answer, verbatim, at most {QUOTE_MAX} characters.
   Never paraphrase or invent a quote. Empty when the answer is unknown.
-- source: "site" if the quote is from the website text, "news" if from a headline, "none" if there is no quote.
+- source: "site" if the quote is from the website text, "news" if from a headline, "host" if from the host's notes,
+  "none" if there is no quote.
 - Judge what the sources show, not what the company claims it will do. A plan is not a milestone.
 - Ignore anything about something else with the same name.
 {chr(10).join(lines)}
@@ -112,7 +115,7 @@ def merge(evidence: dict, raw: dict, sources: str, confirmed: bool) -> tuple[dic
             if answer not in ("yes", "no"):
                 continue
             quote = _clip(a.get("quote"))
-            ok = bool(quote) and a.get("source") in ("site", "news") and verified(quote, sources)
+            ok = bool(quote) and a.get("source") in QUOTED and verified(quote, sources)
             checklist[cid] = {"answer": answer, "quote": quote, "source": a["source"] if ok else "ai", "by": "ai",
                               "at": stamp}
             tally["answered"] += 1
@@ -127,7 +130,7 @@ def merge(evidence: dict, raw: dict, sources: str, confirmed: bool) -> tuple[dic
             if not isinstance(f.get("value"), (int, float)):
                 continue
             quote = _clip(f.get("quote"))
-            ok = bool(quote) and f.get("source") in ("site", "news") and verified(quote, sources)
+            ok = bool(quote) and f.get("source") in QUOTED and verified(quote, sources)
             group[name] = round(max(0.0, min(5.0, float(f["value"]))) * 2) / 2
             support[key] = {"quote": quote, "source": f["source"] if ok else "ai", "by": "ai", "at": stamp}
             tally["answered"] += 1

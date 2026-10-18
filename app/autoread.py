@@ -1,7 +1,8 @@
 """Automatic outside reads: a new find on the dashboard gets its game card written; a new card gets its AI ratings, and a real startup its profile (filled from its website
 and news), the game's automatic moderation (in the daily game, or kept out with the reason) and its social media
-read, as soon as it's added; cards from before get theirs when the app starts. The profile comes first, so the
-check and the AI models see the fuller card. Runs in a background thread, never on the game's path.
+read, as soon as it's added; cards from before get theirs when the app starts. A startup the host added by hand with
+gaps in its game card gets those written first. The card and profile come first, so the check and the AI models see
+the fuller card. Runs in a background thread, never on the game's path.
 
 Each run reads every card still missing a read this setup can make, each card once. Whatever fails (an error, a
 model down) stays missing for the next run instead of being retried in a loop. Reads typed in by hand, and
@@ -44,6 +45,11 @@ def store(db, cid: int, results: dict) -> dict:
 def needs_profile(comp) -> bool:
     """A real startup whose profile hasn't been filled yet, when the setup can fill it."""
     return bool(comp["is_real"]) and not comp["profile_status"] and pitch.available()
+
+
+def needs_card(comp) -> bool:
+    """A startup the host added by hand, asking for the gaps in its game card to be written."""
+    return bool(comp["is_real"]) and comp["card_status"] == "fill" and pitch.available()
 
 
 def needs_check(comp) -> bool:
@@ -92,12 +98,21 @@ def fill(db) -> dict:
         for comp in db.execute("SELECT * FROM companies ORDER BY is_real DESC, id").fetchall():
             if comp["id"] not in tried:
                 ai, social = gaps(db, comp)
-                if ai or social or needs_profile(comp) or needs_check(comp):
+                if ai or social or needs_card(comp) or needs_profile(comp) or needs_check(comp):
                     todo.append((comp, ai, social))
         if not todo:
             break
         for comp, ai, social in todo:
             tried.add(comp["id"])
+            if needs_card(comp):  # the host's own card first, its gaps filled, so the profile builds on all of it
+                try:
+                    card = profile.fill_card(db, comp)
+                    if card["doubt"]:
+                        st["errors"].append(f"{comp['name']}, card: AI doubts it's a startup ({card['doubt']}); "
+                                            "write its pitch and ask by hand")
+                    comp = db.execute("SELECT * FROM companies WHERE id = ?", (comp["id"],)).fetchone() or comp
+                except Exception as e:  # noqa: BLE001 - stays unwritten for the next run
+                    st["errors"].append(f"{comp['name']}, card: {reads.short_error(e)}")
             if needs_profile(comp):
                 try:
                     filled = profile.fill(db, comp)
